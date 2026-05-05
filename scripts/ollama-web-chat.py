@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import json
+import mimetypes
 import os
 import sqlite3
 import subprocess
@@ -8,14 +9,23 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
-HOST = os.environ.get("OLLAMA_WEB_HOST", "0.0.0.0")
+HOST = os.environ.get("OLLAMA_WEB_HOST", "127.0.0.1")
 PORT = int(os.environ.get("OLLAMA_WEB_PORT", "8088"))
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+API_KEY = os.environ.get("OLLAMA_WEB_API_KEY", "")
+ALLOW_INSECURE_BIND = os.environ.get("OLLAMA_WEB_ALLOW_INSECURE_BIND", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+MAX_BODY_BYTES = max(1024, int(os.environ.get(
+    "OLLAMA_WEB_MAX_BODY_BYTES", "1048576")))
 HISTORY_PATH = os.path.expanduser(
     os.environ.get(
         "OLLAMA_WEB_HISTORY_PATH",
@@ -28,6 +38,7 @@ STASH_LOCK = threading.Lock()
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
+ASSET_ROOT = SCRIPT_DIR / "assets"
 
 
 def resolve_default_pdf_source() -> str:
@@ -422,18 +433,9 @@ HTML = """<!doctype html>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Home LLM Chat</title>
-  <link
-    rel="stylesheet"
-    href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css"
-  />
-  <script
-    defer
-    src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"
-  ></script>
-  <script
-    defer
-    src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
-  ></script>
+  <link rel="stylesheet" href="/assets/katex/katex.min.css" />
+  <script defer src="/assets/katex/katex.min.js"></script>
+  <script defer src="/assets/katex/contrib/auto-render.min.js"></script>
   <style>
     :root {
       --bg-a: #111827;
@@ -1123,6 +1125,29 @@ HTML = """<!doctype html>
   </div>
 
   <script>
+    const API_KEY_REQUIRED = %API_KEY_REQUIRED%;
+    const API_KEY_STORAGE_KEY = 'ollama_web_api_key_v1';
+    let apiKey = localStorage.getItem(API_KEY_STORAGE_KEY) || '';
+
+    if (API_KEY_REQUIRED && !apiKey) {
+      const entered = window.prompt('Enter API key for Ollama Librarian');
+      if (typeof entered === 'string' && entered.trim()) {
+        apiKey = entered.trim();
+        localStorage.setItem(API_KEY_STORAGE_KEY, apiKey);
+      }
+    }
+
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = (input, init = {}) => {
+      const reqInit = Object.assign({}, init);
+      const headers = new Headers(init.headers || {});
+      if (apiKey) {
+        headers.set('X-API-Key', apiKey);
+      }
+      reqInit.headers = headers;
+      return nativeFetch(input, reqInit);
+    };
+
     const modelEl = document.getElementById('model');
     const promptEl = document.getElementById('prompt');
     const sendEl = document.getElementById('send');
@@ -2267,9 +2292,21 @@ ${formatPdfSources(data.sources)}`;
 
 
 class Handler(BaseHTTPRequestHandler):
+    def _send_security_headers(self):
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; "
+            "base-uri 'none'; form-action 'self'",
+        )
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+
     def _send(self, code, body, content_type="text/plain; charset=utf-8"):
         payload = body.encode("utf-8")
         self.send_response(code)
+        self._send_security_headers()
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
@@ -2277,6 +2314,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send_bytes(self, code, payload, content_type, extra_headers=None):
         self.send_response(code)
+        self._send_security_headers()
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
         if extra_headers:
@@ -2285,13 +2323,106 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _is_authorized(self):
+        if not API_KEY:
+            return True
+        direct = self.headers.get("X-API-Key", "")
+        if direct == API_KEY:
+            return True
+        auth = self.headers.get("Authorization", "")
+        if auth.startswith("Bearer ") and auth[7:].strip() == API_KEY:
+            return True
+        return False
+
+    def _require_api_auth_for_route(self, route_path):
+        if not route_path.startswith("/api/"):
+            return True
+        if self._is_authorized():
+            return True
+        self._send(
+            401,
+            json.dumps({"error": "Unauthorized"}, ensure_ascii=True),
+            "application/json; charset=utf-8",
+        )
+        return False
+
+    def _read_json_body(self):
+        raw_length = self.headers.get("Content-Length", "0")
+        try:
+            length = int(raw_length)
+        except ValueError:
+            self._send(
+                400,
+                json.dumps({"error": "Invalid Content-Length"},
+                           ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+            return None
+
+        if length < 0:
+            self._send(
+                400,
+                json.dumps({"error": "Invalid Content-Length"},
+                           ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+            return None
+
+        if length > MAX_BODY_BYTES:
+            self._send(
+                413,
+                json.dumps({"error": "Request body too large"},
+                           ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+            return None
+
+        data = self.rfile.read(length) if length > 0 else b"{}"
+        try:
+            return json.loads(data.decode("utf-8"))
+        except json.JSONDecodeError:
+            self._send(
+                400,
+                json.dumps({"error": "Invalid JSON"}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+            return None
+
     def do_GET(self):
         parsed_url = urlparse(self.path)
         route_path = parsed_url.path
 
+        if not self._require_api_auth_for_route(route_path):
+            return
+
         if self.path == "/":
             html = HTML.replace("%OLLAMA_BASE%", OLLAMA_BASE)
+            html = html.replace("%API_KEY_REQUIRED%",
+                                "true" if bool(API_KEY) else "false")
             return self._send(200, html, "text/html; charset=utf-8")
+
+        if route_path.startswith("/assets/"):
+            rel_asset = unquote(route_path[len("/assets/"):]).lstrip("/")
+            candidate = (ASSET_ROOT / rel_asset).resolve()
+            asset_root_resolved = ASSET_ROOT.resolve()
+            if (
+                not str(candidate).startswith(
+                    str(asset_root_resolved) + os.sep)
+                or not candidate.is_file()
+            ):
+                return self._send(404, "Not found")
+
+            content_type, _ = mimetypes.guess_type(str(candidate))
+            if not content_type:
+                content_type = "application/octet-stream"
+            with open(candidate, "rb") as f:
+                payload = f.read()
+            return self._send_bytes(
+                200,
+                payload,
+                content_type,
+                {"Cache-Control": "public, max-age=31536000, immutable"},
+            )
 
         if route_path == "/api/tags":
             return self._proxy("GET", "/api/tags", None)
@@ -2371,7 +2502,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(
                     403,
                     json.dumps(
-                        {"error": "path is outside configured PDF library"}, ensure_ascii=True),
+                        {"error": "path is outside configured PDF library"}, ensure_ascii=True
+                    ),
                     "application/json; charset=utf-8",
                 )
 
@@ -2399,22 +2531,41 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, "Not found")
 
     def do_POST(self):
+        if not self._require_api_auth_for_route(self.path):
+            return
+
         if self.path == "/api/generate":
-            length = int(self.headers.get("Content-Length", "0"))
+            raw_length = self.headers.get("Content-Length", "0")
+            try:
+                length = int(raw_length)
+            except ValueError:
+                return self._send(
+                    400,
+                    json.dumps({"error": "Invalid Content-Length"},
+                               ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+            if length < 0:
+                return self._send(
+                    400,
+                    json.dumps({"error": "Invalid Content-Length"},
+                               ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+            if length > MAX_BODY_BYTES:
+                return self._send(
+                    413,
+                    json.dumps({"error": "Request body too large"},
+                               ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
             data = self.rfile.read(length) if length > 0 else b"{}"
             return self._proxy("POST", "/api/generate", data)
 
         if self.path == "/api/history":
-            length = int(self.headers.get("Content-Length", "0"))
-            data = self.rfile.read(length) if length > 0 else b"{}"
-            try:
-                payload = json.loads(data.decode("utf-8"))
-            except json.JSONDecodeError:
-                return self._send(
-                    400,
-                    json.dumps({"error": "Invalid JSON"}),
-                    "application/json; charset=utf-8",
-                )
+            payload = self._read_json_body()
+            if payload is None:
+                return
 
             role = payload.get("role")
             text = payload.get("text")
@@ -2430,16 +2581,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps({"ok": True}), "application/json; charset=utf-8")
 
         if self.path == "/api/instructions":
-            length = int(self.headers.get("Content-Length", "0"))
-            data = self.rfile.read(length) if length > 0 else b"{}"
-            try:
-                payload = json.loads(data.decode("utf-8"))
-            except json.JSONDecodeError:
-                return self._send(
-                    400,
-                    json.dumps({"error": "Invalid JSON"}),
-                    "application/json; charset=utf-8",
-                )
+            payload = self._read_json_body()
+            if payload is None:
+                return
 
             instructions = payload.get("instructions", "")
             if not isinstance(instructions, str):
@@ -2462,16 +2606,9 @@ class Handler(BaseHTTPRequestHandler):
             )
 
         if self.path == "/api/pdf/ask":
-            length = int(self.headers.get("Content-Length", "0"))
-            data = self.rfile.read(length) if length > 0 else b"{}"
-            try:
-                payload = json.loads(data.decode("utf-8"))
-            except json.JSONDecodeError:
-                return self._send(
-                    400,
-                    json.dumps({"error": "Invalid JSON"}),
-                    "application/json; charset=utf-8",
-                )
+            payload = self._read_json_body()
+            if payload is None:
+                return
 
             query = payload.get("query", "")
             model = payload.get("model", "qwen2.5:14b")
@@ -2515,16 +2652,9 @@ class Handler(BaseHTTPRequestHandler):
                 )
 
         if self.path == "/api/pdf/brief":
-            length = int(self.headers.get("Content-Length", "0"))
-            data = self.rfile.read(length) if length > 0 else b"{}"
-            try:
-                payload = json.loads(data.decode("utf-8"))
-            except json.JSONDecodeError:
-                return self._send(
-                    400,
-                    json.dumps({"error": "Invalid JSON"}),
-                    "application/json; charset=utf-8",
-                )
+            payload = self._read_json_body()
+            if payload is None:
+                return
 
             query = payload.get("query", "")
             model = payload.get("model", "qwen2.5:14b")
@@ -2574,16 +2704,9 @@ class Handler(BaseHTTPRequestHandler):
                 )
 
         if self.path == "/api/stash":
-            length = int(self.headers.get("Content-Length", "0"))
-            data = self.rfile.read(length) if length > 0 else b"{}"
-            try:
-                payload = json.loads(data.decode("utf-8"))
-            except json.JSONDecodeError:
-                return self._send(
-                    400,
-                    json.dumps({"error": "Invalid JSON"}),
-                    "application/json; charset=utf-8",
-                )
+            payload = self._read_json_body()
+            if payload is None:
+                return
 
             text = payload.get("text", "")
             if not isinstance(text, str) or not text.strip():
@@ -2623,6 +2746,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         parsed_url = urlparse(self.path)
         route_path = parsed_url.path
+
+        if not self._require_api_auth_for_route(route_path):
+            return
 
         if route_path == "/api/history":
             save_history([])
@@ -2668,7 +2794,7 @@ class Handler(BaseHTTPRequestHandler):
                     "application/json; charset=utf-8",
                 )
 
-            return self._send(404, "Not found")
+        return self._send(404, "Not found")
 
     def _proxy(self, method, path, data):
         req = Request(
@@ -2689,6 +2815,13 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    is_loopback = HOST in {"127.0.0.1", "localhost", "::1"}
+    if not is_loopback and not ALLOW_INSECURE_BIND and not API_KEY:
+        raise SystemExit(
+            "Refusing non-loopback bind without auth. Set OLLAMA_WEB_API_KEY or "
+            "OLLAMA_WEB_ALLOW_INSECURE_BIND=1 to override."
+        )
+
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Serving UI at http://{HOST}:{PORT} (proxying {OLLAMA_BASE})")
     server.serve_forever()

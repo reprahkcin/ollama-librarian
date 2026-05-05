@@ -30,8 +30,8 @@ function Test-Http($Url) {
 
 if (-not (Test-Http 'http://127.0.0.1:11434/api/tags')) {
   Write-Host 'Starting Ollama...'
-  $ollamaCmd = 'set OLLAMA_HOST=127.0.0.1:11434&& ollama serve'
-  $ollamaProc = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', $ollamaCmd -WindowStyle Hidden -PassThru
+  $env:OLLAMA_HOST = '127.0.0.1:11434'
+  $ollamaProc = Start-Process -FilePath 'ollama' -ArgumentList @('serve') -WindowStyle Hidden -PassThru
   $ollamaProc.Id | Out-File -FilePath $OllamaPidFile -Encoding ascii -Force
 }
 
@@ -46,21 +46,19 @@ if (-not (Test-Http 'http://127.0.0.1:11434/api/tags')) {
 if (-not (Test-Http 'http://127.0.0.1:8088/api/pdf/status')) {
   Write-Host 'Starting web app...'
   $webScript = Join-Path $RepoDir 'scripts\ollama-web-chat.py'
-  $webCmd = @(
-    'set OLLAMA_WEB_HOST=127.0.0.1',
-    'set OLLAMA_WEB_PORT=8088',
-    'set OLLAMA_BASE_URL=http://127.0.0.1:11434',
-    ('set OLLAMA_WEB_PDF_SOURCE=' + $LibraryDir),
-    ('set OLLAMA_WEB_PDF_INDEX_DB=' + (Join-Path $StateDir 'pdf-rag.sqlite')),
-    ('set OLLAMA_WEB_HISTORY_PATH=' + (Join-Path $StateDir 'ollama-web-chat-history.json')),
-    ('set OLLAMA_WEB_STASH_PATH=' + (Join-Path $StateDir 'ollama-response-stash.json')),
-    'set OLLAMA_WEB_PDF_OCR_ON_SYNC=1',
-    'set OLLAMA_WEB_PDF_OCR_LANG=eng',
-    'set OLLAMA_WEB_PDF_OCR_JOBS=4',
-    'set OLLAMA_WEB_PDF_OCR_TIMEOUT=3600',
-    ('"' + $PythonBin + '" "' + $webScript + '"')
-  ) -join '&& '
-  $webProc = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', $webCmd -WindowStyle Hidden -PassThru
+  $env:OLLAMA_WEB_HOST = '127.0.0.1'
+  $env:OLLAMA_WEB_PORT = '8088'
+  $env:OLLAMA_BASE_URL = 'http://127.0.0.1:11434'
+  $env:OLLAMA_WEB_PDF_SOURCE = $LibraryDir
+  $env:OLLAMA_WEB_PDF_INDEX_DB = Join-Path $StateDir 'pdf-rag.sqlite'
+  $env:OLLAMA_WEB_HISTORY_PATH = Join-Path $StateDir 'ollama-web-chat-history.json'
+  $env:OLLAMA_WEB_STASH_PATH = Join-Path $StateDir 'ollama-response-stash.json'
+  $env:OLLAMA_WEB_PDF_OCR_ON_SYNC = '1'
+  $env:OLLAMA_WEB_PDF_OCR_LANG = 'eng'
+  $env:OLLAMA_WEB_PDF_OCR_JOBS = '4'
+  $env:OLLAMA_WEB_PDF_OCR_TIMEOUT = '3600'
+
+  $webProc = Start-Process -FilePath $PythonBin -ArgumentList @($webScript) -WindowStyle Hidden -PassThru
   $webProc.Id | Out-File -FilePath $WebPidFile -Encoding ascii -Force
 }
 

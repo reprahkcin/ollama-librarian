@@ -796,7 +796,7 @@ def build_parser():
     )
     parser.add_argument(
         "--ollama-base",
-        default="http://10.0.0.18:11434",
+        default="http://127.0.0.1:11434",
         help="Ollama base URL",
     )
     parser.add_argument(

@@ -7,6 +7,7 @@ Local-first document Q&A stack using Ollama, a Python web UI, and a local retrie
 - Web interface: `scripts/ollama-web-chat.py`
 - Indexer/CLI: `scripts/pdf_library_rag.py`
 - Python deps: `scripts/pdf-rag-requirements.txt`
+- Vendored frontend math assets (offline): `scripts/assets/katex/*`
 - Setup guides:
   - `Setup Guides/MAC-SETUP.md`
   - `Setup Guides/WINDOWS-SETUP.md`
@@ -41,6 +42,36 @@ For non-technical users, use:
 
 - OCR fallback applies to PDFs.
 - The web UI requires Python 3.10+.
+- Math rendering is fully offline via vendored KaTeX files served from `/assets`.
+
+## Security Defaults
+
+- Web UI binds to localhost by default (`127.0.0.1`).
+- API routes support optional API-key auth with header `X-API-Key` (or `Authorization: Bearer <key>`).
+- Request body size is capped by default (1 MB) for POST endpoints.
+- The server includes baseline hardening headers (CSP, frame deny, no-sniff, no-referrer).
+
+## Runtime Environment Variables
+
+Core network/auth:
+
+- `OLLAMA_WEB_HOST` (default: `127.0.0.1`)
+- `OLLAMA_WEB_PORT` (default: `8088`)
+- `OLLAMA_BASE_URL` (default: `http://127.0.0.1:11434`)
+- `OLLAMA_WEB_API_KEY` (default: empty)
+- `OLLAMA_WEB_ALLOW_INSECURE_BIND` (default: off)
+- `OLLAMA_WEB_MAX_BODY_BYTES` (default: `1048576`)
+
+Content/index paths and OCR:
+
+- `OLLAMA_WEB_PDF_SOURCE`
+- `OLLAMA_WEB_PDF_INDEX_DB`
+- `OLLAMA_WEB_HISTORY_PATH`
+- `OLLAMA_WEB_STASH_PATH`
+- `OLLAMA_WEB_PDF_OCR_ON_SYNC`
+- `OLLAMA_WEB_PDF_OCR_LANG`
+- `OLLAMA_WEB_PDF_OCR_JOBS`
+- `OLLAMA_WEB_PDF_OCR_TIMEOUT`
 
 ## On/Off Controls
 
