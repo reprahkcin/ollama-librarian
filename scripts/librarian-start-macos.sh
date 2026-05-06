@@ -40,6 +40,10 @@ http_ok() {
   curl -fsS "$url" >/dev/null 2>&1
 }
 
+web_ok() {
+  http_ok "http://${WEB_HOST}:${WEB_PORT}/api/pdf/status" || http_ok "http://127.0.0.1:${WEB_PORT}/api/pdf/status"
+}
+
 if http_ok "http://127.0.0.1:11434/api/tags"; then
   echo "Ollama already running."
 else
@@ -59,7 +63,7 @@ if ! http_ok "http://127.0.0.1:11434/api/tags"; then
   exit 1
 fi
 
-if http_ok "http://127.0.0.1:${WEB_PORT}/api/pdf/status"; then
+if web_ok; then
   echo "Web app already running."
 else
   echo "Starting web app..."
@@ -81,13 +85,13 @@ else
 fi
 
 for _ in {1..30}; do
-  if http_ok "http://127.0.0.1:${WEB_PORT}/api/pdf/status"; then
+  if web_ok; then
     break
   fi
   sleep 1
 done
 
-if http_ok "http://127.0.0.1:${WEB_PORT}/api/pdf/status"; then
+if web_ok; then
   echo "Librarian is running at http://${WEB_HOST}:${WEB_PORT}"
 else
   echo "Web app did not become ready. Check $LOG_DIR/web.log"

@@ -234,9 +234,10 @@ def extract_document_metadata(doc_path: Path) -> dict:
         return extract_pdf_document_metadata(doc_path)
     if suffix == ".epub":
         return extract_epub_document_metadata(doc_path)
+    inferred_author, _ = infer_author_and_title_from_path(doc_path)
     return {
         "title": title_from_path(doc_path),
-        "authors": [infer_author_and_title_from_path(doc_path)[0]] if infer_author_and_title_from_path(doc_path)[0] else [],
+        "authors": [inferred_author] if inferred_author else [],
         "year": extract_year(doc_path.stem),
     }
 
