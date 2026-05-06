@@ -95,3 +95,14 @@ Windows (PowerShell):
 - Status: `scripts/librarian-status-windows.ps1`
 - Open UI: `scripts/librarian-open-ui-windows.ps1`
 - Auto-start at login (optional): `scripts/librarian-install-login-windows.ps1`
+
+## Licenses and Third-Party Notices
+
+- Third-party notices: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+- Vendored KaTeX MIT license text: [scripts/assets/katex/LICENSE](scripts/assets/katex/LICENSE)
+
+Model and runtime compliance notes:
+
+- This repository does not ship Qwen model weights; models are pulled by users at runtime through Ollama.
+- You are responsible for using only models whose licenses and usage terms fit your use case (including commercial, research, and redistribution constraints).
+- Before sharing outputs or derived artifacts, verify the model-specific terms from the source model page.
