@@ -51,6 +51,11 @@ For non-technical users, use:
 - Request body size is capped by default (1 MB) for POST endpoints.
 - The server includes baseline hardening headers (CSP, frame deny, no-sniff, no-referrer).
 
+Standard install target:
+
+- Single-machine local use only (`127.0.0.1`).
+- LAN exposure is not part of normal setup and should be treated as an advanced, explicit opt-in exception.
+
 ## Runtime Environment Variables
 
 Core network/auth:

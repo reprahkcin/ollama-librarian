@@ -996,6 +996,11 @@ HTML = """<!doctype html>
       font-size: 0.86rem;
       line-height: 1.4;
       white-space: pre-wrap;
+    #pdfStatus {
+      white-space: pre-line;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
       max-height: 13rem;
       overflow: auto;
     }
@@ -2776,6 +2781,19 @@ HTML = """<!doctype html>
       return d.toLocaleString();
     }
 
+    function summarizeIndexError(rawError) {
+      if (!rawError) return '';
+      const text = String(rawError).replace(/\\r/g, '');
+      const lines = text.split('\\n').map((line) => line.trim()).filter(Boolean);
+      let best = lines.length ? lines[lines.length - 1] : text.trim();
+      if (!best || /^traceback/i.test(best)) {
+        const fallback = lines.find((line) => !/^traceback/i.test(line));
+        best = fallback || 'Indexing failed (see logs)';
+      }
+      if (best.length > 180) best = `${best.slice(0, 177)}...`;
+      return best;
+    }
+
     async function refreshPdfStatus() {
       try {
         const res = await fetch('/api/pdf/status');
@@ -2824,7 +2842,8 @@ HTML = """<!doctype html>
           syncSnapshot = null;
           pdfProgressEl.classList.add('hidden');
           pdfProgressBarEl.style.width = '0%';
-          const statusTail = job.last_error ? `\nLast error: ${job.last_error}` : '';
+          const compactError = summarizeIndexError(job.last_error);
+          const statusTail = compactError ? `\nLast error: ${compactError}` : '';
           pdfStatusEl.textContent = `PDF index: ${running}\nDocs: ${docs} | Chunks: ${chunks}\nLast indexed: ${idx}${statusTail}`;
         }
       } catch (err) {
@@ -3240,6 +3259,67 @@ class Handler(BaseHTTPRequestHandler):
         )
         return False
 
+    def _expected_origin(self):
+        host = (self.headers.get("Host") or "").strip()
+        if not host:
+            return None
+        return f"http://{host}"
+
+    def _require_same_origin_for_state_change(self, route_path):
+        if not route_path.startswith("/api/"):
+            return True
+
+        sec_fetch_site = (self.headers.get(
+            "Sec-Fetch-Site") or "").strip().lower()
+        if sec_fetch_site in {"cross-site", "none"}:
+            self._send(
+                403,
+                json.dumps(
+                    {"error": "Cross-site requests are not allowed"}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+            return False
+
+        expected_origin = self._expected_origin()
+        origin = (self.headers.get("Origin") or "").strip()
+        if origin and expected_origin and origin != expected_origin:
+            self._send(
+                403,
+                json.dumps({"error": "Origin not allowed"}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+            return False
+
+        referer = (self.headers.get("Referer") or "").strip()
+        if referer and expected_origin and not referer.startswith(expected_origin + "/"):
+            self._send(
+                403,
+                json.dumps({"error": "Referer not allowed"},
+                           ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+            return False
+
+        return True
+
+    def _send_file(self, file_path, content_type, extra_headers=None):
+        size = os.path.getsize(file_path)
+        self.send_response(200)
+        self._send_security_headers()
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(size))
+        if extra_headers:
+            for k, v in extra_headers.items():
+                self.send_header(k, v)
+        self.end_headers()
+
+        with open(file_path, "rb") as f:
+            while True:
+                chunk = f.read(64 * 1024)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+
     def _read_json_body(self):
         raw_length = self.headers.get("Content-Length", "0")
         try:
@@ -3434,13 +3514,9 @@ class Handler(BaseHTTPRequestHandler):
                     "application/json; charset=utf-8",
                 )
 
-            with open(resolved_path, "rb") as f:
-                payload = f.read()
-
             filename = os.path.basename(resolved_path)
-            return self._send_bytes(
-                200,
-                payload,
+            return self._send_file(
+                resolved_path,
                 "application/pdf",
                 {
                     "Content-Disposition": f'inline; filename="{filename}"',
@@ -3451,10 +3527,16 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, "Not found")
 
     def do_POST(self):
-        if not self._require_api_auth_for_route(self.path):
+        parsed_url = urlparse(self.path)
+        route_path = parsed_url.path
+
+        if not self._require_api_auth_for_route(route_path):
             return
 
-        if self.path == "/api/generate":
+        if not self._require_same_origin_for_state_change(route_path):
+            return
+
+        if route_path == "/api/generate":
             raw_length = self.headers.get("Content-Length", "0")
             try:
                 length = int(raw_length)
@@ -3482,7 +3564,7 @@ class Handler(BaseHTTPRequestHandler):
             data = self.rfile.read(length) if length > 0 else b"{}"
             return self._proxy("POST", "/api/generate", data)
 
-        if self.path == "/api/history":
+        if route_path == "/api/history":
             payload = self._read_json_body()
             if payload is None:
                 return
@@ -3500,7 +3582,7 @@ class Handler(BaseHTTPRequestHandler):
             append_history({"role": role, "text": text, "ts": ts})
             return self._send(200, json.dumps({"ok": True}), "application/json; charset=utf-8")
 
-        if self.path == "/api/instructions":
+        if route_path == "/api/instructions":
             payload = self._read_json_body()
             if payload is None:
                 return
@@ -3516,7 +3598,7 @@ class Handler(BaseHTTPRequestHandler):
             save_instructions(instructions)
             return self._send(200, json.dumps({"ok": True}), "application/json; charset=utf-8")
 
-        if self.path == "/api/pdf/index":
+        if route_path == "/api/pdf/index":
             started = start_pdf_index_job()
             return self._send(
                 200,
@@ -3525,14 +3607,18 @@ class Handler(BaseHTTPRequestHandler):
                 "application/json; charset=utf-8",
             )
 
-        if self.path == "/api/pdf/ask":
+        if route_path == "/api/pdf/ask":
             payload = self._read_json_body()
             if payload is None:
                 return
 
             query = payload.get("query", "")
             model = payload.get("model", "qwen2.5:14b")
-            top_k = int(payload.get("top_k", PDF_TOP_K))
+            try:
+                top_k = int(payload.get("top_k", PDF_TOP_K))
+            except Exception:
+                top_k = PDF_TOP_K
+            top_k = max(1, min(100, top_k))
             deepen = bool(payload.get("deepen", False))
             include_paths = payload.get("include_paths", [])
             exclude_paths = payload.get("exclude_paths", [])
@@ -3571,14 +3657,18 @@ class Handler(BaseHTTPRequestHandler):
                     "application/json; charset=utf-8",
                 )
 
-        if self.path == "/api/pdf/brief":
+        if route_path == "/api/pdf/brief":
             payload = self._read_json_body()
             if payload is None:
                 return
 
             query = payload.get("query", "")
             model = payload.get("model", "qwen2.5:14b")
-            top_k = int(payload.get("top_k", 14))
+            try:
+                top_k = int(payload.get("top_k", 14))
+            except Exception:
+                top_k = 14
+            top_k = max(1, min(100, top_k))
             include_paths = payload.get("include_paths", [])
             exclude_paths = payload.get("exclude_paths", [])
             if not isinstance(include_paths, list):
@@ -3623,7 +3713,7 @@ class Handler(BaseHTTPRequestHandler):
                     "application/json; charset=utf-8",
                 )
 
-        if self.path == "/api/stash":
+        if route_path == "/api/stash":
             payload = self._read_json_body()
             if payload is None:
                 return
@@ -3668,6 +3758,9 @@ class Handler(BaseHTTPRequestHandler):
         route_path = parsed_url.path
 
         if not self._require_api_auth_for_route(route_path):
+            return
+
+        if not self._require_same_origin_for_state_change(route_path):
             return
 
         if route_path == "/api/history":
