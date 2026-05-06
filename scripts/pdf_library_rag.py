@@ -6,6 +6,7 @@ from html.parser import HTMLParser
 import json
 import math
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -26,6 +27,218 @@ except Exception:
 
 
 SUPPORTED_DOC_EXTENSIONS = {".pdf", ".txt", ".md", ".html", ".htm", ".epub"}
+NOISY_AUTHOR_TOKENS = {
+    "unknown",
+    "author",
+    "pdfdrive",
+    "pdfdrive.com",
+    "www.pdfdrive.com",
+    "z-lib",
+    "z-lib.org",
+    "zlibrary",
+    "z-library",
+}
+
+
+def normalize_text(value: object) -> str:
+    if value is None:
+        return ""
+    text = str(value)
+    text = text.replace("\x00", " ")
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def clean_title_candidate(value: object) -> str:
+    text = normalize_text(value)
+    if not text:
+        return ""
+
+    text = text.replace("_", " ")
+    text = text.replace("–", "-").replace("—", "-")
+    text = re.sub(r"(?i)\\b(?:www\\.)?pdfdrive(?:\\.com)?\\b", " ", text)
+    text = re.sub(
+        r"(?i)\\b(?:z[- ]?library|z-lib\\.org|libgen(?:\\.[a-z]+)?)\\b", " ", text)
+    text = re.sub(r"\\s*\\(\\s*pdf\\s*\\)\\s*", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"^\\s*[_\\-]+", "", text)
+    text = re.sub(r"^\\s*\\d+(?:\\.\\d+)*(?:\\)|\\.|:|-)?\\s+", "", text)
+    text = re.sub(r"\\s+-\\s+pdf\\s*(?:drive(?:\\.com)?)?\\s*$",
+                  "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\\s+", " ", text)
+    return text.strip(" -_.")
+
+
+def looks_like_author_name(value: str) -> bool:
+    text = normalize_text(value)
+    if not text:
+        return False
+    if re.search(r"\\d", text):
+        return False
+    words = text.replace(",", " ").split()
+    if len(words) < 1 or len(words) > 6:
+        return False
+    return True
+
+
+def infer_author_and_title_from_path(doc_path: Path) -> tuple[str, str]:
+    stem = clean_title_candidate(doc_path.stem)
+    if not stem:
+        return "", "Untitled document"
+
+    by_match = re.match(r"^(.+?)\\s+by\\s+(.+)$", stem, flags=re.IGNORECASE)
+    if by_match:
+        title_guess = clean_title_candidate(by_match.group(1))
+        author_guess = normalize_text(
+            by_match.group(2)).removeprefix("by ").strip()
+        if title_guess and looks_like_author_name(author_guess):
+            return author_guess, title_guess
+
+    parts = re.split(r"\\s+-\\s+", stem, maxsplit=1)
+    if len(parts) == 2:
+        left, right = clean_title_candidate(
+            parts[0]), clean_title_candidate(parts[1])
+        if left and right and looks_like_author_name(left):
+            return left, right
+
+    return "", stem
+
+
+def title_from_path(doc_path: Path) -> str:
+    _, inferred_title = infer_author_and_title_from_path(doc_path)
+    return inferred_title or "Untitled document"
+
+
+def split_authors(raw: str) -> list[str]:
+    text = normalize_text(raw)
+    if not text:
+        return []
+    parts = [
+        normalize_text(p) for p in re.split(
+            r"\\s*;\\s*|\\s+\\band\\b\\s+|\\s*&\\s*|\\s*/\\s*",
+            text,
+            flags=re.IGNORECASE,
+        )
+    ]
+    out: list[str] = []
+    seen = set()
+    for part in parts:
+        if not part:
+            continue
+        cleaned = normalize_text(re.sub(r"(?i)^by\\s+", "", part)).strip(" ,;")
+        if not cleaned:
+            continue
+        lowered = cleaned.lower()
+        if lowered in NOISY_AUTHOR_TOKENS:
+            continue
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        out.append(cleaned)
+    return out
+
+
+def extract_year(raw: object) -> str:
+    text = normalize_text(raw)
+    if not text:
+        return ""
+    m = re.search(r"(19|20)\d{2}", text)
+    return m.group(0) if m else ""
+
+
+def extract_pdf_document_metadata(doc_path: Path) -> dict:
+    inferred_author, inferred_title = infer_author_and_title_from_path(
+        doc_path)
+    out = {
+        "title": inferred_title or title_from_path(doc_path),
+        "authors": [inferred_author] if inferred_author else [],
+        "year": "",
+    }
+    try:
+        reader = PdfReader(str(doc_path))
+        meta = reader.metadata
+    except Exception:
+        return out
+
+    if not meta:
+        return out
+
+    title = clean_title_candidate(
+        getattr(meta, "title", None) or meta.get("/Title"))
+    author_raw = normalize_text(
+        getattr(meta, "author", None) or meta.get("/Author"))
+    created = normalize_text(
+        getattr(meta, "creation_date", None) or meta.get("/CreationDate"))
+    modified = normalize_text(
+        getattr(meta, "modification_date", None) or meta.get("/ModDate"))
+
+    if title and len(title) >= 3 and title.lower() not in {"untitled", "document"}:
+        out["title"] = title
+    authors = split_authors(author_raw)
+    if authors:
+        out["authors"] = authors
+    out["year"] = extract_year(created) or extract_year(
+        modified) or extract_year(doc_path.stem)
+    return out
+
+
+def extract_epub_document_metadata(doc_path: Path) -> dict:
+    inferred_author, inferred_title = infer_author_and_title_from_path(
+        doc_path)
+    out = {
+        "title": inferred_title or title_from_path(doc_path),
+        "authors": [inferred_author] if inferred_author else [],
+        "year": "",
+    }
+    if epub is None:
+        return out
+    try:
+        book = epub.read_epub(str(doc_path))
+    except Exception:
+        return out
+
+    try:
+        titles = book.get_metadata("DC", "title")
+        if titles and titles[0] and titles[0][0]:
+            out["title"] = clean_title_candidate(titles[0][0]) or out["title"]
+    except Exception:
+        pass
+
+    try:
+        creators = book.get_metadata("DC", "creator")
+        authors = []
+        for item in creators:
+            if not item:
+                continue
+            authors.extend(split_authors(item[0]))
+        if authors:
+            out["authors"] = authors
+    except Exception:
+        pass
+
+    try:
+        dates = book.get_metadata("DC", "date")
+        if dates and dates[0] and dates[0][0]:
+            out["year"] = extract_year(dates[0][0])
+    except Exception:
+        pass
+
+    if not out.get("year"):
+        out["year"] = extract_year(doc_path.stem)
+
+    return out
+
+
+def extract_document_metadata(doc_path: Path) -> dict:
+    suffix = doc_path.suffix.lower()
+    if suffix == ".pdf":
+        return extract_pdf_document_metadata(doc_path)
+    if suffix == ".epub":
+        return extract_epub_document_metadata(doc_path)
+    return {
+        "title": title_from_path(doc_path),
+        "authors": [infer_author_and_title_from_path(doc_path)[0]] if infer_author_and_title_from_path(doc_path)[0] else [],
+        "year": extract_year(doc_path.stem),
+    }
 
 
 class HTMLTextExtractor(HTMLParser):
@@ -279,7 +492,10 @@ def init_db(conn: sqlite3.Connection) -> None:
             mtime INTEGER NOT NULL,
             indexed_at INTEGER NOT NULL,
             pages_indexed INTEGER NOT NULL,
-            chunks_indexed INTEGER NOT NULL
+            chunks_indexed INTEGER NOT NULL,
+            title TEXT,
+            authors_json TEXT,
+            year TEXT
         )
         """
     )
@@ -298,6 +514,19 @@ def init_db(conn: sqlite3.Connection) -> None:
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(doc_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_docs_path ON documents(path)")
+
+    cols = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(documents)").fetchall()
+        if len(row) > 1
+    }
+    if "title" not in cols:
+        conn.execute("ALTER TABLE documents ADD COLUMN title TEXT")
+    if "authors_json" not in cols:
+        conn.execute("ALTER TABLE documents ADD COLUMN authors_json TEXT")
+    if "year" not in cols:
+        conn.execute("ALTER TABLE documents ADD COLUMN year TEXT")
+
     conn.commit()
 
 
@@ -308,19 +537,26 @@ def upsert_document(
     mtime: int,
     pages_indexed: int,
     chunks_indexed: int,
+    title: str,
+    authors_json: str,
+    year: str,
 ) -> int:
     conn.execute(
         """
-        INSERT INTO documents(path, size, mtime, indexed_at, pages_indexed, chunks_indexed)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO documents(path, size, mtime, indexed_at, pages_indexed, chunks_indexed, title, authors_json, year)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(path) DO UPDATE SET
             size=excluded.size,
             mtime=excluded.mtime,
             indexed_at=excluded.indexed_at,
             pages_indexed=excluded.pages_indexed,
-            chunks_indexed=excluded.chunks_indexed
+            chunks_indexed=excluded.chunks_indexed,
+            title=excluded.title,
+            authors_json=excluded.authors_json,
+            year=excluded.year
         """,
-        (path, size, mtime, now_ts(), pages_indexed, chunks_indexed),
+        (path, size, mtime, now_ts(), pages_indexed,
+         chunks_indexed, title, authors_json, year),
     )
     row = conn.execute(
         "SELECT id FROM documents WHERE path = ?", (path,)).fetchone()
@@ -337,6 +573,107 @@ def get_doc_row(conn: sqlite3.Connection, path: str):
 
 def delete_doc_chunks(conn: sqlite3.Connection, doc_id: int) -> None:
     conn.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))
+
+
+def load_document_metadata_map(conn: sqlite3.Connection, paths: list[str]) -> dict[str, dict]:
+    if not paths:
+        return {}
+    unique_paths = sorted(
+        {str(p) for p in paths if isinstance(p, str) and str(p).strip()})
+    if not unique_paths:
+        return {}
+
+    placeholders = ",".join(["?"] * len(unique_paths))
+    rows = conn.execute(
+        f"SELECT path, title, authors_json, year FROM documents WHERE path IN ({placeholders})",
+        unique_paths,
+    ).fetchall()
+
+    out: dict[str, dict] = {}
+    for path, title, authors_json, year in rows:
+        authors: list[str] = []
+        try:
+            parsed = json.loads(str(authors_json or "[]"))
+            if isinstance(parsed, list):
+                authors = [normalize_text(a)
+                           for a in parsed if normalize_text(a)]
+        except Exception:
+            authors = []
+        out[str(path)] = {
+            "title": normalize_text(title),
+            "authors": authors,
+            "year": extract_year(year),
+        }
+    return out
+
+
+def metadata_sync_command(args) -> int:
+    source = Path(args.source).expanduser()
+    if not source.exists():
+        print(f"Source path does not exist: {source}", file=sys.stderr)
+        return 1
+
+    index_db = Path(args.index_db).expanduser()
+    if not index_db.exists():
+        print(f"Index DB not found: {index_db}", file=sys.stderr)
+        return 1
+
+    conn = sqlite3.connect(str(index_db))
+    init_db(conn)
+
+    docs = discover_source_documents(source)
+    updated = 0
+    skipped_unindexed = 0
+    failed = 0
+
+    for doc_path in docs:
+        rel_or_abs = str(doc_path)
+        existing = get_doc_row(conn, rel_or_abs)
+        if not existing:
+            skipped_unindexed += 1
+            continue
+        try:
+            st = doc_path.stat()
+            metadata = extract_document_metadata(doc_path)
+            conn.execute(
+                """
+                UPDATE documents
+                SET size = ?, mtime = ?, title = ?, authors_json = ?, year = ?
+                WHERE path = ?
+                """,
+                (
+                    int(st.st_size),
+                    int(st.st_mtime),
+                    normalize_text(metadata.get("title")
+                                   ) or title_from_path(doc_path),
+                    json.dumps(metadata.get("authors") or [],
+                               ensure_ascii=True, separators=(",", ":")),
+                    extract_year(metadata.get("year")),
+                    rel_or_abs,
+                ),
+            )
+            updated += 1
+        except Exception as exc:
+            failed += 1
+            print(
+                f"[warn] metadata sync failed for {doc_path}: {exc}", file=sys.stderr)
+
+    conn.commit()
+    payload = {
+        "ok": True,
+        "updated": updated,
+        "skipped_unindexed": skipped_unindexed,
+        "failed": failed,
+        "total_documents": len(docs),
+    }
+    if getattr(args, "json_output", False):
+        print(json.dumps(payload, ensure_ascii=True))
+    else:
+        print(
+            f"Metadata sync complete. updated={updated}, skipped_unindexed={skipped_unindexed}, "
+            f"failed={failed}, total_documents={len(docs)}"
+        )
+    return 0
 
 
 def index_command(args) -> int:
@@ -385,7 +722,23 @@ def index_command(args) -> int:
         mtime = int(st.st_mtime)
 
         existing = get_doc_row(conn, rel_or_abs)
+        metadata = extract_document_metadata(doc_path)
         if existing and (not args.force) and int(existing[1]) == size and int(existing[2]) == mtime:
+            conn.execute(
+                """
+                UPDATE documents
+                SET title = ?, authors_json = ?, year = ?
+                WHERE id = ?
+                """,
+                (
+                    normalize_text(metadata.get("title")
+                                   ) or title_from_path(doc_path),
+                    json.dumps(metadata.get("authors") or [],
+                               ensure_ascii=True, separators=(",", ":")),
+                    extract_year(metadata.get("year")),
+                    int(existing[0]),
+                ),
+            )
             skipped += 1
             continue
 
@@ -437,7 +790,17 @@ def index_command(args) -> int:
                 chunk_count += 1
 
         doc_id = upsert_document(
-            conn, rel_or_abs, size, mtime, len(pages), chunk_count)
+            conn,
+            rel_or_abs,
+            size,
+            mtime,
+            len(pages),
+            chunk_count,
+            normalize_text(metadata.get("title")) or title_from_path(doc_path),
+            json.dumps(metadata.get("authors") or [],
+                       ensure_ascii=True, separators=(",", ":")),
+            extract_year(metadata.get("year")),
+        )
         if chunk_rows:
             conn.executemany(
                 "INSERT INTO chunks(doc_id, page_num, chunk_idx, text, embedding_json) VALUES (?, ?, ?, ?, ?)",
@@ -451,6 +814,7 @@ def index_command(args) -> int:
                 f"[indexed] {doc_path} (units={len(pages)}, chunks={chunk_count})")
 
     removed = 0
+    conn.commit()
     if args.prune:
         rows = conn.execute("SELECT id, path FROM documents").fetchall()
         for doc_id, path in rows:
@@ -631,8 +995,18 @@ def ask_command(args) -> int:
         "Answer:"
     )
     answer = generate_answer(args.ollama_base, args.answer_model, prompt)
+    metadata_map = load_document_metadata_map(
+        conn, [path for _, path, _, _ in top])
     sources = [
-        {"path": path, "page": page, "location": page, "score": score}
+        {
+            "path": path,
+            "page": page,
+            "location": page,
+            "score": score,
+            "title": (metadata_map.get(path) or {}).get("title", ""),
+            "authors": (metadata_map.get(path) or {}).get("authors", []),
+            "year": (metadata_map.get(path) or {}).get("year", ""),
+        }
         for score, path, page, _ in top
     ]
 
@@ -901,6 +1275,18 @@ def build_parser():
     p_verify.add_argument("--fail-on-issues", action="store_true",
                           help="Return exit code 2 when verification finds issues")
 
+    p_meta = sub.add_parser(
+        "metadata-sync",
+        help="Extract and update title/author/year metadata for existing indexed documents",
+    )
+    p_meta.add_argument(
+        "--source",
+        default=resolve_default_pdf_source(),
+        help="Directory containing document library (.pdf, .txt, .md, .html, .htm, .epub)",
+    )
+    p_meta.add_argument("--json-output", action="store_true",
+                        help="Print JSON metadata sync payload")
+
     return parser
 
 
@@ -918,6 +1304,8 @@ def main() -> int:
         return status_command(args)
     if args.cmd == "verify":
         return verify_command(args)
+    if args.cmd == "metadata-sync":
+        return metadata_sync_command(args)
 
     parser.print_help()
     return 1

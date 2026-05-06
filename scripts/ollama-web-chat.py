@@ -279,16 +279,27 @@ def _write_stash_entries_unlocked(entries: list) -> None:
     os.replace(tmp_path, STASH_PATH)
 
 
-def list_stash_entries(limit: int = 200) -> dict:
+def _normalize_entry_type(value) -> str:
+    if not isinstance(value, str):
+        return "response"
+    cleaned = value.strip().lower()
+    return cleaned if cleaned else "response"
+
+
+def list_stash_entries(limit: int = 200, entry_type: str | None = None) -> dict:
     with STASH_LOCK:
         entries = _read_stash_entries_unlocked()
 
     indexed = []
     for idx, entry in enumerate(entries):
-        if isinstance(entry, dict):
-            item = dict(entry)
-            item["stash_id"] = idx
-            indexed.append(item)
+        if not isinstance(entry, dict):
+            continue
+        item = dict(entry)
+        item["entry_type"] = _normalize_entry_type(item.get("entry_type"))
+        item["stash_id"] = idx
+        if entry_type and item["entry_type"] != entry_type:
+            continue
+        indexed.append(item)
 
     indexed.reverse()
     if limit > 0:
@@ -296,7 +307,9 @@ def list_stash_entries(limit: int = 200) -> dict:
 
     return {
         "ok": True,
-        "count": len(entries),
+        "count": len(indexed),
+        "total_count": len(entries),
+        "entry_type": entry_type or "all",
         "stash_path": STASH_PATH,
         "entries": indexed,
     }
@@ -312,10 +325,32 @@ def delete_stash_entry(stash_id: int) -> dict:
         return {"ok": True, "count": len(entries), "stash_path": STASH_PATH}
 
 
-def clear_stash_entries() -> dict:
+def clear_stash_entries(entry_type: str | None = None) -> dict:
     with STASH_LOCK:
-        _write_stash_entries_unlocked([])
-    return {"ok": True, "count": 0, "stash_path": STASH_PATH}
+        entries = _read_stash_entries_unlocked()
+        if not entry_type:
+            _write_stash_entries_unlocked([])
+            return {"ok": True, "count": 0, "stash_path": STASH_PATH, "entry_type": "all"}
+
+        kept = []
+        removed = 0
+        for entry in entries:
+            if not isinstance(entry, dict):
+                kept.append(entry)
+                continue
+            e_type = _normalize_entry_type(entry.get("entry_type"))
+            if e_type == entry_type:
+                removed += 1
+                continue
+            kept.append(entry)
+        _write_stash_entries_unlocked(kept)
+        return {
+            "ok": True,
+            "count": len(kept),
+            "removed": removed,
+            "stash_path": STASH_PATH,
+            "entry_type": entry_type,
+        }
 
 
 def list_library_docs() -> dict:
@@ -715,6 +750,34 @@ HTML = """<!doctype html>
     .stash-btn:hover {
       filter: brightness(0.95);
     }
+    .citation-list {
+      margin-top: 0.5rem;
+      display: grid;
+      gap: 0.35rem;
+    }
+    .citation-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: start;
+      gap: 0.45rem;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      background: #0f172a;
+      padding: 0.35rem 0.45rem;
+    }
+    .citation-text {
+      font-size: 0.82rem;
+      line-height: 1.35;
+      color: var(--ink);
+      word-break: break-word;
+    }
+    .citation-row .stash-btn {
+      margin-right: 0;
+      min-width: 58px;
+      padding: 0.18rem 0.48rem;
+      font-size: 0.69rem;
+      align-self: center;
+    }
     .msg.system {
       align-self: center;
       background: #fff7ed;
@@ -866,13 +929,13 @@ HTML = """<!doctype html>
     }
     .docs-card {
       width: min(980px, 100%);
-      max-height: 88vh;
+      max-height: 92vh;
       overflow: hidden;
       border-radius: 16px;
       border: 1px solid var(--border);
       background: #0b1220;
-      display: grid;
-      grid-template-rows: auto auto auto 1fr;
+      display: flex;
+      flex-direction: column;
     }
     .docs-head {
       display: flex;
@@ -939,9 +1002,10 @@ HTML = """<!doctype html>
       border-bottom: 1px solid var(--border);
       display: grid;
       gap: 0.35rem;
-      max-height: 9.5rem;
+      max-height: clamp(8rem, 22vh, 14rem);
       overflow: auto;
       background: #0a1325;
+      flex: 0 0 auto;
     }
     .docs-group-row {
       display: grid;
@@ -975,6 +1039,8 @@ HTML = """<!doctype html>
       padding: 0.7rem;
       display: grid;
       gap: 0.35rem;
+      flex: 1 1 auto;
+      min-height: 14rem;
     }
     .docs-item {
       display: grid;
@@ -1016,6 +1082,21 @@ HTML = """<!doctype html>
       }
       .chat-head .hint {
         text-align: left;
+      }
+    }
+    @media (max-height: 760px) {
+      .docs-modal {
+        padding: 0.55rem;
+      }
+      .docs-card {
+        max-height: 96vh;
+      }
+      .docs-groups {
+        max-height: clamp(6.5rem, 18vh, 9rem);
+      }
+      .docs-actions button {
+        min-width: 68px;
+        padding: 0.34rem 0.46rem;
       }
     }
     @keyframes rise {
@@ -1060,6 +1141,7 @@ HTML = """<!doctype html>
       <button id="refresh" class="btn-soft" type="button">Refresh Models</button>
       <button id="openLibraryDocs" class="btn-soft" type="button">Library Docs</button>
       <button id="openStash" class="btn-soft" type="button">View Stash</button>
+      <button id="openBibliography" class="btn-soft" type="button">View Bibliography</button>
       <button id="clear" class="btn-soft" type="button">Clear Conversation</button>
     </aside>
 
@@ -1077,6 +1159,7 @@ HTML = """<!doctype html>
           <button id="send" class="btn-primary" type="button">Send</button>
           <button id="cancel" class="btn-soft" type="button" disabled>Cancel</button>
           <button id="studyBrief" class="btn-soft" type="button" title="Creates a structured brief from your PDF library with citations and suggested reading order.">Study Brief</button>
+          <button id="makeBibliography" class="btn-soft" type="button" title="Generates an APA bibliography from the latest PDF-grounded answer and stores it in bibliography stash.">Bibliography</button>
           <div id="meta" class="subtle">Ready</div>
         </div>
       </div>
@@ -1086,7 +1169,7 @@ HTML = """<!doctype html>
   <div id="stashModal" class="stash-modal stash-hidden">
     <div class="stash-card">
       <div class="stash-head">
-        <h3>Stashed Snippets</h3>
+        <h3 id="stashTitle">Stashed Snippets</h3>
         <div class="stash-actions">
           <button id="stashReload" class="btn-soft" type="button">Reload</button>
           <button id="stashClearAll" class="btn-soft" type="button">Clear All</button>
@@ -1111,12 +1194,6 @@ HTML = """<!doctype html>
       </div>
       <div class="docs-filter">
         <input id="docsSearch" type="text" placeholder="Filter by filename or folder..." />
-        <div class="docs-filter-row">
-          <label class="docs-checkrow" for="docsIncludeOnly" title="When enabled, only checked documents are searched. Unchecked docs are ignored.">
-            <input id="docsIncludeOnly" type="checkbox" title="When enabled, only checked documents are searched. Unchecked docs are ignored." />
-            Include-only mode (send only checked docs)
-          </label>
-        </div>
       </div>
       <div id="docsMeta" class="docs-meta">Loading...</div>
       <div id="docsGroups" class="docs-groups"></div>
@@ -1156,12 +1233,14 @@ HTML = """<!doctype html>
     const clearEl = document.getElementById('clear');
     const openLibraryDocsEl = document.getElementById('openLibraryDocs');
     const openStashEl = document.getElementById('openStash');
+    const openBibliographyEl = document.getElementById('openBibliography');
     const instructionsEl = document.getElementById('instructions');
     const saveInstructionsEl = document.getElementById('saveInstructions');
     const usePdfLibraryEl = document.getElementById('usePdfLibrary');
     const deepStudyEl = document.getElementById('deepStudy');
     const syncPdfLibraryEl = document.getElementById('syncPdfLibrary');
     const studyBriefEl = document.getElementById('studyBrief');
+    const makeBibliographyEl = document.getElementById('makeBibliography');
     const pdfStatusEl = document.getElementById('pdfStatus');
     const messagesEl = document.getElementById('messages');
     const statusDotEl = document.getElementById('statusDot');
@@ -1170,6 +1249,7 @@ HTML = """<!doctype html>
     const stashModalEl = document.getElementById('stashModal');
     const stashListEl = document.getElementById('stashList');
     const stashMetaEl = document.getElementById('stashMeta');
+    const stashTitleEl = document.getElementById('stashTitle');
     const stashReloadEl = document.getElementById('stashReload');
     const stashClearAllEl = document.getElementById('stashClearAll');
     const stashCloseEl = document.getElementById('stashClose');
@@ -1182,17 +1262,17 @@ HTML = """<!doctype html>
     const docsSelectNoneEl = document.getElementById('docsSelectNone');
     const docsCloseEl = document.getElementById('docsClose');
     const docsSearchEl = document.getElementById('docsSearch');
-    const docsIncludeOnlyEl = document.getElementById('docsIncludeOnly');
     let lastUserPrompt = '';
     let libraryDocs = [];
     let libraryGroups = [];
     let excludedDocPaths = new Set();
-    let includeOnlyMode = false;
     let activeRequestController = null;
     let pendingPromptText = '';
+    let stashViewMode = 'stash';
+    let lastPdfSources = [];
+    let lastCitationQuery = '';
 
     const DOC_FILTER_STORAGE_KEY = 'ollama_web_excluded_docs_v1';
-    const DOC_FILTER_MODE_STORAGE_KEY = 'ollama_web_doc_filter_mode_v1';
 
     function setStatus(state, text) {
       statusDotEl.classList.remove('ok', 'err');
@@ -1419,15 +1499,25 @@ HTML = """<!doctype html>
       const el = document.createElement('div');
       el.className = `msg ${role}`;
 
-      const textEl = document.createElement('div');
-      textEl.className = role === 'assistant' ? 'msg-text md' : 'msg-text';
-      if (role === 'assistant') {
-        textEl.innerHTML = renderMarkdown(text);
-        renderMathIn(textEl);
-      } else {
-        textEl.textContent = text;
+      const citationOnly = role === 'assistant' && opts.citationOnly === true;
+      if (!citationOnly) {
+        const textEl = document.createElement('div');
+        textEl.className = role === 'assistant' ? 'msg-text md' : 'msg-text';
+        if (role === 'assistant') {
+          textEl.innerHTML = renderMarkdown(text);
+          renderMathIn(textEl);
+        } else {
+          textEl.textContent = text;
+        }
+        el.appendChild(textEl);
       }
-      el.appendChild(textEl);
+
+      if (role === 'assistant' && Array.isArray(opts.citationEntries) && opts.citationEntries.length) {
+        const citationWrap = renderCitationActions(opts.citationEntries, opts.citationQuery || '');
+        if (citationWrap) {
+          el.appendChild(citationWrap);
+        }
+      }
 
       if (role === 'assistant' && showAssistantTools) {
         const tools = document.createElement('div');
@@ -1511,7 +1601,8 @@ HTML = """<!doctype html>
 
     async function addMessageAndStore(role, text) {
       const ts = isoNow();
-      addMessage(role, text);
+      const opts = arguments.length > 2 ? arguments[2] : {};
+      addMessage(role, text, opts);
       try {
         await persistMessage(role, text, ts);
       } catch (_) {
@@ -1569,23 +1660,6 @@ HTML = """<!doctype html>
       }
     }
 
-    function persistDocFilterModeState() {
-      try {
-        localStorage.setItem(DOC_FILTER_MODE_STORAGE_KEY, includeOnlyMode ? 'include-only' : 'exclude-only');
-      } catch (_) {
-        // Ignore storage errors.
-      }
-    }
-
-    function loadDocFilterModeState() {
-      try {
-        const raw = localStorage.getItem(DOC_FILTER_MODE_STORAGE_KEY);
-        return raw === 'include-only';
-      } catch (_) {
-        return false;
-      }
-    }
-
     function getIncludedDocPaths() {
       return libraryDocs
         .filter((doc) => !excludedDocPaths.has(doc.path))
@@ -1596,15 +1670,6 @@ HTML = """<!doctype html>
       return Number(doc && doc.chunks ? doc.chunks : 0) > 0;
     }
 
-    function sanitizeIncludeOnlySelection() {
-      if (!includeOnlyMode) return;
-      for (const doc of libraryDocs) {
-        if (!hasIndexedChunks(doc)) {
-          excludedDocPaths.add(doc.path);
-        }
-      }
-    }
-
     function buildDocSelectionError(filters) {
       if (filters.includedCount <= 0) {
         return 'All documents are excluded. Open Library Docs and include at least one document.';
@@ -1612,7 +1677,7 @@ HTML = """<!doctype html>
       if (filters.includedChunkCount <= 0) {
         const sample = filters.zeroChunkIncluded.slice(0, 3).join(', ');
         const suffix = filters.zeroChunkIncluded.length > 3 ? ', ...' : '';
-        return `Selected document filter has no indexed text chunks (${sample}${suffix}). Include at least one document with chunks > 0, disable Include-only mode, or OCR/re-index that PDF.`;
+        return `Selected document filter has no indexed text chunks (${sample}${suffix}). Include at least one document with chunks > 0 or OCR/re-index that PDF.`;
       }
       return '';
     }
@@ -1624,17 +1689,8 @@ HTML = """<!doctype html>
       const zeroChunkIncluded = includedDocs
         .filter((doc) => !hasIndexedChunks(doc))
         .map((doc) => doc.rel_path || pathBase(doc.path));
-      if (includeOnlyMode) {
-        return {
-          includePaths: included,
-          excludePaths: [],
-          includedCount: included.length,
-          includedChunkCount,
-          zeroChunkIncluded,
-        };
-      }
       return {
-        includePaths: [],
+        includePaths: included,
         excludePaths: Array.from(excludedDocPaths),
         includedCount: included.length,
         includedChunkCount,
@@ -1722,11 +1778,6 @@ HTML = """<!doctype html>
         const noChunks = chunkCount <= 0;
         box.type = 'checkbox';
         box.checked = !excludedDocPaths.has(doc.path);
-        if (includeOnlyMode && noChunks) {
-          box.checked = false;
-          box.disabled = true;
-          box.title = 'No indexed text chunks. Re-index with OCR text extraction, or disable Include-only mode.';
-        }
         box.addEventListener('change', () => {
           if (box.checked) {
             excludedDocPaths.delete(doc.path);
@@ -1767,11 +1818,7 @@ HTML = """<!doctype html>
       const saved = loadDocFilterState();
       const validPaths = new Set(libraryDocs.map((d) => d.path));
       excludedDocPaths = new Set(Array.from(saved).filter((p) => validPaths.has(p)));
-      includeOnlyMode = loadDocFilterModeState();
-      sanitizeIncludeOnlySelection();
-      docsIncludeOnlyEl.checked = includeOnlyMode;
       persistDocFilterState();
-      persistDocFilterModeState();
 
       renderLibraryDocs();
     }
@@ -1802,7 +1849,8 @@ HTML = """<!doctype html>
       const entries = Array.isArray(payload.entries) ? payload.entries : [];
       stashListEl.innerHTML = '';
 
-      stashMetaEl.textContent = `Count: ${payload.count || 0}\nPath: ${payload.stash_path || ''}`;
+      const shownType = payload.entry_type || 'all';
+      stashMetaEl.textContent = `Count: ${payload.count || 0}\nType: ${shownType}\nPath: ${payload.stash_path || ''}`;
 
       if (!entries.length) {
         const empty = document.createElement('div');
@@ -1872,13 +1920,16 @@ HTML = """<!doctype html>
     async function loadStashEntries() {
       stashMetaEl.textContent = 'Loading...';
       stashListEl.innerHTML = '';
-      const res = await fetch('/api/stash?limit=200');
+      const endpoint = stashViewMode === 'bibliography' ? '/api/bibliography?limit=200' : '/api/stash?limit=200';
+      const res = await fetch(endpoint);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       renderStashEntries(data);
     }
 
-    async function openStashModal() {
+    async function openStashModal(mode = 'stash') {
+      stashViewMode = mode === 'bibliography' ? 'bibliography' : 'stash';
+      stashTitleEl.textContent = stashViewMode === 'bibliography' ? 'Bibliography Stash' : 'Stashed Snippets';
       stashModalEl.classList.remove('stash-hidden');
       try {
         await loadStashEntries();
@@ -1901,6 +1952,33 @@ HTML = """<!doctype html>
       return /\.pdf$/i.test(String(p || '').trim());
     }
 
+    function sourceTitleFromPath(p) {
+      const base = pathBase(p || 'document');
+      const noExt = base.replace(/\.[^/.]+$/, '');
+      const normalized = noExt.replace(/[._-]+/g, ' ').replace(/\s+/g, ' ').trim();
+      return normalized || 'Untitled document';
+    }
+
+    function formatApaAuthorList(authors) {
+      if (!Array.isArray(authors)) {
+        return '';
+      }
+      const clean = authors
+        .map((a) => String(a || '').trim())
+        .filter((a) => a.length > 0)
+        .slice(0, 6);
+      if (!clean.length) {
+        return '';
+      }
+      if (clean.length === 1) {
+        return clean[0];
+      }
+      if (clean.length === 2) {
+        return `${clean[0]} & ${clean[1]}`;
+      }
+      return `${clean.slice(0, clean.length - 1).join(', ')}, & ${clean[clean.length - 1]}`;
+    }
+
     function strictEncodeURIComponent(value) {
       return encodeURIComponent(String(value)).replace(/[!'()*]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`);
     }
@@ -1912,20 +1990,154 @@ HTML = """<!doctype html>
       return `${base.slice(0, maxLen - 1)}...`;
     }
 
-    function formatPdfSources(sources) {
-      return sources
-        .slice(0, 8)
-        .map((s) => {
-          const loc = Number(s.page || s.location || 1);
-          const label = `${compactSourceLabel(s.path)} loc.${loc}`;
-          if (!isPdfSourcePath(s.path)) {
-            return `- ${label} (score=${Number(s.score).toFixed(4)})`;
+    function buildApaCitationEntries(sources) {
+      const seen = new Set();
+      const entries = [];
+      for (const s of (Array.isArray(sources) ? sources : []).slice(0, 24)) {
+        const path = String(s.path || '').trim();
+        const loc = Number(s.page || s.location || 1);
+        const key = `${path}#${loc}`;
+        if (!path || seen.has(key)) continue;
+        seen.add(key);
+
+        const title = String(s.title || '').trim() || sourceTitleFromPath(path);
+        const author = formatApaAuthorList(s.authors);
+        const year = String(s.year || '').trim() || 'n.d.';
+        let titlePart = `*${title}*`;
+        let locator = `loc. ${loc}`;
+        if (!isPdfSourcePath(path)) {
+          const citation = author
+            ? `${author}. (${year}). ${titlePart}. (${locator}).`
+            : `${titlePart}. (${year}). (${locator}).`;
+          entries.push({
+            citation,
+            source: {
+              path,
+              page: loc,
+              location: loc,
+              title,
+              authors: Array.isArray(s.authors) ? s.authors : [],
+              year,
+            }
+          });
+          continue;
+        }
+        const encodedPath = strictEncodeURIComponent(path);
+        const openUrl = `/api/pdf/file?path=${encodedPath}#page=${loc}`;
+        titlePart = `*[${title}](${openUrl})*`;
+        locator = `p. ${loc}`;
+        const citation = author
+          ? `${author}. (${year}). ${titlePart}. (${locator}).`
+          : `${titlePart}. (${year}). (${locator}).`;
+        entries.push({
+          citation,
+          source: {
+            path,
+            page: loc,
+            location: loc,
+            title,
+            authors: Array.isArray(s.authors) ? s.authors : [],
+            year,
           }
-          const encodedPath = strictEncodeURIComponent(s.path || '');
-          const openUrl = `/api/pdf/file?path=${encodedPath}#page=${loc}`;
-          return `- [${label}](${openUrl}) (score=${Number(s.score).toFixed(4)})`;
-        })
-        .join(String.fromCharCode(10));
+        });
+      }
+      return entries;
+    }
+
+    function formatApaSources(sources) {
+      return buildApaCitationEntries(sources).map((entry) => `- ${entry.citation}`);
+    }
+
+    function renderCitationActions(citationEntries, queryText = '') {
+      const entries = Array.isArray(citationEntries) ? citationEntries : [];
+      if (!entries.length) {
+        return null;
+      }
+
+      const wrap = document.createElement('div');
+      wrap.className = 'citation-list';
+
+      for (const entry of entries) {
+        const row = document.createElement('div');
+        row.className = 'citation-row';
+
+        const text = document.createElement('div');
+        text.className = 'citation-text md';
+        text.innerHTML = renderInlineMarkdown(String(entry.citation || ''));
+
+        const stashBtn = document.createElement('button');
+        stashBtn.className = 'stash-btn';
+        stashBtn.type = 'button';
+        stashBtn.textContent = 'Add to Bibliography';
+        stashBtn.addEventListener('click', async () => {
+          stashBtn.disabled = true;
+          stashBtn.textContent = 'Adding...';
+          try {
+            const payloadSources = entry.source ? [entry.source] : [];
+            const result = await stashResponse(String(entry.citation || ''), {
+              entry_type: 'bibliography',
+              query: queryText || lastCitationQuery || '',
+              sources: payloadSources,
+            });
+            metaEl.textContent = `Added citation to bibliography (${result.count || '?'})`;
+            stashBtn.textContent = 'Added';
+            setTimeout(() => {
+              stashBtn.textContent = 'Add to Bibliography';
+              stashBtn.disabled = false;
+            }, 1200);
+          } catch (err) {
+            metaEl.textContent = `Citation stash failed: ${err.message}`;
+            stashBtn.textContent = 'Add to Bibliography';
+            stashBtn.disabled = false;
+          }
+        });
+
+        row.appendChild(text);
+        row.appendChild(stashBtn);
+        wrap.appendChild(row);
+      }
+
+      return wrap;
+    }
+
+    function buildBibliographyText(sources, queryText = '') {
+      const apaLines = formatApaSources(sources);
+      if (!apaLines.length) {
+        return '';
+      }
+      const heading = 'References (APA 7):';
+      const topic = queryText ? `\\nQuery: ${queryText}` : '';
+      return `${heading}${topic}\\n\\n${apaLines.join('\\n')}`;
+    }
+
+    async function generateBibliographyFromLatestSources() {
+      if (!Array.isArray(lastPdfSources) || !lastPdfSources.length) {
+        addMessage('system', 'No recent PDF-grounded sources found. Ask with PDF-grounded mode first.');
+        return;
+      }
+
+      const citationEntries = buildApaCitationEntries(lastPdfSources);
+      const bibliographyText = buildBibliographyText(lastPdfSources, lastCitationQuery);
+      if (!bibliographyText) {
+        addMessage('system', 'Could not generate bibliography from current sources.');
+        return;
+      }
+
+      try {
+        await addMessageAndStore('assistant', '', {
+          citationOnly: true,
+          citationEntries,
+          citationQuery: lastCitationQuery,
+        });
+        await stashResponse(bibliographyText, {
+          entry_type: 'bibliography',
+          query: lastCitationQuery,
+          sources: Array.isArray(lastPdfSources) ? lastPdfSources : []
+        });
+        metaEl.textContent = 'Bibliography generated and stashed';
+      } catch (err) {
+        addMessage('system', `Bibliography generation failed: ${err.message}`);
+      }
     }
 
     async function createStudyBrief() {
@@ -1964,15 +2176,17 @@ HTML = """<!doctype html>
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
 
+        const sourceRows = Array.isArray(data.sources) ? data.sources : [];
+        const citationEntries = buildApaCitationEntries(sourceRows);
         let answer = data.answer || '[no brief field]';
-        if (Array.isArray(data.sources) && data.sources.length) {
-          answer += `
 
-Sources:
-${formatPdfSources(data.sources)}`;
-        }
+        lastPdfSources = sourceRows;
+        lastCitationQuery = query;
 
-        await addMessageAndStore('assistant', answer);
+        await addMessageAndStore('assistant', answer, {
+          citationEntries,
+          citationQuery: query,
+        });
         await stashResponse(answer, {
           entry_type: 'study_brief',
           query,
@@ -2156,13 +2370,15 @@ ${formatPdfSources(data.sources)}`;
           if (data.ok === false && data.error) {
             throw new Error(data.error);
           }
+          const sourceRows = Array.isArray(data.sources) ? data.sources : [];
+          const citationEntries = buildApaCitationEntries(sourceRows);
           answer = data.answer || '[no answer field]';
-          if (Array.isArray(data.sources) && data.sources.length) {
-            answer += `
-
-Sources:
-${formatPdfSources(data.sources)}`;
-          }
+          lastPdfSources = sourceRows;
+          lastCitationQuery = prompt;
+          await addMessageAndStore('assistant', answer, {
+            citationEntries,
+            citationQuery: prompt,
+          });
         } else {
           const res = await fetch('/api/generate', {
             method: 'POST',
@@ -2173,9 +2389,8 @@ ${formatPdfSources(data.sources)}`;
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const data = await res.json();
           answer = data.response || '[no response field]';
+          await addMessageAndStore('assistant', answer);
         }
-
-        await addMessageAndStore('assistant', answer);
 
         const elapsedMs = Math.round(performance.now() - start);
         metaEl.textContent = `Model: ${model}${usePdfLibrary ? ' + PDF' : ''} | ${elapsedMs} ms`;
@@ -2203,6 +2418,7 @@ ${formatPdfSources(data.sources)}`;
 
     refreshEl.addEventListener('click', loadModels);
     openLibraryDocsEl.addEventListener('click', openLibraryDocsModal);
+    openBibliographyEl.addEventListener('click', () => openStashModal('bibliography'));
     docsCloseEl.addEventListener('click', closeLibraryDocsModal);
     docsReloadEl.addEventListener('click', async () => {
       try {
@@ -2213,7 +2429,6 @@ ${formatPdfSources(data.sources)}`;
     });
     docsSelectAllEl.addEventListener('click', () => {
       excludedDocPaths = new Set();
-      sanitizeIncludeOnlySelection();
       persistDocFilterState();
       renderLibraryDocs();
     });
@@ -2222,18 +2437,11 @@ ${formatPdfSources(data.sources)}`;
       persistDocFilterState();
       renderLibraryDocs();
     });
-    docsIncludeOnlyEl.addEventListener('change', () => {
-      includeOnlyMode = !!docsIncludeOnlyEl.checked;
-      sanitizeIncludeOnlySelection();
-      persistDocFilterModeState();
-      persistDocFilterState();
-      renderLibraryDocs();
-    });
     docsSearchEl.addEventListener('input', renderLibraryDocs);
     docsModalEl.addEventListener('click', (e) => {
       if (e.target === docsModalEl) closeLibraryDocsModal();
     });
-    openStashEl.addEventListener('click', openStashModal);
+    openStashEl.addEventListener('click', () => openStashModal('stash'));
     stashCloseEl.addEventListener('click', closeStashModal);
     stashReloadEl.addEventListener('click', async () => {
       try {
@@ -2243,13 +2451,15 @@ ${formatPdfSources(data.sources)}`;
       }
     });
     stashClearAllEl.addEventListener('click', async () => {
-      if (!confirm('Delete all stashed snippets?')) return;
+      const clearLabel = stashViewMode === 'bibliography' ? 'all bibliography entries' : 'all stashed snippets';
+      if (!confirm(`Delete ${clearLabel}?`)) return;
       try {
-        const res = await fetch('/api/stash?all=1', { method: 'DELETE' });
+        const clearEndpoint = stashViewMode === 'bibliography' ? '/api/bibliography?all=1' : '/api/stash?all=1';
+        const res = await fetch(clearEndpoint, { method: 'DELETE' });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
         await loadStashEntries();
-        metaEl.textContent = 'Cleared stash';
+        metaEl.textContent = stashViewMode === 'bibliography' ? 'Cleared bibliography stash' : 'Cleared stash';
       } catch (err) {
         stashMetaEl.textContent = `Failed to clear stash: ${err.message}`;
       }
@@ -2260,6 +2470,7 @@ ${formatPdfSources(data.sources)}`;
     saveInstructionsEl.addEventListener('click', saveInstructions);
     syncPdfLibraryEl.addEventListener('click', syncPdfLibrary);
     studyBriefEl.addEventListener('click', createStudyBrief);
+    makeBibliographyEl.addEventListener('click', generateBibliographyFromLatestSources);
     cancelEl.addEventListener('click', cancelPromptRequest);
     clearEl.addEventListener('click', async () => {
       try {
@@ -2459,12 +2670,38 @@ class Handler(BaseHTTPRequestHandler):
         if route_path == "/api/stash":
             params = parse_qs(parsed_url.query)
             limit_raw = params.get("limit", ["200"])[0]
+            raw_entry_type = params.get("entry_type", [""])[0]
+            entry_type = _normalize_entry_type(raw_entry_type) if str(
+                raw_entry_type).strip() else None
             try:
                 limit = int(limit_raw)
             except Exception:
                 limit = 200
             try:
-                payload = list_stash_entries(limit=max(0, limit))
+                payload = list_stash_entries(
+                    limit=max(0, limit), entry_type=entry_type)
+                return self._send(
+                    200,
+                    json.dumps(payload, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+            except Exception as exc:
+                return self._send(
+                    500,
+                    json.dumps({"error": str(exc)}, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+
+        if route_path == "/api/bibliography":
+            params = parse_qs(parsed_url.query)
+            limit_raw = params.get("limit", ["200"])[0]
+            try:
+                limit = int(limit_raw)
+            except Exception:
+                limit = 200
+            try:
+                payload = list_stash_entries(
+                    limit=max(0, limit), entry_type="bibliography")
                 return self._send(
                     200,
                     json.dumps(payload, ensure_ascii=True),
@@ -2756,9 +2993,12 @@ class Handler(BaseHTTPRequestHandler):
 
         if route_path == "/api/stash":
             params = parse_qs(parsed_url.query)
+            raw_entry_type = params.get("entry_type", [""])[0]
+            entry_type = _normalize_entry_type(raw_entry_type) if str(
+                raw_entry_type).strip() else None
             if params.get("all", [""])[0] == "1":
                 try:
-                    result = clear_stash_entries()
+                    result = clear_stash_entries(entry_type=entry_type)
                     return self._send(
                         200,
                         json.dumps(result, ensure_ascii=True),
@@ -2793,6 +3033,30 @@ class Handler(BaseHTTPRequestHandler):
                     json.dumps({"error": str(exc)}, ensure_ascii=True),
                     "application/json; charset=utf-8",
                 )
+
+        if route_path == "/api/bibliography":
+            params = parse_qs(parsed_url.query)
+            if params.get("all", [""])[0] == "1":
+                try:
+                    result = clear_stash_entries(entry_type="bibliography")
+                    return self._send(
+                        200,
+                        json.dumps(result, ensure_ascii=True),
+                        "application/json; charset=utf-8",
+                    )
+                except Exception as exc:
+                    return self._send(
+                        500,
+                        json.dumps({"error": str(exc)}, ensure_ascii=True),
+                        "application/json; charset=utf-8",
+                    )
+
+            return self._send(
+                400,
+                json.dumps(
+                    {"error": "set all=1 to clear bibliography stash"}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
 
         return self._send(404, "Not found")
 
