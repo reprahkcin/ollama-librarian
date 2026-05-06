@@ -7,6 +7,7 @@ Local-first document Q&A stack using Ollama, a Python web UI, and a local retrie
 - Web interface: `scripts/ollama-web-chat.py`
 - Indexer/CLI: `scripts/pdf_library_rag.py`
 - Python deps: `scripts/pdf-rag-requirements.txt`
+- Vendored frontend math assets (offline): `scripts/assets/katex/*`
 - Setup guides:
   - `Setup Guides/MAC-SETUP.md`
   - `Setup Guides/WINDOWS-SETUP.md`
@@ -41,6 +42,41 @@ For non-technical users, use:
 
 - OCR fallback applies to PDFs.
 - The web UI requires Python 3.10+.
+- Math rendering is fully offline via vendored KaTeX files served from `/assets`.
+
+## Security Defaults
+
+- Web UI binds to localhost by default (`127.0.0.1`).
+- API routes support optional API-key auth with header `X-API-Key` (or `Authorization: Bearer <key>`).
+- Request body size is capped by default (1 MB) for POST endpoints.
+- The server includes baseline hardening headers (CSP, frame deny, no-sniff, no-referrer).
+
+Standard install target:
+
+- Single-machine local use only (`127.0.0.1`).
+- LAN exposure is not part of normal setup and should be treated as an advanced, explicit opt-in exception.
+
+## Runtime Environment Variables
+
+Core network/auth:
+
+- `OLLAMA_WEB_HOST` (default: `127.0.0.1`)
+- `OLLAMA_WEB_PORT` (default: `8088`)
+- `OLLAMA_BASE_URL` (default: `http://127.0.0.1:11434`)
+- `OLLAMA_WEB_API_KEY` (default: empty)
+- `OLLAMA_WEB_ALLOW_INSECURE_BIND` (default: off)
+- `OLLAMA_WEB_MAX_BODY_BYTES` (default: `1048576`)
+
+Content/index paths and OCR:
+
+- `OLLAMA_WEB_PDF_SOURCE`
+- `OLLAMA_WEB_PDF_INDEX_DB`
+- `OLLAMA_WEB_HISTORY_PATH`
+- `OLLAMA_WEB_STASH_PATH`
+- `OLLAMA_WEB_PDF_OCR_ON_SYNC`
+- `OLLAMA_WEB_PDF_OCR_LANG`
+- `OLLAMA_WEB_PDF_OCR_JOBS`
+- `OLLAMA_WEB_PDF_OCR_TIMEOUT`
 
 ## On/Off Controls
 
@@ -59,3 +95,14 @@ Windows (PowerShell):
 - Status: `scripts/librarian-status-windows.ps1`
 - Open UI: `scripts/librarian-open-ui-windows.ps1`
 - Auto-start at login (optional): `scripts/librarian-install-login-windows.ps1`
+
+## Licenses and Third-Party Notices
+
+- Third-party notices: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+- Vendored KaTeX MIT license text: [scripts/assets/katex/LICENSE](scripts/assets/katex/LICENSE)
+
+Model and runtime compliance notes:
+
+- This repository does not ship Qwen model weights; models are pulled by users at runtime through Ollama.
+- You are responsible for using only models whose licenses and usage terms fit your use case (including commercial, research, and redistribution constraints).
+- Before sharing outputs or derived artifacts, verify the model-specific terms from the source model page.

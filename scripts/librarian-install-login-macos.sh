@@ -20,6 +20,13 @@ cat >"$PLIST_PATH" <<PLIST
       <string>/bin/bash</string>
       <string>$REPO_DIR/scripts/librarian-start-macos.sh</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>OLLAMA_WEB_HOST</key>
+      <string>127.0.0.1</string>
+      <key>OLLAMA_WEB_ALLOW_INSECURE_BIND</key>
+      <string>0</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
   </dict>

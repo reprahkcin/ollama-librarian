@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import json
+import mimetypes
 import os
 import sqlite3
 import subprocess
@@ -8,14 +9,23 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
-HOST = os.environ.get("OLLAMA_WEB_HOST", "0.0.0.0")
+HOST = os.environ.get("OLLAMA_WEB_HOST", "127.0.0.1")
 PORT = int(os.environ.get("OLLAMA_WEB_PORT", "8088"))
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+API_KEY = os.environ.get("OLLAMA_WEB_API_KEY", "")
+ALLOW_INSECURE_BIND = os.environ.get("OLLAMA_WEB_ALLOW_INSECURE_BIND", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+MAX_BODY_BYTES = max(1024, int(os.environ.get(
+    "OLLAMA_WEB_MAX_BODY_BYTES", "1048576")))
 HISTORY_PATH = os.path.expanduser(
     os.environ.get(
         "OLLAMA_WEB_HISTORY_PATH",
@@ -28,6 +38,7 @@ STASH_LOCK = threading.Lock()
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
+ASSET_ROOT = SCRIPT_DIR / "assets"
 
 
 def resolve_default_pdf_source() -> str:
@@ -268,16 +279,27 @@ def _write_stash_entries_unlocked(entries: list) -> None:
     os.replace(tmp_path, STASH_PATH)
 
 
-def list_stash_entries(limit: int = 200) -> dict:
+def _normalize_entry_type(value) -> str:
+    if not isinstance(value, str):
+        return "response"
+    cleaned = value.strip().lower()
+    return cleaned if cleaned else "response"
+
+
+def list_stash_entries(limit: int = 200, entry_type: str | None = None) -> dict:
     with STASH_LOCK:
         entries = _read_stash_entries_unlocked()
 
     indexed = []
     for idx, entry in enumerate(entries):
-        if isinstance(entry, dict):
-            item = dict(entry)
-            item["stash_id"] = idx
-            indexed.append(item)
+        if not isinstance(entry, dict):
+            continue
+        item = dict(entry)
+        item["entry_type"] = _normalize_entry_type(item.get("entry_type"))
+        item["stash_id"] = idx
+        if entry_type and item["entry_type"] != entry_type:
+            continue
+        indexed.append(item)
 
     indexed.reverse()
     if limit > 0:
@@ -285,7 +307,9 @@ def list_stash_entries(limit: int = 200) -> dict:
 
     return {
         "ok": True,
-        "count": len(entries),
+        "count": len(indexed),
+        "total_count": len(entries),
+        "entry_type": entry_type or "all",
         "stash_path": STASH_PATH,
         "entries": indexed,
     }
@@ -301,10 +325,32 @@ def delete_stash_entry(stash_id: int) -> dict:
         return {"ok": True, "count": len(entries), "stash_path": STASH_PATH}
 
 
-def clear_stash_entries() -> dict:
+def clear_stash_entries(entry_type: str | None = None) -> dict:
     with STASH_LOCK:
-        _write_stash_entries_unlocked([])
-    return {"ok": True, "count": 0, "stash_path": STASH_PATH}
+        entries = _read_stash_entries_unlocked()
+        if not entry_type:
+            _write_stash_entries_unlocked([])
+            return {"ok": True, "count": 0, "stash_path": STASH_PATH, "entry_type": "all"}
+
+        kept = []
+        removed = 0
+        for entry in entries:
+            if not isinstance(entry, dict):
+                kept.append(entry)
+                continue
+            e_type = _normalize_entry_type(entry.get("entry_type"))
+            if e_type == entry_type:
+                removed += 1
+                continue
+            kept.append(entry)
+        _write_stash_entries_unlocked(kept)
+        return {
+            "ok": True,
+            "count": len(kept),
+            "removed": removed,
+            "stash_path": STASH_PATH,
+            "entry_type": entry_type,
+        }
 
 
 def list_library_docs() -> dict:
@@ -321,16 +367,36 @@ def list_library_docs() -> dict:
         conn.close()
 
     source_root = os.path.realpath(os.path.expanduser(PDF_SOURCE))
+    real_paths = [
+        os.path.realpath(os.path.expanduser(str(path)))
+        for path, _, _ in rows
+        if path
+    ]
+
+    fallback_root = ""
+    if real_paths:
+        try:
+            common = os.path.commonpath(real_paths)
+        except ValueError:
+            common = ""
+        if common:
+            fallback_root = common if os.path.isdir(
+                common) else os.path.dirname(common)
+
+    def _rel_for(real_path: str, raw_path: str) -> str:
+        if source_root and real_path.startswith(source_root + os.sep):
+            return os.path.relpath(real_path, source_root)
+        if fallback_root and real_path.startswith(fallback_root + os.sep):
+            return os.path.relpath(real_path, fallback_root)
+        return os.path.basename(raw_path)
+
     docs = []
     groups: dict[str, int] = {}
     for path, pages, chunks in rows:
         path_str = str(path)
         real_path = os.path.realpath(os.path.expanduser(path_str))
 
-        if real_path.startswith(source_root + os.sep):
-            rel = os.path.relpath(real_path, source_root)
-        else:
-            rel = os.path.basename(path_str)
+        rel = _rel_for(real_path, path_str)
 
         top = rel.split(os.sep)[0] if rel else "(unknown)"
         groups[top] = groups.get(top, 0) + 1
@@ -421,19 +487,10 @@ HTML = """<!doctype html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Home LLM Chat</title>
-  <link
-    rel="stylesheet"
-    href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css"
-  />
-  <script
-    defer
-    src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"
-  ></script>
-  <script
-    defer
-    src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
-  ></script>
+  <title>Ollama Librarian</title>
+  <link rel="stylesheet" href="/assets/katex/katex.min.css" />
+  <script defer src="/assets/katex/katex.min.js"></script>
+  <script defer src="/assets/katex/contrib/auto-render.min.js"></script>
   <style>
     :root {
       --bg-a: #111827;
@@ -657,6 +714,33 @@ HTML = """<!doctype html>
       color: #7dd3fc;
       text-decoration: underline;
     }
+    .md .source-line {
+      margin: 0.08rem 0 0.32rem;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.3rem;
+    }
+    .md .source-link,
+    .md .source-link-static,
+    .md .source-inline {
+      display: inline;
+      color: #94a3b8;
+      font-size: 0.68rem;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      text-transform: lowercase;
+      text-decoration: none;
+      cursor: help;
+    }
+    .md .source-link {
+      cursor: pointer;
+    }
+    .md .source-link:hover,
+    .md .source-link-static:hover,
+    .md .source-inline:hover {
+      color: #cbd5e1;
+      text-decoration: underline;
+    }
     .md .math-block {
       margin: 0.45rem 0;
       overflow-x: auto;
@@ -713,6 +797,34 @@ HTML = """<!doctype html>
     .stash-btn:hover {
       filter: brightness(0.95);
     }
+    .citation-list {
+      margin-top: 0.5rem;
+      display: grid;
+      gap: 0.35rem;
+    }
+    .citation-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: start;
+      gap: 0.45rem;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      background: #0f172a;
+      padding: 0.35rem 0.45rem;
+    }
+    .citation-text {
+      font-size: 0.82rem;
+      line-height: 1.35;
+      color: var(--ink);
+      word-break: break-word;
+    }
+    .citation-row .stash-btn {
+      margin-right: 0;
+      min-width: 58px;
+      padding: 0.18rem 0.48rem;
+      font-size: 0.69rem;
+      align-self: center;
+    }
     .msg.system {
       align-self: center;
       background: #fff7ed;
@@ -724,6 +836,55 @@ HTML = """<!doctype html>
       margin-top: 0.7rem;
       display: grid;
       gap: 0.55rem;
+    }
+    .model-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 0.4rem;
+      align-items: center;
+      margin-bottom: 0.25rem;
+    }
+    .btn-mini {
+      min-width: 70px;
+      padding: 0.28rem 0.45rem;
+      font-size: 0.72rem;
+    }
+    .pdf-progress {
+      height: 0.42rem;
+      border-radius: 999px;
+      border: 1px solid #334155;
+      background: #0b1220;
+      overflow: hidden;
+      margin-top: 0.35rem;
+    }
+    .pdf-progress.hidden {
+      display: none;
+    }
+    .pdf-progress-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #0d9488, #22d3ee);
+      transition: width 220ms ease;
+    }
+    .prompt-history-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto auto;
+      gap: 0.4rem;
+      align-items: center;
+    }
+    .prompt-history-row select {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.38rem 0.48rem;
+      background: #111827;
+      color: var(--ink);
+      font-size: 0.76rem;
+    }
+    .prompt-history-row button {
+      min-width: 70px;
+      padding: 0.28rem 0.45rem;
+      font-size: 0.72rem;
     }
     textarea {
       min-height: 92px;
@@ -835,6 +996,11 @@ HTML = """<!doctype html>
       font-size: 0.86rem;
       line-height: 1.4;
       white-space: pre-wrap;
+    #pdfStatus {
+      white-space: pre-line;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
       max-height: 13rem;
       overflow: auto;
     }
@@ -864,13 +1030,13 @@ HTML = """<!doctype html>
     }
     .docs-card {
       width: min(980px, 100%);
-      max-height: 88vh;
+      max-height: 92vh;
       overflow: hidden;
       border-radius: 16px;
       border: 1px solid var(--border);
       background: #0b1220;
-      display: grid;
-      grid-template-rows: auto auto auto 1fr;
+      display: flex;
+      flex-direction: column;
     }
     .docs-head {
       display: flex;
@@ -937,9 +1103,10 @@ HTML = """<!doctype html>
       border-bottom: 1px solid var(--border);
       display: grid;
       gap: 0.35rem;
-      max-height: 9.5rem;
+      max-height: clamp(8rem, 22vh, 14rem);
       overflow: auto;
       background: #0a1325;
+      flex: 0 0 auto;
     }
     .docs-group-row {
       display: grid;
@@ -948,6 +1115,14 @@ HTML = """<!doctype html>
       gap: 0.45rem;
       font-size: 0.75rem;
       color: var(--muted);
+    }
+    .docs-group-root {
+      color: #cbd5e1;
+      font-weight: 600;
+    }
+    .docs-group-child .docs-group-label {
+      padding-left: 1rem;
+      color: #9ca3af;
     }
     .docs-group-label {
       white-space: nowrap;
@@ -973,6 +1148,8 @@ HTML = """<!doctype html>
       padding: 0.7rem;
       display: grid;
       gap: 0.35rem;
+      flex: 1 1 auto;
+      min-height: 14rem;
     }
     .docs-item {
       display: grid;
@@ -1016,6 +1193,21 @@ HTML = """<!doctype html>
         text-align: left;
       }
     }
+    @media (max-height: 760px) {
+      .docs-modal {
+        padding: 0.55rem;
+      }
+      .docs-card {
+        max-height: 96vh;
+      }
+      .docs-groups {
+        max-height: clamp(6.5rem, 18vh, 9rem);
+      }
+      .docs-actions button {
+        min-width: 68px;
+        padding: 0.34rem 0.46rem;
+      }
+    }
     @keyframes rise {
       from { opacity: 0; transform: translateY(4px); }
       to { opacity: 1; transform: translateY(0); }
@@ -1029,7 +1221,7 @@ HTML = """<!doctype html>
 <body>
   <main class="shell">
     <aside class="panel sidebar">
-      <h1 class="title">Home LLM Console</h1>
+      <h1 class="title">Ollama Librarian</h1>
       <div class="meta">Endpoint: %OLLAMA_BASE%</div>
       <div id="status" class="status">
         <span id="statusDot" class="dot"></span>
@@ -1037,7 +1229,10 @@ HTML = """<!doctype html>
       </div>
 
       <label for="model">Model</label>
-      <select id="model"></select>
+      <div class="model-row">
+        <select id="model"></select>
+        <button id="refresh" class="btn-soft btn-mini" type="button">Refresh</button>
+      </div>
 
       <label for="instructions">Running Instructions</label>
       <textarea id="instructions" placeholder="Example: Be concise. Use bullet points. Ask clarifying questions if uncertain."></textarea>
@@ -1045,7 +1240,7 @@ HTML = """<!doctype html>
 
       <label>PDF Library</label>
       <label class="checkrow" for="usePdfLibrary" title="Use retrieval from your indexed PDF library instead of plain model-only responses.">
-        <input id="usePdfLibrary" type="checkbox" title="Use retrieval from your indexed PDF library instead of plain model-only responses." />
+        <input id="usePdfLibrary" type="checkbox" checked title="Use retrieval from your indexed PDF library instead of plain model-only responses." />
         Use PDF-grounded answers
       </label>
       <label class="checkrow" for="deepStudy" title="Expands retrieval depth and context for more thorough, citation-heavy answers. Slower but usually more complete.">
@@ -1054,10 +1249,11 @@ HTML = """<!doctype html>
       </label>
       <button id="syncPdfLibrary" class="btn-soft" type="button" title="Indexes new or changed PDFs. OCR fallback is used for scanned/text-only images when available.">Sync New PDFs</button>
       <div id="pdfStatus" class="tiny">PDF index: checking...</div>
+      <div id="pdfProgress" class="pdf-progress hidden"><div id="pdfProgressBar" class="pdf-progress-bar"></div></div>
 
-      <button id="refresh" class="btn-soft" type="button">Refresh Models</button>
       <button id="openLibraryDocs" class="btn-soft" type="button">Library Docs</button>
       <button id="openStash" class="btn-soft" type="button">View Stash</button>
+      <button id="openBibliography" class="btn-soft" type="button">View Bibliography</button>
       <button id="clear" class="btn-soft" type="button">Clear Conversation</button>
     </aside>
 
@@ -1071,10 +1267,19 @@ HTML = """<!doctype html>
 
       <div class="composer">
         <textarea id="prompt" placeholder="Ask the model something useful..."></textarea>
+        <div class="prompt-history-row">
+          <select id="promptHistorySelect" title="Select a previous prompt">
+            <option value="">Previous prompts...</option>
+          </select>
+          <button id="promptUseSelected" class="btn-soft" type="button" title="Ask using the selected prompt">Ask</button>
+          <button id="promptPinSelected" class="btn-soft" type="button" title="Pin or unpin the selected prompt">Pin</button>
+          <button id="promptClearHistory" class="btn-soft" type="button" title="Clear unpinned prompt history">Clear</button>
+        </div>
         <div class="composer-row">
           <button id="send" class="btn-primary" type="button">Send</button>
           <button id="cancel" class="btn-soft" type="button" disabled>Cancel</button>
           <button id="studyBrief" class="btn-soft" type="button" title="Creates a structured brief from your PDF library with citations and suggested reading order.">Study Brief</button>
+          <button id="makeBibliography" class="btn-soft" type="button" title="Generates an APA bibliography from the latest PDF-grounded answer and opens bibliography stash.">Generate Bibliography</button>
           <div id="meta" class="subtle">Ready</div>
         </div>
       </div>
@@ -1084,7 +1289,7 @@ HTML = """<!doctype html>
   <div id="stashModal" class="stash-modal stash-hidden">
     <div class="stash-card">
       <div class="stash-head">
-        <h3>Stashed Snippets</h3>
+        <h3 id="stashTitle">Stashed Snippets</h3>
         <div class="stash-actions">
           <button id="stashReload" class="btn-soft" type="button">Reload</button>
           <button id="stashClearAll" class="btn-soft" type="button">Clear All</button>
@@ -1109,12 +1314,6 @@ HTML = """<!doctype html>
       </div>
       <div class="docs-filter">
         <input id="docsSearch" type="text" placeholder="Filter by filename or folder..." />
-        <div class="docs-filter-row">
-          <label class="docs-checkrow" for="docsIncludeOnly" title="When enabled, only checked documents are searched. Unchecked docs are ignored.">
-            <input id="docsIncludeOnly" type="checkbox" title="When enabled, only checked documents are searched. Unchecked docs are ignored." />
-            Include-only mode (send only checked docs)
-          </label>
-        </div>
       </div>
       <div id="docsMeta" class="docs-meta">Loading...</div>
       <div id="docsGroups" class="docs-groups"></div>
@@ -1123,6 +1322,29 @@ HTML = """<!doctype html>
   </div>
 
   <script>
+    const API_KEY_REQUIRED = %API_KEY_REQUIRED%;
+    const API_KEY_STORAGE_KEY = 'ollama_web_api_key_v1';
+    let apiKey = localStorage.getItem(API_KEY_STORAGE_KEY) || '';
+
+    if (API_KEY_REQUIRED && !apiKey) {
+      const entered = window.prompt('Enter API key for Ollama Librarian');
+      if (typeof entered === 'string' && entered.trim()) {
+        apiKey = entered.trim();
+        localStorage.setItem(API_KEY_STORAGE_KEY, apiKey);
+      }
+    }
+
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = (input, init = {}) => {
+      const reqInit = Object.assign({}, init);
+      const headers = new Headers(init.headers || {});
+      if (apiKey) {
+        headers.set('X-API-Key', apiKey);
+      }
+      reqInit.headers = headers;
+      return nativeFetch(input, reqInit);
+    };
+
     const modelEl = document.getElementById('model');
     const promptEl = document.getElementById('prompt');
     const sendEl = document.getElementById('send');
@@ -1131,12 +1353,20 @@ HTML = """<!doctype html>
     const clearEl = document.getElementById('clear');
     const openLibraryDocsEl = document.getElementById('openLibraryDocs');
     const openStashEl = document.getElementById('openStash');
+    const openBibliographyEl = document.getElementById('openBibliography');
     const instructionsEl = document.getElementById('instructions');
     const saveInstructionsEl = document.getElementById('saveInstructions');
     const usePdfLibraryEl = document.getElementById('usePdfLibrary');
     const deepStudyEl = document.getElementById('deepStudy');
     const syncPdfLibraryEl = document.getElementById('syncPdfLibrary');
+    const pdfProgressEl = document.getElementById('pdfProgress');
+    const pdfProgressBarEl = document.getElementById('pdfProgressBar');
     const studyBriefEl = document.getElementById('studyBrief');
+    const makeBibliographyEl = document.getElementById('makeBibliography');
+    const promptHistorySelectEl = document.getElementById('promptHistorySelect');
+    const promptUseSelectedEl = document.getElementById('promptUseSelected');
+    const promptPinSelectedEl = document.getElementById('promptPinSelected');
+    const promptClearHistoryEl = document.getElementById('promptClearHistory');
     const pdfStatusEl = document.getElementById('pdfStatus');
     const messagesEl = document.getElementById('messages');
     const statusDotEl = document.getElementById('statusDot');
@@ -1145,6 +1375,7 @@ HTML = """<!doctype html>
     const stashModalEl = document.getElementById('stashModal');
     const stashListEl = document.getElementById('stashList');
     const stashMetaEl = document.getElementById('stashMeta');
+    const stashTitleEl = document.getElementById('stashTitle');
     const stashReloadEl = document.getElementById('stashReload');
     const stashClearAllEl = document.getElementById('stashClearAll');
     const stashCloseEl = document.getElementById('stashClose');
@@ -1157,17 +1388,211 @@ HTML = """<!doctype html>
     const docsSelectNoneEl = document.getElementById('docsSelectNone');
     const docsCloseEl = document.getElementById('docsClose');
     const docsSearchEl = document.getElementById('docsSearch');
-    const docsIncludeOnlyEl = document.getElementById('docsIncludeOnly');
     let lastUserPrompt = '';
     let libraryDocs = [];
     let libraryGroups = [];
     let excludedDocPaths = new Set();
-    let includeOnlyMode = false;
     let activeRequestController = null;
     let pendingPromptText = '';
+    let stashViewMode = 'stash';
+    let lastPdfSources = [];
+    let lastCitationQuery = '';
+    let promptHistory = [];
+    let promptHistoryIndex = -1;
+    let pinnedPrompts = [];
+    let syncSnapshot = null;
 
     const DOC_FILTER_STORAGE_KEY = 'ollama_web_excluded_docs_v1';
-    const DOC_FILTER_MODE_STORAGE_KEY = 'ollama_web_doc_filter_mode_v1';
+    const PROMPT_HISTORY_STORAGE_KEY = 'ollama_web_prompt_history_v1';
+    const PINNED_PROMPTS_STORAGE_KEY = 'ollama_web_pinned_prompts_v1';
+    const MAX_PROMPT_HISTORY = 150;
+
+    function loadPromptHistory() {
+      try {
+        const raw = localStorage.getItem(PROMPT_HISTORY_STORAGE_KEY);
+        if (!raw) return [];
+        const arr = JSON.parse(raw);
+        if (!Array.isArray(arr)) return [];
+        return arr
+          .filter((x) => typeof x === 'string')
+          .map((x) => x.trim())
+          .filter(Boolean)
+          .slice(-MAX_PROMPT_HISTORY);
+      } catch (_) {
+        return [];
+      }
+    }
+
+    function loadPinnedPrompts() {
+      try {
+        const raw = localStorage.getItem(PINNED_PROMPTS_STORAGE_KEY);
+        if (!raw) return [];
+        const arr = JSON.parse(raw);
+        if (!Array.isArray(arr)) return [];
+        return arr
+          .filter((x) => typeof x === 'string')
+          .map((x) => x.trim())
+          .filter(Boolean)
+          .slice(-MAX_PROMPT_HISTORY);
+      } catch (_) {
+        return [];
+      }
+    }
+
+    function persistPromptHistory() {
+      try {
+        localStorage.setItem(PROMPT_HISTORY_STORAGE_KEY, JSON.stringify(promptHistory.slice(-MAX_PROMPT_HISTORY)));
+      } catch (_) {
+        // Ignore storage errors.
+      }
+    }
+
+    function persistPinnedPrompts() {
+      try {
+        localStorage.setItem(PINNED_PROMPTS_STORAGE_KEY, JSON.stringify(pinnedPrompts.slice(-MAX_PROMPT_HISTORY)));
+      } catch (_) {
+        // Ignore storage errors.
+      }
+    }
+
+    function collectPromptRows() {
+      const out = [];
+      const seen = new Set();
+
+      for (let i = pinnedPrompts.length - 1; i >= 0; i -= 1) {
+        const text = pinnedPrompts[i];
+        if (!text || seen.has(text)) continue;
+        seen.add(text);
+        out.push({ text, pinned: true });
+      }
+
+      for (let i = promptHistory.length - 1; i >= 0; i -= 1) {
+        const text = promptHistory[i];
+        if (!text || seen.has(text)) continue;
+        seen.add(text);
+        out.push({ text, pinned: false });
+      }
+      return out;
+    }
+
+    function renderPromptHistoryDropdown(selectText = '') {
+      if (!promptHistorySelectEl) return;
+      const selected = String(selectText || promptHistorySelectEl.value || '');
+      const rows = collectPromptRows();
+
+      promptHistorySelectEl.innerHTML = '';
+      const placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = rows.length ? 'Previous prompts...' : 'No previous prompts';
+      promptHistorySelectEl.appendChild(placeholder);
+
+      for (const row of rows) {
+        const opt = document.createElement('option');
+        opt.value = row.text;
+        const shortText = row.text.length > 170 ? `${row.text.slice(0, 170)}...` : row.text;
+        opt.textContent = row.pinned ? `[PIN] ${shortText}` : shortText;
+        promptHistorySelectEl.appendChild(opt);
+      }
+
+      if (selected) {
+        promptHistorySelectEl.value = selected;
+      }
+    }
+
+    function rememberPrompt(text, persist = true) {
+      const value = String(text || '').trim();
+      if (!value) return;
+      const existingIdx = promptHistory.lastIndexOf(value);
+      if (existingIdx >= 0) {
+        promptHistory.splice(existingIdx, 1);
+      }
+      promptHistory.push(value);
+      if (promptHistory.length > MAX_PROMPT_HISTORY) {
+        promptHistory = promptHistory.slice(-MAX_PROMPT_HISTORY);
+      }
+      promptHistoryIndex = promptHistory.length;
+      if (persist) {
+        persistPromptHistory();
+      }
+      renderPromptHistoryDropdown(value);
+    }
+
+    function recallPromptHistory(direction) {
+      if (!promptHistory.length) {
+        metaEl.textContent = 'No saved prompts yet';
+        return;
+      }
+
+      if (direction < 0) {
+        promptHistoryIndex = Math.max(0, promptHistoryIndex - 1);
+      } else {
+        promptHistoryIndex = Math.min(promptHistory.length, promptHistoryIndex + 1);
+      }
+
+      if (promptHistoryIndex >= promptHistory.length) {
+        promptEl.value = '';
+        metaEl.textContent = 'Prompt history: newest';
+        return;
+      }
+
+      promptEl.value = promptHistory[promptHistoryIndex] || '';
+      promptEl.focus();
+      promptEl.setSelectionRange(promptEl.value.length, promptEl.value.length);
+      metaEl.textContent = `Prompt history ${promptHistoryIndex + 1}/${promptHistory.length}`;
+      renderPromptHistoryDropdown(promptEl.value);
+    }
+
+    function usePromptFromDropdown() {
+      const selected = String(promptHistorySelectEl.value || '').trim();
+      if (!selected) {
+        metaEl.textContent = 'Select a prompt from the list first';
+        return '';
+      }
+      promptEl.value = selected;
+      promptEl.focus();
+      promptEl.setSelectionRange(promptEl.value.length, promptEl.value.length);
+      return selected;
+    }
+
+    function togglePinSelectedPrompt() {
+      const selected = String(promptHistorySelectEl.value || '').trim();
+      if (!selected) {
+        metaEl.textContent = 'Select a prompt to pin or unpin';
+        return;
+      }
+      const idx = pinnedPrompts.lastIndexOf(selected);
+      if (idx >= 0) {
+        pinnedPrompts.splice(idx, 1);
+        persistPinnedPrompts();
+        renderPromptHistoryDropdown(selected);
+        metaEl.textContent = 'Prompt unpinned';
+        return;
+      }
+      pinnedPrompts.push(selected);
+      if (pinnedPrompts.length > MAX_PROMPT_HISTORY) {
+        pinnedPrompts = pinnedPrompts.slice(-MAX_PROMPT_HISTORY);
+      }
+      persistPinnedPrompts();
+      renderPromptHistoryDropdown(selected);
+      metaEl.textContent = 'Prompt pinned';
+    }
+
+    function clearPromptHistory() {
+      const keepPinned = new Set(pinnedPrompts);
+      const before = promptHistory.length;
+      promptHistory = promptHistory.filter((p) => keepPinned.has(p));
+      promptHistoryIndex = promptHistory.length;
+      persistPromptHistory();
+      renderPromptHistoryDropdown();
+      metaEl.textContent = `Cleared ${Math.max(0, before - promptHistory.length)} unpinned prompts`;
+    }
+
+    async function askSelectedPrompt() {
+      if (activeRequestController) return;
+      const selected = usePromptFromDropdown();
+      if (!selected) return;
+      await sendPrompt();
+    }
 
     function setStatus(state, text) {
       statusDotEl.classList.remove('ok', 'err');
@@ -1197,13 +1622,130 @@ HTML = """<!doctype html>
         .replace(/'/g, '&#39;');
     }
 
+    function sourceLinkFromDescriptor(rawDescriptor) {
+      const raw = String(rawDescriptor || '').trim();
+      if (!raw) return null;
+
+      const urlMatch = raw.match(/(?:https?:\/\/|\/api\/pdf\/file\?)[^\s;,)\]]+/i);
+      if (urlMatch) {
+        return { href: urlMatch[0], title: raw, label: 'source' };
+      }
+
+      const indexed = raw.match(/source\s+path\s*(\d+)(?:\s*,?\s*(?:location|page)\s*(\d+))?/i);
+      if (indexed) {
+        const idx = Math.max(1, Number(indexed[1] || 1)) - 1;
+        const loc = Number(indexed[2] || 1);
+        const src = Array.isArray(lastPdfSources) ? lastPdfSources[idx] : null;
+        const path = src && src.path ? String(src.path) : '';
+        if (path) {
+          const page = Number.isFinite(loc) && loc > 0 ? loc : Number(src.page || src.location || 1);
+          const href = `/api/pdf/file?path=${strictEncodeURIComponent(path)}#page=${Math.max(1, Number(page || 1))}`;
+          return { href, title: raw, label: 'source' };
+        }
+      }
+
+      const explicitSource = raw.match(/source\s*=\s*(.+?\.pdf)\b/i);
+      if (explicitSource) {
+        const path = String(explicitSource[1] || '').trim();
+        const locMatch = raw.match(/(?:location|page)\s*=\s*(\d+)/i);
+        const loc = Number(locMatch && locMatch[1] ? locMatch[1] : 1);
+        if (path) {
+          const href = `/api/pdf/file?path=${strictEncodeURIComponent(path)}#page=${Math.max(1, loc)}`;
+          return { href, title: raw, label: 'source' };
+        }
+      }
+
+      const pathMatch = raw.match(/(?:\/[\w .\-()&%+]+)+\.pdf\b/i);
+      if (pathMatch) {
+        const path = pathMatch[0];
+        const pageMatch = raw.match(/(?:page|location|p\.)\s*(\d+)/i);
+        const page = Number(pageMatch && pageMatch[1] ? pageMatch[1] : 1);
+        const href = `/api/pdf/file?path=${strictEncodeURIComponent(path)}#page=${Math.max(1, page)}`;
+        return { href, title: raw, label: 'source' };
+      }
+
+      return null;
+    }
+
+    function protectMathSegments(text) {
+      const segments = [];
+      let out = String(text || '');
+      out = out.replace(/\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|\$[^$\\n]+\$/g, (m) => {
+        const token = `@@MATHSEG_${segments.length}@@`;
+        segments.push(m);
+        return token;
+      });
+      return { out, segments };
+    }
+
     function renderInlineMarkdown(text) {
-      let out = text;
+      const protectedMath = protectMathSegments(text);
+      let out = protectedMath.out;
       out = out.replace(/`([^`]+)`/g, '<code>$1</code>');
       out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
       out = out.replace(/\*([^*]+)\*/g, '<em>$1</em>');
       out = out.replace(/\[([^\]]+)\]\(((?:https?:\/\/|\/api\/pdf\/file\?)[^\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+      out = out.replace(/\[([^\]]*(?:source\s+path|source\s*=)[^\]]*)\]/gi, (_, inner) => {
+        const raw = String(inner || '').trim();
+        if (!raw) return '';
+        const descriptorMatches = Array.from(raw.matchAll(/source\s+path\s*\d+(?:\s*,?\s*(?:location|page)\s*\d+)?|source\s*=\s*.+?\.pdf(?:\s+(?:location|page)\s*=\s*\d+)?/gi));
+        const descriptors = descriptorMatches.length
+          ? descriptorMatches.map((m) => String(m[0] || '').trim()).filter(Boolean)
+          : raw.split(/\s*;\s*/).map((x) => String(x || '').trim()).filter(Boolean);
+
+        const links = [];
+        for (const descriptor of descriptors) {
+          const title = descriptor.replace(/"/g, '&quot;');
+          const link = sourceLinkFromDescriptor(descriptor);
+          if (link && link.href) {
+            links.push(`<a class="source-inline" href="${link.href}" target="_blank" rel="noopener noreferrer" title="${title}">source</a>`);
+          } else {
+            links.push(`<span class="source-inline" title="${title}">source</span>`);
+          }
+        }
+        return links.length ? ` ${links.join(' ')}` : '';
+      });
+      out = out.replace(/\bsource\s+path\s*\d+(?:\s*,\s*(?:location|page)\s*\d+)?\b/gi, (match) => {
+        const link = sourceLinkFromDescriptor(match);
+        const title = String(match).replace(/"/g, '&quot;');
+        if (link && link.href) {
+          return `<a class="source-inline" href="${link.href}" target="_blank" rel="noopener noreferrer" title="${title}">source</a>`;
+        }
+        return `<span class="source-inline" title="${title}">source</span>`;
+      });
+      out = out.replace(/\bsource\s*=\s*.+?\.pdf(?:\s+(?:location|page)\s*=\s*\d+)?/gi, (match) => {
+        const link = sourceLinkFromDescriptor(match);
+        const title = String(match).replace(/"/g, '&quot;');
+        if (link && link.href) {
+          return `<a class="source-inline" href="${link.href}" target="_blank" rel="noopener noreferrer" title="${title}">source</a>`;
+        }
+        return `<span class="source-inline" title="${title}">source</span>`;
+      });
+      out = out.replace(/@@MATHSEG_(\d+)@@/g, (_, idx) => protectedMath.segments[Number(idx)] || '');
       return out;
+    }
+
+    function renderBracketSourceLinks(text) {
+      const matches = Array.from(String(text || '').matchAll(/\[([^\]]+)\]/g));
+      if (!matches.length) {
+        return '';
+      }
+
+      const links = [];
+      for (const match of matches) {
+        const raw = String(match[1] || '').trim();
+        if (!raw) {
+          continue;
+        }
+        const title = raw.replace(/"/g, '&quot;');
+        const link = sourceLinkFromDescriptor(raw);
+        if (link && link.href) {
+          links.push(`<a class="source-link" href="${link.href}" target="_blank" rel="noopener noreferrer" title="${title}">Source</a>`);
+        } else {
+          links.push(`<span class="source-link-static" title="${title}">Source</span>`);
+        }
+      }
+      return links.join(' ');
     }
 
     function normalizeMathDelimiters(text) {
@@ -1314,13 +1856,65 @@ HTML = """<!doctype html>
         }
       };
 
-      for (const raw of lines) {
+      for (let i = 0; i < lines.length; i += 1) {
+        const raw = lines[i];
         const line = raw.trimEnd();
         const t = line.trim();
 
         if (!t) {
-          closeLists();
+          let nextNonEmpty = '';
+          for (let j = i + 1; j < lines.length; j += 1) {
+            const candidate = lines[j].trim();
+            if (candidate) {
+              nextNonEmpty = candidate;
+              break;
+            }
+          }
+          const nextKeepsUl = inUl && /^[-*]\s+/.test(nextNonEmpty);
+          const nextKeepsOl = inOl && /^\d+\.\s+/.test(nextNonEmpty);
+          if (!nextKeepsUl && !nextKeepsOl) {
+            closeLists();
+          }
           continue;
+        }
+
+        if (/^\[[^\]]+\](?:\s*[,;]?\s*\[[^\]]+\])*$/.test(t)) {
+          closeLists();
+          const links = renderBracketSourceLinks(t);
+          if (links) {
+            html.push(`<p class="source-line">${links}</p>`);
+            continue;
+          }
+        }
+
+        const sourcesLine = t.match(/^sources?:\s*(.+)$/i);
+        if (sourcesLine) {
+          closeLists();
+          const parts = sourcesLine[1].split(/\s*;\s*/).filter(Boolean);
+          const links = [];
+          for (const part of parts) {
+            const link = sourceLinkFromDescriptor(part);
+            const title = String(part || '').trim().replace(/"/g, '&quot;');
+            if (link && link.href) {
+              links.push(`<a class="source-link" href="${link.href}" target="_blank" rel="noopener noreferrer" title="${title}">Source</a>`);
+            } else if (title) {
+              links.push(`<span class="source-link-static" title="${title}">Source</span>`);
+            }
+          }
+          if (links.length) {
+            html.push(`<p class="source-line">${links.join(' ')}</p>`);
+            continue;
+          }
+        }
+
+        if (/\.pdf\b/i.test(t) && !/\[[^\]]+\]\([^\)]+\)/.test(t)) {
+          closeLists();
+          const link = sourceLinkFromDescriptor(t);
+          if (link && link.href) {
+            const title = t.replace(/"/g, '&quot;');
+            html.push(`<p class="source-line"><a class="source-link" href="${link.href}" target="_blank" rel="noopener noreferrer" title="${title}">Source</a></p>`);
+            continue;
+          }
         }
 
         const headingMatch = t.match(/^(#{1,6})\s+(.*)$/);
@@ -1394,15 +1988,25 @@ HTML = """<!doctype html>
       const el = document.createElement('div');
       el.className = `msg ${role}`;
 
-      const textEl = document.createElement('div');
-      textEl.className = role === 'assistant' ? 'msg-text md' : 'msg-text';
-      if (role === 'assistant') {
-        textEl.innerHTML = renderMarkdown(text);
-        renderMathIn(textEl);
-      } else {
-        textEl.textContent = text;
+      const citationOnly = role === 'assistant' && opts.citationOnly === true;
+      if (!citationOnly) {
+        const textEl = document.createElement('div');
+        textEl.className = role === 'assistant' ? 'msg-text md' : 'msg-text';
+        if (role === 'assistant') {
+          textEl.innerHTML = renderMarkdown(text);
+          renderMathIn(textEl);
+        } else {
+          textEl.textContent = text;
+        }
+        el.appendChild(textEl);
       }
-      el.appendChild(textEl);
+
+      if (role === 'assistant' && Array.isArray(opts.citationEntries) && opts.citationEntries.length) {
+        const citationWrap = renderCitationActions(opts.citationEntries, opts.citationQuery || '');
+        if (citationWrap) {
+          el.appendChild(citationWrap);
+        }
+      }
 
       if (role === 'assistant' && showAssistantTools) {
         const tools = document.createElement('div');
@@ -1486,7 +2090,8 @@ HTML = """<!doctype html>
 
     async function addMessageAndStore(role, text) {
       const ts = isoNow();
-      addMessage(role, text);
+      const opts = arguments.length > 2 ? arguments[2] : {};
+      addMessage(role, text, opts);
       try {
         await persistMessage(role, text, ts);
       } catch (_) {
@@ -1544,23 +2149,6 @@ HTML = """<!doctype html>
       }
     }
 
-    function persistDocFilterModeState() {
-      try {
-        localStorage.setItem(DOC_FILTER_MODE_STORAGE_KEY, includeOnlyMode ? 'include-only' : 'exclude-only');
-      } catch (_) {
-        // Ignore storage errors.
-      }
-    }
-
-    function loadDocFilterModeState() {
-      try {
-        const raw = localStorage.getItem(DOC_FILTER_MODE_STORAGE_KEY);
-        return raw === 'include-only';
-      } catch (_) {
-        return false;
-      }
-    }
-
     function getIncludedDocPaths() {
       return libraryDocs
         .filter((doc) => !excludedDocPaths.has(doc.path))
@@ -1571,15 +2159,6 @@ HTML = """<!doctype html>
       return Number(doc && doc.chunks ? doc.chunks : 0) > 0;
     }
 
-    function sanitizeIncludeOnlySelection() {
-      if (!includeOnlyMode) return;
-      for (const doc of libraryDocs) {
-        if (!hasIndexedChunks(doc)) {
-          excludedDocPaths.add(doc.path);
-        }
-      }
-    }
-
     function buildDocSelectionError(filters) {
       if (filters.includedCount <= 0) {
         return 'All documents are excluded. Open Library Docs and include at least one document.';
@@ -1587,7 +2166,7 @@ HTML = """<!doctype html>
       if (filters.includedChunkCount <= 0) {
         const sample = filters.zeroChunkIncluded.slice(0, 3).join(', ');
         const suffix = filters.zeroChunkIncluded.length > 3 ? ', ...' : '';
-        return `Selected document filter has no indexed text chunks (${sample}${suffix}). Include at least one document with chunks > 0, disable Include-only mode, or OCR/re-index that PDF.`;
+        return `Selected document filter has no indexed text chunks (${sample}${suffix}). Include at least one document with chunks > 0 or OCR/re-index that PDF.`;
       }
       return '';
     }
@@ -1599,17 +2178,8 @@ HTML = """<!doctype html>
       const zeroChunkIncluded = includedDocs
         .filter((doc) => !hasIndexedChunks(doc))
         .map((doc) => doc.rel_path || pathBase(doc.path));
-      if (includeOnlyMode) {
-        return {
-          includePaths: included,
-          excludePaths: [],
-          includedCount: included.length,
-          includedChunkCount,
-          zeroChunkIncluded,
-        };
-      }
       return {
-        includePaths: [],
+        includePaths: included,
         excludePaths: Array.from(excludedDocPaths),
         includedCount: included.length,
         includedChunkCount,
@@ -1630,6 +2200,63 @@ HTML = """<!doctype html>
       renderLibraryDocs();
     }
 
+    function pathParts(relPath) {
+      const raw = String(relPath || '').replace(/\\\\/g, '/').replace(/^\/+/, '');
+      if (!raw) return [];
+      return raw.split('/').filter(Boolean);
+    }
+
+    function folderKeysForDoc(doc) {
+      const parts = pathParts(doc.rel_path || doc.path || '');
+      const dirs = parts.slice(0, Math.max(0, parts.length - 1));
+      if (!dirs.length) {
+        return { root: '(root)', child: '' };
+      }
+      const root = dirs[0];
+      const child = dirs.length >= 2 ? `${dirs[0]}/${dirs[1]}` : '';
+      return { root, child };
+    }
+
+    function setFolderIncluded(folderKey, depth, shouldInclude) {
+      for (const doc of libraryDocs) {
+        const { root, child } = folderKeysForDoc(doc);
+        const matches = depth === 1 ? root === folderKey : child === folderKey;
+        if (!matches) continue;
+        if (shouldInclude) {
+          excludedDocPaths.delete(doc.path);
+        } else {
+          excludedDocPaths.add(doc.path);
+        }
+      }
+      persistDocFilterState();
+      renderLibraryDocs();
+    }
+
+    function buildFolderHierarchy(docs) {
+      const roots = new Map();
+      for (const doc of docs) {
+        const { root, child } = folderKeysForDoc(doc);
+        if (!roots.has(root)) {
+          roots.set(root, { key: root, docs: [], children: new Map() });
+        }
+        const rootNode = roots.get(root);
+        rootNode.docs.push(doc);
+
+        if (!child) continue;
+        if (!rootNode.children.has(child)) {
+          const childLabel = child.split('/').slice(-1)[0] || child;
+          rootNode.children.set(child, { key: child, label: childLabel, docs: [] });
+        }
+        rootNode.children.get(child).docs.push(doc);
+      }
+
+      const rootList = Array.from(roots.values()).sort((a, b) => a.key.localeCompare(b.key));
+      for (const node of rootList) {
+        node.children = Array.from(node.children.values()).sort((a, b) => a.label.localeCompare(b.label));
+      }
+      return rootList;
+    }
+
     function renderLibraryDocs() {
       const q = (docsSearchEl.value || '').trim().toLowerCase();
       const filtered = q
@@ -1637,26 +2264,21 @@ HTML = """<!doctype html>
         : libraryDocs;
 
       const includedCount = Math.max(0, libraryDocs.length - excludedDocPaths.size);
-      const groupSummary = libraryGroups.slice(0, 8).map((g) => `${g.name}: ${g.count}`).join(', ');
+      const hierarchy = buildFolderHierarchy(filtered);
       docsMetaEl.textContent =
         `Docs: ${libraryDocs.length} | Included: ${includedCount} | Excluded: ${excludedDocPaths.size}` +
-        (groupSummary ? `\nTop groups: ${groupSummary}` : '');
+        (hierarchy.length ? `\nFolders shown: ${hierarchy.length}` : '');
 
       docsGroupsEl.innerHTML = '';
-      const groupsForUi = libraryGroups.length
-        ? libraryGroups
-        : [{ name: '(all)', count: libraryDocs.length }];
-      for (const group of groupsForUi) {
-        const groupName = group.name || '(unknown)';
-        const docsInGroup = libraryDocs.filter((d) => (d.top_group || '(unknown)') === groupName);
-        const groupIncluded = docsInGroup.filter((d) => !excludedDocPaths.has(d.path)).length;
+      for (const rootNode of hierarchy) {
+        const rootIncluded = rootNode.docs.filter((d) => !excludedDocPaths.has(d.path)).length;
 
         const row = document.createElement('div');
-        row.className = 'docs-group-row';
+        row.className = 'docs-group-row docs-group-root';
 
         const label = document.createElement('div');
         label.className = 'docs-group-label';
-        label.textContent = `${groupName}: ${groupIncluded}/${docsInGroup.length} included`;
+        label.textContent = `${rootNode.key}: ${rootIncluded}/${rootNode.docs.length} included`;
 
         const actions = document.createElement('div');
         actions.className = 'docs-group-actions';
@@ -1664,19 +2286,51 @@ HTML = """<!doctype html>
         inBtn.type = 'button';
         inBtn.className = 'btn-soft';
         inBtn.textContent = 'In';
-        inBtn.addEventListener('click', () => setGroupIncluded(groupName, true));
+        inBtn.addEventListener('click', () => setFolderIncluded(rootNode.key, 1, true));
 
         const outBtn = document.createElement('button');
         outBtn.type = 'button';
         outBtn.className = 'btn-soft';
         outBtn.textContent = 'Out';
-        outBtn.addEventListener('click', () => setGroupIncluded(groupName, false));
+        outBtn.addEventListener('click', () => setFolderIncluded(rootNode.key, 1, false));
 
         actions.appendChild(inBtn);
         actions.appendChild(outBtn);
         row.appendChild(label);
         row.appendChild(actions);
         docsGroupsEl.appendChild(row);
+
+        for (const childNode of rootNode.children) {
+          const childIncluded = childNode.docs.filter((d) => !excludedDocPaths.has(d.path)).length;
+
+          const childRow = document.createElement('div');
+          childRow.className = 'docs-group-row docs-group-child';
+
+          const childLabel = document.createElement('div');
+          childLabel.className = 'docs-group-label';
+          childLabel.textContent = `${childNode.label}: ${childIncluded}/${childNode.docs.length} included`;
+
+          const childActions = document.createElement('div');
+          childActions.className = 'docs-group-actions';
+
+          const childInBtn = document.createElement('button');
+          childInBtn.type = 'button';
+          childInBtn.className = 'btn-soft';
+          childInBtn.textContent = 'In';
+          childInBtn.addEventListener('click', () => setFolderIncluded(childNode.key, 2, true));
+
+          const childOutBtn = document.createElement('button');
+          childOutBtn.type = 'button';
+          childOutBtn.className = 'btn-soft';
+          childOutBtn.textContent = 'Out';
+          childOutBtn.addEventListener('click', () => setFolderIncluded(childNode.key, 2, false));
+
+          childActions.appendChild(childInBtn);
+          childActions.appendChild(childOutBtn);
+          childRow.appendChild(childLabel);
+          childRow.appendChild(childActions);
+          docsGroupsEl.appendChild(childRow);
+        }
       }
 
       docsListEl.innerHTML = '';
@@ -1697,11 +2351,6 @@ HTML = """<!doctype html>
         const noChunks = chunkCount <= 0;
         box.type = 'checkbox';
         box.checked = !excludedDocPaths.has(doc.path);
-        if (includeOnlyMode && noChunks) {
-          box.checked = false;
-          box.disabled = true;
-          box.title = 'No indexed text chunks. Re-index with OCR text extraction, or disable Include-only mode.';
-        }
         box.addEventListener('change', () => {
           if (box.checked) {
             excludedDocPaths.delete(doc.path);
@@ -1742,11 +2391,7 @@ HTML = """<!doctype html>
       const saved = loadDocFilterState();
       const validPaths = new Set(libraryDocs.map((d) => d.path));
       excludedDocPaths = new Set(Array.from(saved).filter((p) => validPaths.has(p)));
-      includeOnlyMode = loadDocFilterModeState();
-      sanitizeIncludeOnlySelection();
-      docsIncludeOnlyEl.checked = includeOnlyMode;
       persistDocFilterState();
-      persistDocFilterModeState();
 
       renderLibraryDocs();
     }
@@ -1777,7 +2422,8 @@ HTML = """<!doctype html>
       const entries = Array.isArray(payload.entries) ? payload.entries : [];
       stashListEl.innerHTML = '';
 
-      stashMetaEl.textContent = `Count: ${payload.count || 0}\nPath: ${payload.stash_path || ''}`;
+      const shownType = payload.entry_type || 'all';
+      stashMetaEl.textContent = `Count: ${payload.count || 0}\nType: ${shownType}\nPath: ${payload.stash_path || ''}`;
 
       if (!entries.length) {
         const empty = document.createElement('div');
@@ -1847,13 +2493,16 @@ HTML = """<!doctype html>
     async function loadStashEntries() {
       stashMetaEl.textContent = 'Loading...';
       stashListEl.innerHTML = '';
-      const res = await fetch('/api/stash?limit=200');
+      const endpoint = stashViewMode === 'bibliography' ? '/api/bibliography?limit=200' : '/api/stash?limit=200';
+      const res = await fetch(endpoint);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       renderStashEntries(data);
     }
 
-    async function openStashModal() {
+    async function openStashModal(mode = 'stash') {
+      stashViewMode = mode === 'bibliography' ? 'bibliography' : 'stash';
+      stashTitleEl.textContent = stashViewMode === 'bibliography' ? 'Bibliography Stash' : 'Stashed Snippets';
       stashModalEl.classList.remove('stash-hidden');
       try {
         await loadStashEntries();
@@ -1876,6 +2525,33 @@ HTML = """<!doctype html>
       return /\.pdf$/i.test(String(p || '').trim());
     }
 
+    function sourceTitleFromPath(p) {
+      const base = pathBase(p || 'document');
+      const noExt = base.replace(/\.[^/.]+$/, '');
+      const normalized = noExt.replace(/[._-]+/g, ' ').replace(/\s+/g, ' ').trim();
+      return normalized || 'Untitled document';
+    }
+
+    function formatApaAuthorList(authors) {
+      if (!Array.isArray(authors)) {
+        return '';
+      }
+      const clean = authors
+        .map((a) => String(a || '').trim())
+        .filter((a) => a.length > 0)
+        .slice(0, 6);
+      if (!clean.length) {
+        return '';
+      }
+      if (clean.length === 1) {
+        return clean[0];
+      }
+      if (clean.length === 2) {
+        return `${clean[0]} & ${clean[1]}`;
+      }
+      return `${clean.slice(0, clean.length - 1).join(', ')}, & ${clean[clean.length - 1]}`;
+    }
+
     function strictEncodeURIComponent(value) {
       return encodeURIComponent(String(value)).replace(/[!'()*]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`);
     }
@@ -1887,20 +2563,155 @@ HTML = """<!doctype html>
       return `${base.slice(0, maxLen - 1)}...`;
     }
 
-    function formatPdfSources(sources) {
-      return sources
-        .slice(0, 8)
-        .map((s) => {
-          const loc = Number(s.page || s.location || 1);
-          const label = `${compactSourceLabel(s.path)} loc.${loc}`;
-          if (!isPdfSourcePath(s.path)) {
-            return `- ${label} (score=${Number(s.score).toFixed(4)})`;
+    function buildApaCitationEntries(sources) {
+      const seen = new Set();
+      const entries = [];
+      for (const s of (Array.isArray(sources) ? sources : []).slice(0, 24)) {
+        const path = String(s.path || '').trim();
+        const loc = Number(s.page || s.location || 1);
+        const key = `${path}#${loc}`;
+        if (!path || seen.has(key)) continue;
+        seen.add(key);
+
+        const title = String(s.title || '').trim() || sourceTitleFromPath(path);
+        const author = formatApaAuthorList(s.authors);
+        const year = String(s.year || '').trim() || 'n.d.';
+        let titlePart = `*${title}*`;
+        let locator = `loc. ${loc}`;
+        if (!isPdfSourcePath(path)) {
+          const citation = author
+            ? `${author}. (${year}). ${titlePart}. (${locator}).`
+            : `${titlePart}. (${year}). (${locator}).`;
+          entries.push({
+            citation,
+            source: {
+              path,
+              page: loc,
+              location: loc,
+              title,
+              authors: Array.isArray(s.authors) ? s.authors : [],
+              year,
+            }
+          });
+          continue;
+        }
+        const encodedPath = strictEncodeURIComponent(path);
+        const openUrl = `/api/pdf/file?path=${encodedPath}#page=${loc}`;
+        titlePart = `*[${title}](${openUrl})*`;
+        locator = `p. ${loc}`;
+        const citation = author
+          ? `${author}. (${year}). ${titlePart}. (${locator}).`
+          : `${titlePart}. (${year}). (${locator}).`;
+        entries.push({
+          citation,
+          source: {
+            path,
+            page: loc,
+            location: loc,
+            title,
+            authors: Array.isArray(s.authors) ? s.authors : [],
+            year,
           }
-          const encodedPath = strictEncodeURIComponent(s.path || '');
-          const openUrl = `/api/pdf/file?path=${encodedPath}#page=${loc}`;
-          return `- [${label}](${openUrl}) (score=${Number(s.score).toFixed(4)})`;
-        })
-        .join(String.fromCharCode(10));
+        });
+      }
+      return entries;
+    }
+
+    function formatApaSources(sources) {
+      return buildApaCitationEntries(sources).map((entry) => `- ${entry.citation}`);
+    }
+
+    function renderCitationActions(citationEntries, queryText = '') {
+      const entries = Array.isArray(citationEntries) ? citationEntries : [];
+      if (!entries.length) {
+        return null;
+      }
+
+      const wrap = document.createElement('div');
+      wrap.className = 'citation-list';
+
+      for (const entry of entries) {
+        const row = document.createElement('div');
+        row.className = 'citation-row';
+
+        const text = document.createElement('div');
+        text.className = 'citation-text md';
+        text.innerHTML = renderInlineMarkdown(String(entry.citation || ''));
+
+        const stashBtn = document.createElement('button');
+        stashBtn.className = 'stash-btn';
+        stashBtn.type = 'button';
+        stashBtn.textContent = 'Add to Bibliography';
+        stashBtn.addEventListener('click', async () => {
+          stashBtn.disabled = true;
+          stashBtn.textContent = 'Adding...';
+          try {
+            const payloadSources = entry.source ? [entry.source] : [];
+            const result = await stashResponse(String(entry.citation || ''), {
+              entry_type: 'bibliography',
+              query: queryText || lastCitationQuery || '',
+              sources: payloadSources,
+            });
+            metaEl.textContent = `Added citation to bibliography (${result.count || '?'})`;
+            stashBtn.textContent = 'Added';
+            setTimeout(() => {
+              stashBtn.textContent = 'Add to Bibliography';
+              stashBtn.disabled = false;
+            }, 1200);
+          } catch (err) {
+            metaEl.textContent = `Citation stash failed: ${err.message}`;
+            stashBtn.textContent = 'Add to Bibliography';
+            stashBtn.disabled = false;
+          }
+        });
+
+        row.appendChild(text);
+        row.appendChild(stashBtn);
+        wrap.appendChild(row);
+      }
+
+      return wrap;
+    }
+
+    function buildBibliographyText(sources, queryText = '') {
+      const apaLines = formatApaSources(sources);
+      if (!apaLines.length) {
+        return '';
+      }
+      const heading = 'References (APA 7):';
+      const topic = queryText ? `\\nQuery: ${queryText}` : '';
+      return `${heading}${topic}\\n\\n${apaLines.join('\\n')}`;
+    }
+
+    async function generateBibliographyFromLatestSources() {
+      if (!Array.isArray(lastPdfSources) || !lastPdfSources.length) {
+        addMessage('system', 'No recent PDF-grounded sources found. Ask with PDF-grounded mode first.');
+        return;
+      }
+
+      const citationEntries = buildApaCitationEntries(lastPdfSources);
+      const bibliographyText = buildBibliographyText(lastPdfSources, lastCitationQuery);
+      if (!bibliographyText) {
+        addMessage('system', 'Could not generate bibliography from current sources.');
+        return;
+      }
+
+      try {
+        await addMessageAndStore('assistant', '', {
+          citationOnly: true,
+          citationEntries,
+          citationQuery: lastCitationQuery,
+        });
+        await stashResponse(bibliographyText, {
+          entry_type: 'bibliography',
+          query: lastCitationQuery,
+          sources: Array.isArray(lastPdfSources) ? lastPdfSources : []
+        });
+        metaEl.textContent = 'Bibliography generated and opened';
+        openStashModal('bibliography');
+      } catch (err) {
+        addMessage('system', `Bibliography generation failed: ${err.message}`);
+      }
     }
 
     async function createStudyBrief() {
@@ -1939,15 +2750,17 @@ HTML = """<!doctype html>
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
 
+        const sourceRows = Array.isArray(data.sources) ? data.sources : [];
+        const citationEntries = buildApaCitationEntries(sourceRows);
         let answer = data.answer || '[no brief field]';
-        if (Array.isArray(data.sources) && data.sources.length) {
-          answer += `
 
-Sources:
-${formatPdfSources(data.sources)}`;
-        }
+        lastPdfSources = sourceRows;
+        lastCitationQuery = query;
 
-        await addMessageAndStore('assistant', answer);
+        await addMessageAndStore('assistant', answer, {
+          citationEntries,
+          citationQuery: query,
+        });
         await stashResponse(answer, {
           entry_type: 'study_brief',
           query,
@@ -1968,6 +2781,19 @@ ${formatPdfSources(data.sources)}`;
       return d.toLocaleString();
     }
 
+    function summarizeIndexError(rawError) {
+      if (!rawError) return '';
+      const text = String(rawError).replace(/\\r/g, '');
+      const lines = text.split('\\n').map((line) => line.trim()).filter(Boolean);
+      let best = lines.length ? lines[lines.length - 1] : text.trim();
+      if (!best || /^traceback/i.test(best)) {
+        const fallback = lines.find((line) => !/^traceback/i.test(line));
+        best = fallback || 'Indexing failed (see logs)';
+      }
+      if (best.length > 180) best = `${best.slice(0, 177)}...`;
+      return best;
+    }
+
     async function refreshPdfStatus() {
       try {
         const res = await fetch('/api/pdf/status');
@@ -1978,8 +2804,51 @@ ${formatPdfSources(data.sources)}`;
         const chunks = data.chunks ?? 0;
         const idx = formatEpoch(data.last_indexed_at);
         const running = job.running ? 'running' : 'idle';
-        pdfStatusEl.textContent = `PDF index: ${running}\nDocs: ${docs} | Chunks: ${chunks}\nLast indexed: ${idx}`;
+
+        if (job.running) {
+          if (!syncSnapshot) {
+            syncSnapshot = {
+              startedAt: Number(job.last_started_at || Math.floor(Date.now() / 1000)),
+              startDocs: Number(docs || 0),
+              startChunks: Number(chunks || 0),
+            };
+          }
+          const elapsedSec = Math.max(1, Math.floor(Date.now() / 1000) - Number(syncSnapshot.startedAt || Math.floor(Date.now() / 1000)));
+          const chunkDelta = Math.max(0, Number(chunks || 0) - Number(syncSnapshot.startChunks || 0));
+          const chunksPerMin = Math.round((chunkDelta / elapsedSec) * 60);
+
+          const result = job.last_result && typeof job.last_result === 'object' ? job.last_result : {};
+          const processed = Number(result.processed || result.updated || result.indexed || 0);
+          const total = Number(result.total || result.discovered || result.candidates || 0);
+          let progressPct = 0;
+          let etaText = 'ETA: estimating';
+
+          if (Number.isFinite(total) && total > 0 && Number.isFinite(processed) && processed >= 0) {
+            progressPct = Math.max(0, Math.min(100, Math.round((processed / total) * 100)));
+            const remaining = Math.max(0, total - processed);
+            const perSec = processed > 0 ? processed / elapsedSec : 0;
+            if (perSec > 0) {
+              const etaSec = Math.round(remaining / perSec);
+              etaText = `ETA: ~${Math.max(0, Math.ceil(etaSec / 60))} min`;
+            }
+          } else {
+            progressPct = Math.max(8, Math.min(92, 12 + Math.round(Math.min(80, elapsedSec / 3))));
+          }
+
+          pdfProgressEl.classList.remove('hidden');
+          pdfProgressBarEl.style.width = `${progressPct}%`;
+          pdfStatusEl.textContent = `PDF index: running (${progressPct}%)\nDocs: ${docs} | Chunks: ${chunks} | +${chunkDelta} this run\nElapsed: ${Math.ceil(elapsedSec / 60)} min | ${etaText} | ${chunksPerMin}/min`;
+        } else {
+          syncSnapshot = null;
+          pdfProgressEl.classList.add('hidden');
+          pdfProgressBarEl.style.width = '0%';
+          const compactError = summarizeIndexError(job.last_error);
+          const statusTail = compactError ? `\nLast error: ${compactError}` : '';
+          pdfStatusEl.textContent = `PDF index: ${running}\nDocs: ${docs} | Chunks: ${chunks}\nLast indexed: ${idx}${statusTail}`;
+        }
       } catch (err) {
+        pdfProgressEl.classList.add('hidden');
+        pdfProgressBarEl.style.width = '0%';
         pdfStatusEl.textContent = `PDF index status error: ${err.message}`;
       }
     }
@@ -1990,6 +2859,13 @@ ${formatPdfSources(data.sources)}`;
       try {
         const res = await fetch('/api/pdf/index', { method: 'POST' });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        syncSnapshot = {
+          startedAt: Math.floor(Date.now() / 1000),
+          startDocs: 0,
+          startChunks: 0,
+        };
+        pdfProgressEl.classList.remove('hidden');
+        pdfProgressBarEl.style.width = '8%';
         metaEl.textContent = 'PDF index sync started';
       } catch (err) {
         addMessage('system', `Failed to start PDF sync: ${err.message}`);
@@ -2002,6 +2878,10 @@ ${formatPdfSources(data.sources)}`;
 
     function setBusy(isBusy) {
       sendEl.disabled = isBusy;
+      promptUseSelectedEl.disabled = isBusy;
+      promptPinSelectedEl.disabled = isBusy;
+      promptClearHistoryEl.disabled = isBusy;
+      promptHistorySelectEl.disabled = isBusy;
       cancelEl.disabled = !isBusy;
       refreshEl.disabled = isBusy;
       modelEl.disabled = isBusy;
@@ -2065,14 +2945,20 @@ ${formatPdfSources(data.sources)}`;
         const data = await res.json();
         const items = Array.isArray(data.messages) ? data.messages : [];
         if (!items.length) {
-          addMessage('assistant', 'Shared history is empty. Start the conversation.');
+          addMessage('assistant', 'Shared history is empty. Start the conversation.', { showAssistantTools: false });
           return;
         }
         for (const item of items) {
           const role = ['user', 'assistant', 'system'].includes(item.role) ? item.role : 'system';
           const text = typeof item.text === 'string' ? item.text : '';
-          if (text) addMessage(role, text);
+          if (!text) continue;
+          if (role === 'user') {
+            rememberPrompt(text, false);
+            lastUserPrompt = text;
+          }
+          addMessage(role, text);
         }
+        persistPromptHistory();
       } catch (err) {
         addMessage('system', `Failed to load shared history: ${err.message}`);
       }
@@ -2090,6 +2976,19 @@ ${formatPdfSources(data.sources)}`;
       if (!model) {
         addMessage('system', 'No model is available. Install a model and refresh.');
         return;
+      }
+
+      rememberPrompt(prompt);
+
+      if (!usePdfLibrary) {
+        const proceedUngrounded = confirm(
+          'Send this query without PDF grounding?\\n\\nThis app is optimized for PDF-grounded answers, and ungrounded queries are usually better handled by general chat tools.'
+        );
+        if (!proceedUngrounded) {
+          usePdfLibraryEl.checked = true;
+          metaEl.textContent = 'PDF-grounded mode re-enabled';
+          return;
+        }
       }
 
       lastUserPrompt = prompt;
@@ -2131,13 +3030,15 @@ ${formatPdfSources(data.sources)}`;
           if (data.ok === false && data.error) {
             throw new Error(data.error);
           }
+          const sourceRows = Array.isArray(data.sources) ? data.sources : [];
+          const citationEntries = buildApaCitationEntries(sourceRows);
           answer = data.answer || '[no answer field]';
-          if (Array.isArray(data.sources) && data.sources.length) {
-            answer += `
-
-Sources:
-${formatPdfSources(data.sources)}`;
-          }
+          lastPdfSources = sourceRows;
+          lastCitationQuery = prompt;
+          await addMessageAndStore('assistant', answer, {
+            citationEntries,
+            citationQuery: prompt,
+          });
         } else {
           const res = await fetch('/api/generate', {
             method: 'POST',
@@ -2148,9 +3049,8 @@ ${formatPdfSources(data.sources)}`;
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const data = await res.json();
           answer = data.response || '[no response field]';
+          await addMessageAndStore('assistant', answer);
         }
-
-        await addMessageAndStore('assistant', answer);
 
         const elapsedMs = Math.round(performance.now() - start);
         metaEl.textContent = `Model: ${model}${usePdfLibrary ? ' + PDF' : ''} | ${elapsedMs} ms`;
@@ -2178,6 +3078,7 @@ ${formatPdfSources(data.sources)}`;
 
     refreshEl.addEventListener('click', loadModels);
     openLibraryDocsEl.addEventListener('click', openLibraryDocsModal);
+    openBibliographyEl.addEventListener('click', () => openStashModal('bibliography'));
     docsCloseEl.addEventListener('click', closeLibraryDocsModal);
     docsReloadEl.addEventListener('click', async () => {
       try {
@@ -2188,7 +3089,6 @@ ${formatPdfSources(data.sources)}`;
     });
     docsSelectAllEl.addEventListener('click', () => {
       excludedDocPaths = new Set();
-      sanitizeIncludeOnlySelection();
       persistDocFilterState();
       renderLibraryDocs();
     });
@@ -2197,18 +3097,11 @@ ${formatPdfSources(data.sources)}`;
       persistDocFilterState();
       renderLibraryDocs();
     });
-    docsIncludeOnlyEl.addEventListener('change', () => {
-      includeOnlyMode = !!docsIncludeOnlyEl.checked;
-      sanitizeIncludeOnlySelection();
-      persistDocFilterModeState();
-      persistDocFilterState();
-      renderLibraryDocs();
-    });
     docsSearchEl.addEventListener('input', renderLibraryDocs);
     docsModalEl.addEventListener('click', (e) => {
       if (e.target === docsModalEl) closeLibraryDocsModal();
     });
-    openStashEl.addEventListener('click', openStashModal);
+    openStashEl.addEventListener('click', () => openStashModal('stash'));
     stashCloseEl.addEventListener('click', closeStashModal);
     stashReloadEl.addEventListener('click', async () => {
       try {
@@ -2218,13 +3111,15 @@ ${formatPdfSources(data.sources)}`;
       }
     });
     stashClearAllEl.addEventListener('click', async () => {
-      if (!confirm('Delete all stashed snippets?')) return;
+      const clearLabel = stashViewMode === 'bibliography' ? 'all bibliography entries' : 'all stashed snippets';
+      if (!confirm(`Delete ${clearLabel}?`)) return;
       try {
-        const res = await fetch('/api/stash?all=1', { method: 'DELETE' });
+        const clearEndpoint = stashViewMode === 'bibliography' ? '/api/bibliography?all=1' : '/api/stash?all=1';
+        const res = await fetch(clearEndpoint, { method: 'DELETE' });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
         await loadStashEntries();
-        metaEl.textContent = 'Cleared stash';
+        metaEl.textContent = stashViewMode === 'bibliography' ? 'Cleared bibliography stash' : 'Cleared stash';
       } catch (err) {
         stashMetaEl.textContent = `Failed to clear stash: ${err.message}`;
       }
@@ -2234,7 +3129,23 @@ ${formatPdfSources(data.sources)}`;
     });
     saveInstructionsEl.addEventListener('click', saveInstructions);
     syncPdfLibraryEl.addEventListener('click', syncPdfLibrary);
+    usePdfLibraryEl.addEventListener('change', () => {
+      if (usePdfLibraryEl.checked) {
+        metaEl.textContent = 'PDF-grounded mode enabled';
+        return;
+      }
+      const proceedUngrounded = confirm(
+        'Turn off PDF grounding?\\n\\nOllama Librarian is intended primarily for PDF-grounded research. Continue with ungrounded mode?'
+      );
+      if (!proceedUngrounded) {
+        usePdfLibraryEl.checked = true;
+        metaEl.textContent = 'PDF-grounded mode kept on';
+        return;
+      }
+      metaEl.textContent = 'Ungrounded mode enabled';
+    });
     studyBriefEl.addEventListener('click', createStudyBrief);
+    makeBibliographyEl.addEventListener('click', generateBibliographyFromLatestSources);
     cancelEl.addEventListener('click', cancelPromptRequest);
     clearEl.addEventListener('click', async () => {
       try {
@@ -2248,13 +3159,40 @@ ${formatPdfSources(data.sources)}`;
       promptEl.focus();
     });
     sendEl.addEventListener('click', sendPrompt);
+    promptUseSelectedEl.addEventListener('click', askSelectedPrompt);
+    promptPinSelectedEl.addEventListener('click', togglePinSelectedPrompt);
+    promptClearHistoryEl.addEventListener('click', () => {
+      if (!confirm('Clear unpinned prompt history?')) return;
+      clearPromptHistory();
+    });
+    promptHistorySelectEl.addEventListener('change', () => {
+      const selected = String(promptHistorySelectEl.value || '').trim();
+      if (!selected) return;
+      promptEl.value = selected;
+      promptEl.focus();
+      promptEl.setSelectionRange(promptEl.value.length, promptEl.value.length);
+    });
     promptEl.addEventListener('keydown', (e) => {
+      if (e.ctrlKey && !e.shiftKey && e.key === 'ArrowUp') {
+        e.preventDefault();
+        recallPromptHistory(-1);
+        return;
+      }
+      if (e.ctrlKey && !e.shiftKey && e.key === 'ArrowDown') {
+        e.preventDefault();
+        recallPromptHistory(1);
+        return;
+      }
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         sendPrompt();
       }
     });
 
+    promptHistory = loadPromptHistory();
+    pinnedPrompts = loadPinnedPrompts();
+    promptHistoryIndex = promptHistory.length;
+    renderPromptHistoryDropdown();
     loadHistory();
     loadInstructions();
     loadModels();
@@ -2267,9 +3205,21 @@ ${formatPdfSources(data.sources)}`;
 
 
 class Handler(BaseHTTPRequestHandler):
+    def _send_security_headers(self):
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; "
+            "base-uri 'none'; form-action 'self'",
+        )
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+
     def _send(self, code, body, content_type="text/plain; charset=utf-8"):
         payload = body.encode("utf-8")
         self.send_response(code)
+        self._send_security_headers()
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
@@ -2277,6 +3227,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send_bytes(self, code, payload, content_type, extra_headers=None):
         self.send_response(code)
+        self._send_security_headers()
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
         if extra_headers:
@@ -2285,13 +3236,167 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _is_authorized(self):
+        if not API_KEY:
+            return True
+        direct = self.headers.get("X-API-Key", "")
+        if direct == API_KEY:
+            return True
+        auth = self.headers.get("Authorization", "")
+        if auth.startswith("Bearer ") and auth[7:].strip() == API_KEY:
+            return True
+        return False
+
+    def _require_api_auth_for_route(self, route_path):
+        if not route_path.startswith("/api/"):
+            return True
+        if self._is_authorized():
+            return True
+        self._send(
+            401,
+            json.dumps({"error": "Unauthorized"}, ensure_ascii=True),
+            "application/json; charset=utf-8",
+        )
+        return False
+
+    def _expected_origin(self):
+        host = (self.headers.get("Host") or "").strip()
+        if not host:
+            return None
+        return f"http://{host}"
+
+    def _require_same_origin_for_state_change(self, route_path):
+        if not route_path.startswith("/api/"):
+            return True
+
+        sec_fetch_site = (self.headers.get(
+            "Sec-Fetch-Site") or "").strip().lower()
+        if sec_fetch_site in {"cross-site", "none"}:
+            self._send(
+                403,
+                json.dumps(
+                    {"error": "Cross-site requests are not allowed"}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+            return False
+
+        expected_origin = self._expected_origin()
+        origin = (self.headers.get("Origin") or "").strip()
+        if origin and expected_origin and origin != expected_origin:
+            self._send(
+                403,
+                json.dumps({"error": "Origin not allowed"}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+            return False
+
+        referer = (self.headers.get("Referer") or "").strip()
+        if referer and expected_origin and not referer.startswith(expected_origin + "/"):
+            self._send(
+                403,
+                json.dumps({"error": "Referer not allowed"},
+                           ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+            return False
+
+        return True
+
+    def _send_file(self, file_path, content_type, extra_headers=None):
+        size = os.path.getsize(file_path)
+        self.send_response(200)
+        self._send_security_headers()
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(size))
+        if extra_headers:
+            for k, v in extra_headers.items():
+                self.send_header(k, v)
+        self.end_headers()
+
+        with open(file_path, "rb") as f:
+            while True:
+                chunk = f.read(64 * 1024)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+
+    def _read_json_body(self):
+        raw_length = self.headers.get("Content-Length", "0")
+        try:
+            length = int(raw_length)
+        except ValueError:
+            self._send(
+                400,
+                json.dumps({"error": "Invalid Content-Length"},
+                           ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+            return None
+
+        if length < 0:
+            self._send(
+                400,
+                json.dumps({"error": "Invalid Content-Length"},
+                           ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+            return None
+
+        if length > MAX_BODY_BYTES:
+            self._send(
+                413,
+                json.dumps({"error": "Request body too large"},
+                           ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+            return None
+
+        data = self.rfile.read(length) if length > 0 else b"{}"
+        try:
+            return json.loads(data.decode("utf-8"))
+        except json.JSONDecodeError:
+            self._send(
+                400,
+                json.dumps({"error": "Invalid JSON"}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+            return None
+
     def do_GET(self):
         parsed_url = urlparse(self.path)
         route_path = parsed_url.path
 
+        if not self._require_api_auth_for_route(route_path):
+            return
+
         if self.path == "/":
             html = HTML.replace("%OLLAMA_BASE%", OLLAMA_BASE)
+            html = html.replace("%API_KEY_REQUIRED%",
+                                "true" if bool(API_KEY) else "false")
             return self._send(200, html, "text/html; charset=utf-8")
+
+        if route_path.startswith("/assets/"):
+            rel_asset = unquote(route_path[len("/assets/"):]).lstrip("/")
+            candidate = (ASSET_ROOT / rel_asset).resolve()
+            asset_root_resolved = ASSET_ROOT.resolve()
+            if (
+                not str(candidate).startswith(
+                    str(asset_root_resolved) + os.sep)
+                or not candidate.is_file()
+            ):
+                return self._send(404, "Not found")
+
+            content_type, _ = mimetypes.guess_type(str(candidate))
+            if not content_type:
+                content_type = "application/octet-stream"
+            with open(candidate, "rb") as f:
+                payload = f.read()
+            return self._send_bytes(
+                200,
+                payload,
+                content_type,
+                {"Cache-Control": "public, max-age=31536000, immutable"},
+            )
 
         if route_path == "/api/tags":
             return self._proxy("GET", "/api/tags", None)
@@ -2328,12 +3433,38 @@ class Handler(BaseHTTPRequestHandler):
         if route_path == "/api/stash":
             params = parse_qs(parsed_url.query)
             limit_raw = params.get("limit", ["200"])[0]
+            raw_entry_type = params.get("entry_type", [""])[0]
+            entry_type = _normalize_entry_type(raw_entry_type) if str(
+                raw_entry_type).strip() else None
             try:
                 limit = int(limit_raw)
             except Exception:
                 limit = 200
             try:
-                payload = list_stash_entries(limit=max(0, limit))
+                payload = list_stash_entries(
+                    limit=max(0, limit), entry_type=entry_type)
+                return self._send(
+                    200,
+                    json.dumps(payload, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+            except Exception as exc:
+                return self._send(
+                    500,
+                    json.dumps({"error": str(exc)}, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+
+        if route_path == "/api/bibliography":
+            params = parse_qs(parsed_url.query)
+            limit_raw = params.get("limit", ["200"])[0]
+            try:
+                limit = int(limit_raw)
+            except Exception:
+                limit = 200
+            try:
+                payload = list_stash_entries(
+                    limit=max(0, limit), entry_type="bibliography")
                 return self._send(
                     200,
                     json.dumps(payload, ensure_ascii=True),
@@ -2371,7 +3502,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(
                     403,
                     json.dumps(
-                        {"error": "path is outside configured PDF library"}, ensure_ascii=True),
+                        {"error": "path is outside configured PDF library"}, ensure_ascii=True
+                    ),
                     "application/json; charset=utf-8",
                 )
 
@@ -2382,13 +3514,9 @@ class Handler(BaseHTTPRequestHandler):
                     "application/json; charset=utf-8",
                 )
 
-            with open(resolved_path, "rb") as f:
-                payload = f.read()
-
             filename = os.path.basename(resolved_path)
-            return self._send_bytes(
-                200,
-                payload,
+            return self._send_file(
+                resolved_path,
                 "application/pdf",
                 {
                     "Content-Disposition": f'inline; filename="{filename}"',
@@ -2399,22 +3527,47 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, "Not found")
 
     def do_POST(self):
-        if self.path == "/api/generate":
-            length = int(self.headers.get("Content-Length", "0"))
+        parsed_url = urlparse(self.path)
+        route_path = parsed_url.path
+
+        if not self._require_api_auth_for_route(route_path):
+            return
+
+        if not self._require_same_origin_for_state_change(route_path):
+            return
+
+        if route_path == "/api/generate":
+            raw_length = self.headers.get("Content-Length", "0")
+            try:
+                length = int(raw_length)
+            except ValueError:
+                return self._send(
+                    400,
+                    json.dumps({"error": "Invalid Content-Length"},
+                               ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+            if length < 0:
+                return self._send(
+                    400,
+                    json.dumps({"error": "Invalid Content-Length"},
+                               ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+            if length > MAX_BODY_BYTES:
+                return self._send(
+                    413,
+                    json.dumps({"error": "Request body too large"},
+                               ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
             data = self.rfile.read(length) if length > 0 else b"{}"
             return self._proxy("POST", "/api/generate", data)
 
-        if self.path == "/api/history":
-            length = int(self.headers.get("Content-Length", "0"))
-            data = self.rfile.read(length) if length > 0 else b"{}"
-            try:
-                payload = json.loads(data.decode("utf-8"))
-            except json.JSONDecodeError:
-                return self._send(
-                    400,
-                    json.dumps({"error": "Invalid JSON"}),
-                    "application/json; charset=utf-8",
-                )
+        if route_path == "/api/history":
+            payload = self._read_json_body()
+            if payload is None:
+                return
 
             role = payload.get("role")
             text = payload.get("text")
@@ -2429,17 +3582,10 @@ class Handler(BaseHTTPRequestHandler):
             append_history({"role": role, "text": text, "ts": ts})
             return self._send(200, json.dumps({"ok": True}), "application/json; charset=utf-8")
 
-        if self.path == "/api/instructions":
-            length = int(self.headers.get("Content-Length", "0"))
-            data = self.rfile.read(length) if length > 0 else b"{}"
-            try:
-                payload = json.loads(data.decode("utf-8"))
-            except json.JSONDecodeError:
-                return self._send(
-                    400,
-                    json.dumps({"error": "Invalid JSON"}),
-                    "application/json; charset=utf-8",
-                )
+        if route_path == "/api/instructions":
+            payload = self._read_json_body()
+            if payload is None:
+                return
 
             instructions = payload.get("instructions", "")
             if not isinstance(instructions, str):
@@ -2452,7 +3598,7 @@ class Handler(BaseHTTPRequestHandler):
             save_instructions(instructions)
             return self._send(200, json.dumps({"ok": True}), "application/json; charset=utf-8")
 
-        if self.path == "/api/pdf/index":
+        if route_path == "/api/pdf/index":
             started = start_pdf_index_job()
             return self._send(
                 200,
@@ -2461,21 +3607,18 @@ class Handler(BaseHTTPRequestHandler):
                 "application/json; charset=utf-8",
             )
 
-        if self.path == "/api/pdf/ask":
-            length = int(self.headers.get("Content-Length", "0"))
-            data = self.rfile.read(length) if length > 0 else b"{}"
-            try:
-                payload = json.loads(data.decode("utf-8"))
-            except json.JSONDecodeError:
-                return self._send(
-                    400,
-                    json.dumps({"error": "Invalid JSON"}),
-                    "application/json; charset=utf-8",
-                )
+        if route_path == "/api/pdf/ask":
+            payload = self._read_json_body()
+            if payload is None:
+                return
 
             query = payload.get("query", "")
             model = payload.get("model", "qwen2.5:14b")
-            top_k = int(payload.get("top_k", PDF_TOP_K))
+            try:
+                top_k = int(payload.get("top_k", PDF_TOP_K))
+            except Exception:
+                top_k = PDF_TOP_K
+            top_k = max(1, min(100, top_k))
             deepen = bool(payload.get("deepen", False))
             include_paths = payload.get("include_paths", [])
             exclude_paths = payload.get("exclude_paths", [])
@@ -2514,21 +3657,18 @@ class Handler(BaseHTTPRequestHandler):
                     "application/json; charset=utf-8",
                 )
 
-        if self.path == "/api/pdf/brief":
-            length = int(self.headers.get("Content-Length", "0"))
-            data = self.rfile.read(length) if length > 0 else b"{}"
-            try:
-                payload = json.loads(data.decode("utf-8"))
-            except json.JSONDecodeError:
-                return self._send(
-                    400,
-                    json.dumps({"error": "Invalid JSON"}),
-                    "application/json; charset=utf-8",
-                )
+        if route_path == "/api/pdf/brief":
+            payload = self._read_json_body()
+            if payload is None:
+                return
 
             query = payload.get("query", "")
             model = payload.get("model", "qwen2.5:14b")
-            top_k = int(payload.get("top_k", 14))
+            try:
+                top_k = int(payload.get("top_k", 14))
+            except Exception:
+                top_k = 14
+            top_k = max(1, min(100, top_k))
             include_paths = payload.get("include_paths", [])
             exclude_paths = payload.get("exclude_paths", [])
             if not isinstance(include_paths, list):
@@ -2573,17 +3713,10 @@ class Handler(BaseHTTPRequestHandler):
                     "application/json; charset=utf-8",
                 )
 
-        if self.path == "/api/stash":
-            length = int(self.headers.get("Content-Length", "0"))
-            data = self.rfile.read(length) if length > 0 else b"{}"
-            try:
-                payload = json.loads(data.decode("utf-8"))
-            except json.JSONDecodeError:
-                return self._send(
-                    400,
-                    json.dumps({"error": "Invalid JSON"}),
-                    "application/json; charset=utf-8",
-                )
+        if route_path == "/api/stash":
+            payload = self._read_json_body()
+            if payload is None:
+                return
 
             text = payload.get("text", "")
             if not isinstance(text, str) or not text.strip():
@@ -2624,15 +3757,24 @@ class Handler(BaseHTTPRequestHandler):
         parsed_url = urlparse(self.path)
         route_path = parsed_url.path
 
+        if not self._require_api_auth_for_route(route_path):
+            return
+
+        if not self._require_same_origin_for_state_change(route_path):
+            return
+
         if route_path == "/api/history":
             save_history([])
             return self._send(200, json.dumps({"ok": True}), "application/json; charset=utf-8")
 
         if route_path == "/api/stash":
             params = parse_qs(parsed_url.query)
+            raw_entry_type = params.get("entry_type", [""])[0]
+            entry_type = _normalize_entry_type(raw_entry_type) if str(
+                raw_entry_type).strip() else None
             if params.get("all", [""])[0] == "1":
                 try:
-                    result = clear_stash_entries()
+                    result = clear_stash_entries(entry_type=entry_type)
                     return self._send(
                         200,
                         json.dumps(result, ensure_ascii=True),
@@ -2668,7 +3810,31 @@ class Handler(BaseHTTPRequestHandler):
                     "application/json; charset=utf-8",
                 )
 
-            return self._send(404, "Not found")
+        if route_path == "/api/bibliography":
+            params = parse_qs(parsed_url.query)
+            if params.get("all", [""])[0] == "1":
+                try:
+                    result = clear_stash_entries(entry_type="bibliography")
+                    return self._send(
+                        200,
+                        json.dumps(result, ensure_ascii=True),
+                        "application/json; charset=utf-8",
+                    )
+                except Exception as exc:
+                    return self._send(
+                        500,
+                        json.dumps({"error": str(exc)}, ensure_ascii=True),
+                        "application/json; charset=utf-8",
+                    )
+
+            return self._send(
+                400,
+                json.dumps(
+                    {"error": "set all=1 to clear bibliography stash"}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        return self._send(404, "Not found")
 
     def _proxy(self, method, path, data):
         req = Request(
@@ -2689,6 +3855,13 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    is_loopback = HOST in {"127.0.0.1", "localhost", "::1"}
+    if not is_loopback and not ALLOW_INSECURE_BIND and not API_KEY:
+        raise SystemExit(
+            "Refusing non-loopback bind without auth. Set OLLAMA_WEB_API_KEY or "
+            "OLLAMA_WEB_ALLOW_INSECURE_BIND=1 to override."
+        )
+
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Serving UI at http://{HOST}:{PORT} (proxying {OLLAMA_BASE})")
     server.serve_forever()

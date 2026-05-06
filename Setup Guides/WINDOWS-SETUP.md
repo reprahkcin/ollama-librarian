@@ -9,6 +9,11 @@ Set up a standalone local LLM system on Windows using this repo:
 - Local document library
 - Local web interface
 
+Default access model:
+
+- This standard setup is local-only on one machine (`127.0.0.1`).
+- LAN access is an advanced exception and is intentionally not enabled by default.
+
 ## What This Runs
 
 - Web interface: scripts/ollama-web-chat.py
