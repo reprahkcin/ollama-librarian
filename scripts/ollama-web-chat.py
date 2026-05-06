@@ -467,7 +467,7 @@ HTML = """<!doctype html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Home LLM Chat</title>
+  <title>Ollama Librarian</title>
   <link rel="stylesheet" href="/assets/katex/katex.min.css" />
   <script defer src="/assets/katex/katex.min.js"></script>
   <script defer src="/assets/katex/contrib/auto-render.min.js"></script>
@@ -1112,7 +1112,7 @@ HTML = """<!doctype html>
 <body>
   <main class="shell">
     <aside class="panel sidebar">
-      <h1 class="title">Home LLM Console</h1>
+      <h1 class="title">Ollama Librarian</h1>
       <div class="meta">Endpoint: %OLLAMA_BASE%</div>
       <div id="status" class="status">
         <span id="statusDot" class="dot"></span>
