@@ -5,6 +5,7 @@ This project includes or uses third-party software. This file provides attributi
 ## Bundled/Vendored Assets
 
 1. KaTeX
+
 - Purpose: Offline math rendering assets used by the web UI.
 - Source: https://github.com/KaTeX/KaTeX
 - License: MIT
@@ -14,12 +15,14 @@ This project includes or uses third-party software. This file provides attributi
 ## Runtime Dependencies (Not Vendored Here)
 
 1. Ollama
+
 - Purpose: Local model runtime/API endpoint.
 - Source: https://github.com/ollama/ollama
 - License: See upstream repository license.
 - Notes: Installed separately by user setup; not redistributed by this repository.
 
 2. Python packages
+
 - Purpose: Indexing/parsing dependencies installed from scripts/pdf-rag-requirements.txt
 - Source and license: See each package's upstream metadata.
 - Notes: Installed by users in their environment; not vendored in this repository.
@@ -27,6 +30,7 @@ This project includes or uses third-party software. This file provides attributi
 ## Models and Weights
 
 1. Qwen and other Ollama-pulled models
+
 - Distribution model: Pulled by users at runtime; not bundled in this repository.
 - License responsibility: Users must review and comply with each model's license/terms from the source model page.
 - Practical guidance: Confirm terms before commercial use, redistribution, or publishing derivative artifacts.
