@@ -56,15 +56,15 @@ def clean_title_candidate(value: object) -> str:
 
     text = text.replace("_", " ")
     text = text.replace("–", "-").replace("—", "-")
-    text = re.sub(r"(?i)\\b(?:www\\.)?pdfdrive(?:\\.com)?\\b", " ", text)
+    text = re.sub(r"(?i)\b(?:www\.)?pdfdrive(?:\.com)?\b", " ", text)
     text = re.sub(
-        r"(?i)\\b(?:z[- ]?library|z-lib\\.org|libgen(?:\\.[a-z]+)?)\\b", " ", text)
-    text = re.sub(r"\\s*\\(\\s*pdf\\s*\\)\\s*", " ", text, flags=re.IGNORECASE)
-    text = re.sub(r"^\\s*[_\\-]+", "", text)
-    text = re.sub(r"^\\s*\\d+(?:\\.\\d+)*(?:\\)|\\.|:|-)?\\s+", "", text)
-    text = re.sub(r"\\s+-\\s+pdf\\s*(?:drive(?:\\.com)?)?\\s*$",
+        r"(?i)\b(?:z[- ]?library|z-lib\.org|libgen(?:\.[a-z]+)?)\b", " ", text)
+    text = re.sub(r"\s*\(\s*pdf\s*\)\s*", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"^\s*[_\-]+", "", text)
+    text = re.sub(r"^\s*\d+(?:\.\d+)*(?:\)|\.|:|-)?\s+", "", text)
+    text = re.sub(r"\s+-\s+pdf\s*(?:drive(?:\.com)?)?\s*$",
                   "", text, flags=re.IGNORECASE)
-    text = re.sub(r"\\s+", " ", text)
+    text = re.sub(r"\s+", " ", text)
     return text.strip(" -_.")
 
 
@@ -72,7 +72,7 @@ def looks_like_author_name(value: str) -> bool:
     text = normalize_text(value)
     if not text:
         return False
-    if re.search(r"\\d", text):
+    if re.search(r"\d", text):
         return False
     words = text.replace(",", " ").split()
     if len(words) < 1 or len(words) > 6:
@@ -85,7 +85,7 @@ def infer_author_and_title_from_path(doc_path: Path) -> tuple[str, str]:
     if not stem:
         return "", "Untitled document"
 
-    by_match = re.match(r"^(.+?)\\s+by\\s+(.+)$", stem, flags=re.IGNORECASE)
+    by_match = re.match(r"^(.+?)\s+by\s+(.+)$", stem, flags=re.IGNORECASE)
     if by_match:
         title_guess = clean_title_candidate(by_match.group(1))
         author_guess = normalize_text(
@@ -93,7 +93,7 @@ def infer_author_and_title_from_path(doc_path: Path) -> tuple[str, str]:
         if title_guess and looks_like_author_name(author_guess):
             return author_guess, title_guess
 
-    parts = re.split(r"\\s+-\\s+", stem, maxsplit=1)
+    parts = re.split(r"\s+-\s+", stem, maxsplit=1)
     if len(parts) == 2:
         left, right = clean_title_candidate(
             parts[0]), clean_title_candidate(parts[1])
@@ -114,7 +114,7 @@ def split_authors(raw: str) -> list[str]:
         return []
     parts = [
         normalize_text(p) for p in re.split(
-            r"\\s*;\\s*|\\s+\\band\\b\\s+|\\s*&\\s*|\\s*/\\s*",
+            r"\s*;\s*|\s+\band\b\s+|\s*&\s*|\s*/\s*",
             text,
             flags=re.IGNORECASE,
         )
@@ -124,7 +124,7 @@ def split_authors(raw: str) -> list[str]:
     for part in parts:
         if not part:
             continue
-        cleaned = normalize_text(re.sub(r"(?i)^by\\s+", "", part)).strip(" ,;")
+        cleaned = normalize_text(re.sub(r"(?i)^by\s+", "", part)).strip(" ,;")
         if not cleaned:
             continue
         lowered = cleaned.lower()

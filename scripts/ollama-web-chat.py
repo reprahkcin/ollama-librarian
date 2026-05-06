@@ -367,16 +367,36 @@ def list_library_docs() -> dict:
         conn.close()
 
     source_root = os.path.realpath(os.path.expanduser(PDF_SOURCE))
+    real_paths = [
+        os.path.realpath(os.path.expanduser(str(path)))
+        for path, _, _ in rows
+        if path
+    ]
+
+    fallback_root = ""
+    if real_paths:
+        try:
+            common = os.path.commonpath(real_paths)
+        except ValueError:
+            common = ""
+        if common:
+            fallback_root = common if os.path.isdir(
+                common) else os.path.dirname(common)
+
+    def _rel_for(real_path: str, raw_path: str) -> str:
+        if source_root and real_path.startswith(source_root + os.sep):
+            return os.path.relpath(real_path, source_root)
+        if fallback_root and real_path.startswith(fallback_root + os.sep):
+            return os.path.relpath(real_path, fallback_root)
+        return os.path.basename(raw_path)
+
     docs = []
     groups: dict[str, int] = {}
     for path, pages, chunks in rows:
         path_str = str(path)
         real_path = os.path.realpath(os.path.expanduser(path_str))
 
-        if real_path.startswith(source_root + os.sep):
-            rel = os.path.relpath(real_path, source_root)
-        else:
-            rel = os.path.basename(path_str)
+        rel = _rel_for(real_path, path_str)
 
         top = rel.split(os.sep)[0] if rel else "(unknown)"
         groups[top] = groups.get(top, 0) + 1
@@ -694,6 +714,33 @@ HTML = """<!doctype html>
       color: #7dd3fc;
       text-decoration: underline;
     }
+    .md .source-line {
+      margin: 0.08rem 0 0.32rem;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.3rem;
+    }
+    .md .source-link,
+    .md .source-link-static,
+    .md .source-inline {
+      display: inline;
+      color: #94a3b8;
+      font-size: 0.68rem;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      text-transform: lowercase;
+      text-decoration: none;
+      cursor: help;
+    }
+    .md .source-link {
+      cursor: pointer;
+    }
+    .md .source-link:hover,
+    .md .source-link-static:hover,
+    .md .source-inline:hover {
+      color: #cbd5e1;
+      text-decoration: underline;
+    }
     .md .math-block {
       margin: 0.45rem 0;
       overflow-x: auto;
@@ -789,6 +836,55 @@ HTML = """<!doctype html>
       margin-top: 0.7rem;
       display: grid;
       gap: 0.55rem;
+    }
+    .model-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 0.4rem;
+      align-items: center;
+      margin-bottom: 0.25rem;
+    }
+    .btn-mini {
+      min-width: 70px;
+      padding: 0.28rem 0.45rem;
+      font-size: 0.72rem;
+    }
+    .pdf-progress {
+      height: 0.42rem;
+      border-radius: 999px;
+      border: 1px solid #334155;
+      background: #0b1220;
+      overflow: hidden;
+      margin-top: 0.35rem;
+    }
+    .pdf-progress.hidden {
+      display: none;
+    }
+    .pdf-progress-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #0d9488, #22d3ee);
+      transition: width 220ms ease;
+    }
+    .prompt-history-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto auto;
+      gap: 0.4rem;
+      align-items: center;
+    }
+    .prompt-history-row select {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.38rem 0.48rem;
+      background: #111827;
+      color: var(--ink);
+      font-size: 0.76rem;
+    }
+    .prompt-history-row button {
+      min-width: 70px;
+      padding: 0.28rem 0.45rem;
+      font-size: 0.72rem;
     }
     textarea {
       min-height: 92px;
@@ -1015,6 +1111,14 @@ HTML = """<!doctype html>
       font-size: 0.75rem;
       color: var(--muted);
     }
+    .docs-group-root {
+      color: #cbd5e1;
+      font-weight: 600;
+    }
+    .docs-group-child .docs-group-label {
+      padding-left: 1rem;
+      color: #9ca3af;
+    }
     .docs-group-label {
       white-space: nowrap;
       overflow: hidden;
@@ -1120,7 +1224,10 @@ HTML = """<!doctype html>
       </div>
 
       <label for="model">Model</label>
-      <select id="model"></select>
+      <div class="model-row">
+        <select id="model"></select>
+        <button id="refresh" class="btn-soft btn-mini" type="button">Refresh</button>
+      </div>
 
       <label for="instructions">Running Instructions</label>
       <textarea id="instructions" placeholder="Example: Be concise. Use bullet points. Ask clarifying questions if uncertain."></textarea>
@@ -1128,7 +1235,7 @@ HTML = """<!doctype html>
 
       <label>PDF Library</label>
       <label class="checkrow" for="usePdfLibrary" title="Use retrieval from your indexed PDF library instead of plain model-only responses.">
-        <input id="usePdfLibrary" type="checkbox" title="Use retrieval from your indexed PDF library instead of plain model-only responses." />
+        <input id="usePdfLibrary" type="checkbox" checked title="Use retrieval from your indexed PDF library instead of plain model-only responses." />
         Use PDF-grounded answers
       </label>
       <label class="checkrow" for="deepStudy" title="Expands retrieval depth and context for more thorough, citation-heavy answers. Slower but usually more complete.">
@@ -1137,8 +1244,8 @@ HTML = """<!doctype html>
       </label>
       <button id="syncPdfLibrary" class="btn-soft" type="button" title="Indexes new or changed PDFs. OCR fallback is used for scanned/text-only images when available.">Sync New PDFs</button>
       <div id="pdfStatus" class="tiny">PDF index: checking...</div>
+      <div id="pdfProgress" class="pdf-progress hidden"><div id="pdfProgressBar" class="pdf-progress-bar"></div></div>
 
-      <button id="refresh" class="btn-soft" type="button">Refresh Models</button>
       <button id="openLibraryDocs" class="btn-soft" type="button">Library Docs</button>
       <button id="openStash" class="btn-soft" type="button">View Stash</button>
       <button id="openBibliography" class="btn-soft" type="button">View Bibliography</button>
@@ -1155,11 +1262,19 @@ HTML = """<!doctype html>
 
       <div class="composer">
         <textarea id="prompt" placeholder="Ask the model something useful..."></textarea>
+        <div class="prompt-history-row">
+          <select id="promptHistorySelect" title="Select a previous prompt">
+            <option value="">Previous prompts...</option>
+          </select>
+          <button id="promptUseSelected" class="btn-soft" type="button" title="Ask using the selected prompt">Ask</button>
+          <button id="promptPinSelected" class="btn-soft" type="button" title="Pin or unpin the selected prompt">Pin</button>
+          <button id="promptClearHistory" class="btn-soft" type="button" title="Clear unpinned prompt history">Clear</button>
+        </div>
         <div class="composer-row">
           <button id="send" class="btn-primary" type="button">Send</button>
           <button id="cancel" class="btn-soft" type="button" disabled>Cancel</button>
           <button id="studyBrief" class="btn-soft" type="button" title="Creates a structured brief from your PDF library with citations and suggested reading order.">Study Brief</button>
-          <button id="makeBibliography" class="btn-soft" type="button" title="Generates an APA bibliography from the latest PDF-grounded answer and stores it in bibliography stash.">Bibliography</button>
+          <button id="makeBibliography" class="btn-soft" type="button" title="Generates an APA bibliography from the latest PDF-grounded answer and opens bibliography stash.">Generate Bibliography</button>
           <div id="meta" class="subtle">Ready</div>
         </div>
       </div>
@@ -1239,8 +1354,14 @@ HTML = """<!doctype html>
     const usePdfLibraryEl = document.getElementById('usePdfLibrary');
     const deepStudyEl = document.getElementById('deepStudy');
     const syncPdfLibraryEl = document.getElementById('syncPdfLibrary');
+    const pdfProgressEl = document.getElementById('pdfProgress');
+    const pdfProgressBarEl = document.getElementById('pdfProgressBar');
     const studyBriefEl = document.getElementById('studyBrief');
     const makeBibliographyEl = document.getElementById('makeBibliography');
+    const promptHistorySelectEl = document.getElementById('promptHistorySelect');
+    const promptUseSelectedEl = document.getElementById('promptUseSelected');
+    const promptPinSelectedEl = document.getElementById('promptPinSelected');
+    const promptClearHistoryEl = document.getElementById('promptClearHistory');
     const pdfStatusEl = document.getElementById('pdfStatus');
     const messagesEl = document.getElementById('messages');
     const statusDotEl = document.getElementById('statusDot');
@@ -1271,8 +1392,202 @@ HTML = """<!doctype html>
     let stashViewMode = 'stash';
     let lastPdfSources = [];
     let lastCitationQuery = '';
+    let promptHistory = [];
+    let promptHistoryIndex = -1;
+    let pinnedPrompts = [];
+    let syncSnapshot = null;
 
     const DOC_FILTER_STORAGE_KEY = 'ollama_web_excluded_docs_v1';
+    const PROMPT_HISTORY_STORAGE_KEY = 'ollama_web_prompt_history_v1';
+    const PINNED_PROMPTS_STORAGE_KEY = 'ollama_web_pinned_prompts_v1';
+    const MAX_PROMPT_HISTORY = 150;
+
+    function loadPromptHistory() {
+      try {
+        const raw = localStorage.getItem(PROMPT_HISTORY_STORAGE_KEY);
+        if (!raw) return [];
+        const arr = JSON.parse(raw);
+        if (!Array.isArray(arr)) return [];
+        return arr
+          .filter((x) => typeof x === 'string')
+          .map((x) => x.trim())
+          .filter(Boolean)
+          .slice(-MAX_PROMPT_HISTORY);
+      } catch (_) {
+        return [];
+      }
+    }
+
+    function loadPinnedPrompts() {
+      try {
+        const raw = localStorage.getItem(PINNED_PROMPTS_STORAGE_KEY);
+        if (!raw) return [];
+        const arr = JSON.parse(raw);
+        if (!Array.isArray(arr)) return [];
+        return arr
+          .filter((x) => typeof x === 'string')
+          .map((x) => x.trim())
+          .filter(Boolean)
+          .slice(-MAX_PROMPT_HISTORY);
+      } catch (_) {
+        return [];
+      }
+    }
+
+    function persistPromptHistory() {
+      try {
+        localStorage.setItem(PROMPT_HISTORY_STORAGE_KEY, JSON.stringify(promptHistory.slice(-MAX_PROMPT_HISTORY)));
+      } catch (_) {
+        // Ignore storage errors.
+      }
+    }
+
+    function persistPinnedPrompts() {
+      try {
+        localStorage.setItem(PINNED_PROMPTS_STORAGE_KEY, JSON.stringify(pinnedPrompts.slice(-MAX_PROMPT_HISTORY)));
+      } catch (_) {
+        // Ignore storage errors.
+      }
+    }
+
+    function collectPromptRows() {
+      const out = [];
+      const seen = new Set();
+
+      for (let i = pinnedPrompts.length - 1; i >= 0; i -= 1) {
+        const text = pinnedPrompts[i];
+        if (!text || seen.has(text)) continue;
+        seen.add(text);
+        out.push({ text, pinned: true });
+      }
+
+      for (let i = promptHistory.length - 1; i >= 0; i -= 1) {
+        const text = promptHistory[i];
+        if (!text || seen.has(text)) continue;
+        seen.add(text);
+        out.push({ text, pinned: false });
+      }
+      return out;
+    }
+
+    function renderPromptHistoryDropdown(selectText = '') {
+      if (!promptHistorySelectEl) return;
+      const selected = String(selectText || promptHistorySelectEl.value || '');
+      const rows = collectPromptRows();
+
+      promptHistorySelectEl.innerHTML = '';
+      const placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = rows.length ? 'Previous prompts...' : 'No previous prompts';
+      promptHistorySelectEl.appendChild(placeholder);
+
+      for (const row of rows) {
+        const opt = document.createElement('option');
+        opt.value = row.text;
+        const shortText = row.text.length > 170 ? `${row.text.slice(0, 170)}...` : row.text;
+        opt.textContent = row.pinned ? `[PIN] ${shortText}` : shortText;
+        promptHistorySelectEl.appendChild(opt);
+      }
+
+      if (selected) {
+        promptHistorySelectEl.value = selected;
+      }
+    }
+
+    function rememberPrompt(text, persist = true) {
+      const value = String(text || '').trim();
+      if (!value) return;
+      const existingIdx = promptHistory.lastIndexOf(value);
+      if (existingIdx >= 0) {
+        promptHistory.splice(existingIdx, 1);
+      }
+      promptHistory.push(value);
+      if (promptHistory.length > MAX_PROMPT_HISTORY) {
+        promptHistory = promptHistory.slice(-MAX_PROMPT_HISTORY);
+      }
+      promptHistoryIndex = promptHistory.length;
+      if (persist) {
+        persistPromptHistory();
+      }
+      renderPromptHistoryDropdown(value);
+    }
+
+    function recallPromptHistory(direction) {
+      if (!promptHistory.length) {
+        metaEl.textContent = 'No saved prompts yet';
+        return;
+      }
+
+      if (direction < 0) {
+        promptHistoryIndex = Math.max(0, promptHistoryIndex - 1);
+      } else {
+        promptHistoryIndex = Math.min(promptHistory.length, promptHistoryIndex + 1);
+      }
+
+      if (promptHistoryIndex >= promptHistory.length) {
+        promptEl.value = '';
+        metaEl.textContent = 'Prompt history: newest';
+        return;
+      }
+
+      promptEl.value = promptHistory[promptHistoryIndex] || '';
+      promptEl.focus();
+      promptEl.setSelectionRange(promptEl.value.length, promptEl.value.length);
+      metaEl.textContent = `Prompt history ${promptHistoryIndex + 1}/${promptHistory.length}`;
+      renderPromptHistoryDropdown(promptEl.value);
+    }
+
+    function usePromptFromDropdown() {
+      const selected = String(promptHistorySelectEl.value || '').trim();
+      if (!selected) {
+        metaEl.textContent = 'Select a prompt from the list first';
+        return '';
+      }
+      promptEl.value = selected;
+      promptEl.focus();
+      promptEl.setSelectionRange(promptEl.value.length, promptEl.value.length);
+      return selected;
+    }
+
+    function togglePinSelectedPrompt() {
+      const selected = String(promptHistorySelectEl.value || '').trim();
+      if (!selected) {
+        metaEl.textContent = 'Select a prompt to pin or unpin';
+        return;
+      }
+      const idx = pinnedPrompts.lastIndexOf(selected);
+      if (idx >= 0) {
+        pinnedPrompts.splice(idx, 1);
+        persistPinnedPrompts();
+        renderPromptHistoryDropdown(selected);
+        metaEl.textContent = 'Prompt unpinned';
+        return;
+      }
+      pinnedPrompts.push(selected);
+      if (pinnedPrompts.length > MAX_PROMPT_HISTORY) {
+        pinnedPrompts = pinnedPrompts.slice(-MAX_PROMPT_HISTORY);
+      }
+      persistPinnedPrompts();
+      renderPromptHistoryDropdown(selected);
+      metaEl.textContent = 'Prompt pinned';
+    }
+
+    function clearPromptHistory() {
+      const keepPinned = new Set(pinnedPrompts);
+      const before = promptHistory.length;
+      promptHistory = promptHistory.filter((p) => keepPinned.has(p));
+      promptHistoryIndex = promptHistory.length;
+      persistPromptHistory();
+      renderPromptHistoryDropdown();
+      metaEl.textContent = `Cleared ${Math.max(0, before - promptHistory.length)} unpinned prompts`;
+    }
+
+    async function askSelectedPrompt() {
+      if (activeRequestController) return;
+      const selected = usePromptFromDropdown();
+      if (!selected) return;
+      await sendPrompt();
+    }
 
     function setStatus(state, text) {
       statusDotEl.classList.remove('ok', 'err');
@@ -1302,13 +1617,130 @@ HTML = """<!doctype html>
         .replace(/'/g, '&#39;');
     }
 
+    function sourceLinkFromDescriptor(rawDescriptor) {
+      const raw = String(rawDescriptor || '').trim();
+      if (!raw) return null;
+
+      const urlMatch = raw.match(/(?:https?:\/\/|\/api\/pdf\/file\?)[^\s;,)\]]+/i);
+      if (urlMatch) {
+        return { href: urlMatch[0], title: raw, label: 'source' };
+      }
+
+      const indexed = raw.match(/source\s+path\s*(\d+)(?:\s*,?\s*(?:location|page)\s*(\d+))?/i);
+      if (indexed) {
+        const idx = Math.max(1, Number(indexed[1] || 1)) - 1;
+        const loc = Number(indexed[2] || 1);
+        const src = Array.isArray(lastPdfSources) ? lastPdfSources[idx] : null;
+        const path = src && src.path ? String(src.path) : '';
+        if (path) {
+          const page = Number.isFinite(loc) && loc > 0 ? loc : Number(src.page || src.location || 1);
+          const href = `/api/pdf/file?path=${strictEncodeURIComponent(path)}#page=${Math.max(1, Number(page || 1))}`;
+          return { href, title: raw, label: 'source' };
+        }
+      }
+
+      const explicitSource = raw.match(/source\s*=\s*(.+?\.pdf)\b/i);
+      if (explicitSource) {
+        const path = String(explicitSource[1] || '').trim();
+        const locMatch = raw.match(/(?:location|page)\s*=\s*(\d+)/i);
+        const loc = Number(locMatch && locMatch[1] ? locMatch[1] : 1);
+        if (path) {
+          const href = `/api/pdf/file?path=${strictEncodeURIComponent(path)}#page=${Math.max(1, loc)}`;
+          return { href, title: raw, label: 'source' };
+        }
+      }
+
+      const pathMatch = raw.match(/(?:\/[\w .\-()&%+]+)+\.pdf\b/i);
+      if (pathMatch) {
+        const path = pathMatch[0];
+        const pageMatch = raw.match(/(?:page|location|p\.)\s*(\d+)/i);
+        const page = Number(pageMatch && pageMatch[1] ? pageMatch[1] : 1);
+        const href = `/api/pdf/file?path=${strictEncodeURIComponent(path)}#page=${Math.max(1, page)}`;
+        return { href, title: raw, label: 'source' };
+      }
+
+      return null;
+    }
+
+    function protectMathSegments(text) {
+      const segments = [];
+      let out = String(text || '');
+      out = out.replace(/\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|\$[^$\\n]+\$/g, (m) => {
+        const token = `@@MATHSEG_${segments.length}@@`;
+        segments.push(m);
+        return token;
+      });
+      return { out, segments };
+    }
+
     function renderInlineMarkdown(text) {
-      let out = text;
+      const protectedMath = protectMathSegments(text);
+      let out = protectedMath.out;
       out = out.replace(/`([^`]+)`/g, '<code>$1</code>');
       out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
       out = out.replace(/\*([^*]+)\*/g, '<em>$1</em>');
       out = out.replace(/\[([^\]]+)\]\(((?:https?:\/\/|\/api\/pdf\/file\?)[^\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+      out = out.replace(/\[([^\]]*(?:source\s+path|source\s*=)[^\]]*)\]/gi, (_, inner) => {
+        const raw = String(inner || '').trim();
+        if (!raw) return '';
+        const descriptorMatches = Array.from(raw.matchAll(/source\s+path\s*\d+(?:\s*,?\s*(?:location|page)\s*\d+)?|source\s*=\s*.+?\.pdf(?:\s+(?:location|page)\s*=\s*\d+)?/gi));
+        const descriptors = descriptorMatches.length
+          ? descriptorMatches.map((m) => String(m[0] || '').trim()).filter(Boolean)
+          : raw.split(/\s*;\s*/).map((x) => String(x || '').trim()).filter(Boolean);
+
+        const links = [];
+        for (const descriptor of descriptors) {
+          const title = descriptor.replace(/"/g, '&quot;');
+          const link = sourceLinkFromDescriptor(descriptor);
+          if (link && link.href) {
+            links.push(`<a class="source-inline" href="${link.href}" target="_blank" rel="noopener noreferrer" title="${title}">source</a>`);
+          } else {
+            links.push(`<span class="source-inline" title="${title}">source</span>`);
+          }
+        }
+        return links.length ? ` ${links.join(' ')}` : '';
+      });
+      out = out.replace(/\bsource\s+path\s*\d+(?:\s*,\s*(?:location|page)\s*\d+)?\b/gi, (match) => {
+        const link = sourceLinkFromDescriptor(match);
+        const title = String(match).replace(/"/g, '&quot;');
+        if (link && link.href) {
+          return `<a class="source-inline" href="${link.href}" target="_blank" rel="noopener noreferrer" title="${title}">source</a>`;
+        }
+        return `<span class="source-inline" title="${title}">source</span>`;
+      });
+      out = out.replace(/\bsource\s*=\s*.+?\.pdf(?:\s+(?:location|page)\s*=\s*\d+)?/gi, (match) => {
+        const link = sourceLinkFromDescriptor(match);
+        const title = String(match).replace(/"/g, '&quot;');
+        if (link && link.href) {
+          return `<a class="source-inline" href="${link.href}" target="_blank" rel="noopener noreferrer" title="${title}">source</a>`;
+        }
+        return `<span class="source-inline" title="${title}">source</span>`;
+      });
+      out = out.replace(/@@MATHSEG_(\d+)@@/g, (_, idx) => protectedMath.segments[Number(idx)] || '');
       return out;
+    }
+
+    function renderBracketSourceLinks(text) {
+      const matches = Array.from(String(text || '').matchAll(/\[([^\]]+)\]/g));
+      if (!matches.length) {
+        return '';
+      }
+
+      const links = [];
+      for (const match of matches) {
+        const raw = String(match[1] || '').trim();
+        if (!raw) {
+          continue;
+        }
+        const title = raw.replace(/"/g, '&quot;');
+        const link = sourceLinkFromDescriptor(raw);
+        if (link && link.href) {
+          links.push(`<a class="source-link" href="${link.href}" target="_blank" rel="noopener noreferrer" title="${title}">Source</a>`);
+        } else {
+          links.push(`<span class="source-link-static" title="${title}">Source</span>`);
+        }
+      }
+      return links.join(' ');
     }
 
     function normalizeMathDelimiters(text) {
@@ -1419,13 +1851,65 @@ HTML = """<!doctype html>
         }
       };
 
-      for (const raw of lines) {
+      for (let i = 0; i < lines.length; i += 1) {
+        const raw = lines[i];
         const line = raw.trimEnd();
         const t = line.trim();
 
         if (!t) {
-          closeLists();
+          let nextNonEmpty = '';
+          for (let j = i + 1; j < lines.length; j += 1) {
+            const candidate = lines[j].trim();
+            if (candidate) {
+              nextNonEmpty = candidate;
+              break;
+            }
+          }
+          const nextKeepsUl = inUl && /^[-*]\s+/.test(nextNonEmpty);
+          const nextKeepsOl = inOl && /^\d+\.\s+/.test(nextNonEmpty);
+          if (!nextKeepsUl && !nextKeepsOl) {
+            closeLists();
+          }
           continue;
+        }
+
+        if (/^\[[^\]]+\](?:\s*[,;]?\s*\[[^\]]+\])*$/.test(t)) {
+          closeLists();
+          const links = renderBracketSourceLinks(t);
+          if (links) {
+            html.push(`<p class="source-line">${links}</p>`);
+            continue;
+          }
+        }
+
+        const sourcesLine = t.match(/^sources?:\s*(.+)$/i);
+        if (sourcesLine) {
+          closeLists();
+          const parts = sourcesLine[1].split(/\s*;\s*/).filter(Boolean);
+          const links = [];
+          for (const part of parts) {
+            const link = sourceLinkFromDescriptor(part);
+            const title = String(part || '').trim().replace(/"/g, '&quot;');
+            if (link && link.href) {
+              links.push(`<a class="source-link" href="${link.href}" target="_blank" rel="noopener noreferrer" title="${title}">Source</a>`);
+            } else if (title) {
+              links.push(`<span class="source-link-static" title="${title}">Source</span>`);
+            }
+          }
+          if (links.length) {
+            html.push(`<p class="source-line">${links.join(' ')}</p>`);
+            continue;
+          }
+        }
+
+        if (/\.pdf\b/i.test(t) && !/\[[^\]]+\]\([^\)]+\)/.test(t)) {
+          closeLists();
+          const link = sourceLinkFromDescriptor(t);
+          if (link && link.href) {
+            const title = t.replace(/"/g, '&quot;');
+            html.push(`<p class="source-line"><a class="source-link" href="${link.href}" target="_blank" rel="noopener noreferrer" title="${title}">Source</a></p>`);
+            continue;
+          }
         }
 
         const headingMatch = t.match(/^(#{1,6})\s+(.*)$/);
@@ -1711,6 +2195,63 @@ HTML = """<!doctype html>
       renderLibraryDocs();
     }
 
+    function pathParts(relPath) {
+      const raw = String(relPath || '').replace(/\\\\/g, '/').replace(/^\/+/, '');
+      if (!raw) return [];
+      return raw.split('/').filter(Boolean);
+    }
+
+    function folderKeysForDoc(doc) {
+      const parts = pathParts(doc.rel_path || doc.path || '');
+      const dirs = parts.slice(0, Math.max(0, parts.length - 1));
+      if (!dirs.length) {
+        return { root: '(root)', child: '' };
+      }
+      const root = dirs[0];
+      const child = dirs.length >= 2 ? `${dirs[0]}/${dirs[1]}` : '';
+      return { root, child };
+    }
+
+    function setFolderIncluded(folderKey, depth, shouldInclude) {
+      for (const doc of libraryDocs) {
+        const { root, child } = folderKeysForDoc(doc);
+        const matches = depth === 1 ? root === folderKey : child === folderKey;
+        if (!matches) continue;
+        if (shouldInclude) {
+          excludedDocPaths.delete(doc.path);
+        } else {
+          excludedDocPaths.add(doc.path);
+        }
+      }
+      persistDocFilterState();
+      renderLibraryDocs();
+    }
+
+    function buildFolderHierarchy(docs) {
+      const roots = new Map();
+      for (const doc of docs) {
+        const { root, child } = folderKeysForDoc(doc);
+        if (!roots.has(root)) {
+          roots.set(root, { key: root, docs: [], children: new Map() });
+        }
+        const rootNode = roots.get(root);
+        rootNode.docs.push(doc);
+
+        if (!child) continue;
+        if (!rootNode.children.has(child)) {
+          const childLabel = child.split('/').slice(-1)[0] || child;
+          rootNode.children.set(child, { key: child, label: childLabel, docs: [] });
+        }
+        rootNode.children.get(child).docs.push(doc);
+      }
+
+      const rootList = Array.from(roots.values()).sort((a, b) => a.key.localeCompare(b.key));
+      for (const node of rootList) {
+        node.children = Array.from(node.children.values()).sort((a, b) => a.label.localeCompare(b.label));
+      }
+      return rootList;
+    }
+
     function renderLibraryDocs() {
       const q = (docsSearchEl.value || '').trim().toLowerCase();
       const filtered = q
@@ -1718,26 +2259,21 @@ HTML = """<!doctype html>
         : libraryDocs;
 
       const includedCount = Math.max(0, libraryDocs.length - excludedDocPaths.size);
-      const groupSummary = libraryGroups.slice(0, 8).map((g) => `${g.name}: ${g.count}`).join(', ');
+      const hierarchy = buildFolderHierarchy(filtered);
       docsMetaEl.textContent =
         `Docs: ${libraryDocs.length} | Included: ${includedCount} | Excluded: ${excludedDocPaths.size}` +
-        (groupSummary ? `\nTop groups: ${groupSummary}` : '');
+        (hierarchy.length ? `\nFolders shown: ${hierarchy.length}` : '');
 
       docsGroupsEl.innerHTML = '';
-      const groupsForUi = libraryGroups.length
-        ? libraryGroups
-        : [{ name: '(all)', count: libraryDocs.length }];
-      for (const group of groupsForUi) {
-        const groupName = group.name || '(unknown)';
-        const docsInGroup = libraryDocs.filter((d) => (d.top_group || '(unknown)') === groupName);
-        const groupIncluded = docsInGroup.filter((d) => !excludedDocPaths.has(d.path)).length;
+      for (const rootNode of hierarchy) {
+        const rootIncluded = rootNode.docs.filter((d) => !excludedDocPaths.has(d.path)).length;
 
         const row = document.createElement('div');
-        row.className = 'docs-group-row';
+        row.className = 'docs-group-row docs-group-root';
 
         const label = document.createElement('div');
         label.className = 'docs-group-label';
-        label.textContent = `${groupName}: ${groupIncluded}/${docsInGroup.length} included`;
+        label.textContent = `${rootNode.key}: ${rootIncluded}/${rootNode.docs.length} included`;
 
         const actions = document.createElement('div');
         actions.className = 'docs-group-actions';
@@ -1745,19 +2281,51 @@ HTML = """<!doctype html>
         inBtn.type = 'button';
         inBtn.className = 'btn-soft';
         inBtn.textContent = 'In';
-        inBtn.addEventListener('click', () => setGroupIncluded(groupName, true));
+        inBtn.addEventListener('click', () => setFolderIncluded(rootNode.key, 1, true));
 
         const outBtn = document.createElement('button');
         outBtn.type = 'button';
         outBtn.className = 'btn-soft';
         outBtn.textContent = 'Out';
-        outBtn.addEventListener('click', () => setGroupIncluded(groupName, false));
+        outBtn.addEventListener('click', () => setFolderIncluded(rootNode.key, 1, false));
 
         actions.appendChild(inBtn);
         actions.appendChild(outBtn);
         row.appendChild(label);
         row.appendChild(actions);
         docsGroupsEl.appendChild(row);
+
+        for (const childNode of rootNode.children) {
+          const childIncluded = childNode.docs.filter((d) => !excludedDocPaths.has(d.path)).length;
+
+          const childRow = document.createElement('div');
+          childRow.className = 'docs-group-row docs-group-child';
+
+          const childLabel = document.createElement('div');
+          childLabel.className = 'docs-group-label';
+          childLabel.textContent = `${childNode.label}: ${childIncluded}/${childNode.docs.length} included`;
+
+          const childActions = document.createElement('div');
+          childActions.className = 'docs-group-actions';
+
+          const childInBtn = document.createElement('button');
+          childInBtn.type = 'button';
+          childInBtn.className = 'btn-soft';
+          childInBtn.textContent = 'In';
+          childInBtn.addEventListener('click', () => setFolderIncluded(childNode.key, 2, true));
+
+          const childOutBtn = document.createElement('button');
+          childOutBtn.type = 'button';
+          childOutBtn.className = 'btn-soft';
+          childOutBtn.textContent = 'Out';
+          childOutBtn.addEventListener('click', () => setFolderIncluded(childNode.key, 2, false));
+
+          childActions.appendChild(childInBtn);
+          childActions.appendChild(childOutBtn);
+          childRow.appendChild(childLabel);
+          childRow.appendChild(childActions);
+          docsGroupsEl.appendChild(childRow);
+        }
       }
 
       docsListEl.innerHTML = '';
@@ -2134,7 +2702,8 @@ HTML = """<!doctype html>
           query: lastCitationQuery,
           sources: Array.isArray(lastPdfSources) ? lastPdfSources : []
         });
-        metaEl.textContent = 'Bibliography generated and stashed';
+        metaEl.textContent = 'Bibliography generated and opened';
+        openStashModal('bibliography');
       } catch (err) {
         addMessage('system', `Bibliography generation failed: ${err.message}`);
       }
@@ -2217,8 +2786,50 @@ HTML = """<!doctype html>
         const chunks = data.chunks ?? 0;
         const idx = formatEpoch(data.last_indexed_at);
         const running = job.running ? 'running' : 'idle';
-        pdfStatusEl.textContent = `PDF index: ${running}\nDocs: ${docs} | Chunks: ${chunks}\nLast indexed: ${idx}`;
+
+        if (job.running) {
+          if (!syncSnapshot) {
+            syncSnapshot = {
+              startedAt: Number(job.last_started_at || Math.floor(Date.now() / 1000)),
+              startDocs: Number(docs || 0),
+              startChunks: Number(chunks || 0),
+            };
+          }
+          const elapsedSec = Math.max(1, Math.floor(Date.now() / 1000) - Number(syncSnapshot.startedAt || Math.floor(Date.now() / 1000)));
+          const chunkDelta = Math.max(0, Number(chunks || 0) - Number(syncSnapshot.startChunks || 0));
+          const chunksPerMin = Math.round((chunkDelta / elapsedSec) * 60);
+
+          const result = job.last_result && typeof job.last_result === 'object' ? job.last_result : {};
+          const processed = Number(result.processed || result.updated || result.indexed || 0);
+          const total = Number(result.total || result.discovered || result.candidates || 0);
+          let progressPct = 0;
+          let etaText = 'ETA: estimating';
+
+          if (Number.isFinite(total) && total > 0 && Number.isFinite(processed) && processed >= 0) {
+            progressPct = Math.max(0, Math.min(100, Math.round((processed / total) * 100)));
+            const remaining = Math.max(0, total - processed);
+            const perSec = processed > 0 ? processed / elapsedSec : 0;
+            if (perSec > 0) {
+              const etaSec = Math.round(remaining / perSec);
+              etaText = `ETA: ~${Math.max(0, Math.ceil(etaSec / 60))} min`;
+            }
+          } else {
+            progressPct = Math.max(8, Math.min(92, 12 + Math.round(Math.min(80, elapsedSec / 3))));
+          }
+
+          pdfProgressEl.classList.remove('hidden');
+          pdfProgressBarEl.style.width = `${progressPct}%`;
+          pdfStatusEl.textContent = `PDF index: running (${progressPct}%)\nDocs: ${docs} | Chunks: ${chunks} | +${chunkDelta} this run\nElapsed: ${Math.ceil(elapsedSec / 60)} min | ${etaText} | ${chunksPerMin}/min`;
+        } else {
+          syncSnapshot = null;
+          pdfProgressEl.classList.add('hidden');
+          pdfProgressBarEl.style.width = '0%';
+          const statusTail = job.last_error ? `\nLast error: ${job.last_error}` : '';
+          pdfStatusEl.textContent = `PDF index: ${running}\nDocs: ${docs} | Chunks: ${chunks}\nLast indexed: ${idx}${statusTail}`;
+        }
       } catch (err) {
+        pdfProgressEl.classList.add('hidden');
+        pdfProgressBarEl.style.width = '0%';
         pdfStatusEl.textContent = `PDF index status error: ${err.message}`;
       }
     }
@@ -2229,6 +2840,13 @@ HTML = """<!doctype html>
       try {
         const res = await fetch('/api/pdf/index', { method: 'POST' });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        syncSnapshot = {
+          startedAt: Math.floor(Date.now() / 1000),
+          startDocs: 0,
+          startChunks: 0,
+        };
+        pdfProgressEl.classList.remove('hidden');
+        pdfProgressBarEl.style.width = '8%';
         metaEl.textContent = 'PDF index sync started';
       } catch (err) {
         addMessage('system', `Failed to start PDF sync: ${err.message}`);
@@ -2241,6 +2859,10 @@ HTML = """<!doctype html>
 
     function setBusy(isBusy) {
       sendEl.disabled = isBusy;
+      promptUseSelectedEl.disabled = isBusy;
+      promptPinSelectedEl.disabled = isBusy;
+      promptClearHistoryEl.disabled = isBusy;
+      promptHistorySelectEl.disabled = isBusy;
       cancelEl.disabled = !isBusy;
       refreshEl.disabled = isBusy;
       modelEl.disabled = isBusy;
@@ -2304,14 +2926,20 @@ HTML = """<!doctype html>
         const data = await res.json();
         const items = Array.isArray(data.messages) ? data.messages : [];
         if (!items.length) {
-          addMessage('assistant', 'Shared history is empty. Start the conversation.');
+          addMessage('assistant', 'Shared history is empty. Start the conversation.', { showAssistantTools: false });
           return;
         }
         for (const item of items) {
           const role = ['user', 'assistant', 'system'].includes(item.role) ? item.role : 'system';
           const text = typeof item.text === 'string' ? item.text : '';
-          if (text) addMessage(role, text);
+          if (!text) continue;
+          if (role === 'user') {
+            rememberPrompt(text, false);
+            lastUserPrompt = text;
+          }
+          addMessage(role, text);
         }
+        persistPromptHistory();
       } catch (err) {
         addMessage('system', `Failed to load shared history: ${err.message}`);
       }
@@ -2329,6 +2957,19 @@ HTML = """<!doctype html>
       if (!model) {
         addMessage('system', 'No model is available. Install a model and refresh.');
         return;
+      }
+
+      rememberPrompt(prompt);
+
+      if (!usePdfLibrary) {
+        const proceedUngrounded = confirm(
+          'Send this query without PDF grounding?\\n\\nThis app is optimized for PDF-grounded answers, and ungrounded queries are usually better handled by general chat tools.'
+        );
+        if (!proceedUngrounded) {
+          usePdfLibraryEl.checked = true;
+          metaEl.textContent = 'PDF-grounded mode re-enabled';
+          return;
+        }
       }
 
       lastUserPrompt = prompt;
@@ -2469,6 +3110,21 @@ HTML = """<!doctype html>
     });
     saveInstructionsEl.addEventListener('click', saveInstructions);
     syncPdfLibraryEl.addEventListener('click', syncPdfLibrary);
+    usePdfLibraryEl.addEventListener('change', () => {
+      if (usePdfLibraryEl.checked) {
+        metaEl.textContent = 'PDF-grounded mode enabled';
+        return;
+      }
+      const proceedUngrounded = confirm(
+        'Turn off PDF grounding?\\n\\nOllama Librarian is intended primarily for PDF-grounded research. Continue with ungrounded mode?'
+      );
+      if (!proceedUngrounded) {
+        usePdfLibraryEl.checked = true;
+        metaEl.textContent = 'PDF-grounded mode kept on';
+        return;
+      }
+      metaEl.textContent = 'Ungrounded mode enabled';
+    });
     studyBriefEl.addEventListener('click', createStudyBrief);
     makeBibliographyEl.addEventListener('click', generateBibliographyFromLatestSources);
     cancelEl.addEventListener('click', cancelPromptRequest);
@@ -2484,13 +3140,40 @@ HTML = """<!doctype html>
       promptEl.focus();
     });
     sendEl.addEventListener('click', sendPrompt);
+    promptUseSelectedEl.addEventListener('click', askSelectedPrompt);
+    promptPinSelectedEl.addEventListener('click', togglePinSelectedPrompt);
+    promptClearHistoryEl.addEventListener('click', () => {
+      if (!confirm('Clear unpinned prompt history?')) return;
+      clearPromptHistory();
+    });
+    promptHistorySelectEl.addEventListener('change', () => {
+      const selected = String(promptHistorySelectEl.value || '').trim();
+      if (!selected) return;
+      promptEl.value = selected;
+      promptEl.focus();
+      promptEl.setSelectionRange(promptEl.value.length, promptEl.value.length);
+    });
     promptEl.addEventListener('keydown', (e) => {
+      if (e.ctrlKey && !e.shiftKey && e.key === 'ArrowUp') {
+        e.preventDefault();
+        recallPromptHistory(-1);
+        return;
+      }
+      if (e.ctrlKey && !e.shiftKey && e.key === 'ArrowDown') {
+        e.preventDefault();
+        recallPromptHistory(1);
+        return;
+      }
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         sendPrompt();
       }
     });
 
+    promptHistory = loadPromptHistory();
+    pinnedPrompts = loadPinnedPrompts();
+    promptHistoryIndex = promptHistory.length;
+    renderPromptHistoryDropdown();
     loadHistory();
     loadInstructions();
     loadModels();
