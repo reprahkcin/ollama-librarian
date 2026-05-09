@@ -5,7 +5,24 @@ set -euo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LIB_DIR="${OLLAMA_LIBRARIAN_LIBRARY_DIR:-$HOME/Documents/LLM Library}"
+default_lib_dir() {
+  local candidates=(
+    "$HOME/pdf_library"
+    "$HOME/Documents/LLM Library"
+    "/Volumes/shared/LLM Library"
+    "/Volumes/shared/Doomsday School"
+  )
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    if [[ -d "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+  printf '%s\n' "$HOME/Documents/LLM Library"
+}
+
+LIB_DIR="${OLLAMA_LIBRARIAN_LIBRARY_DIR:-$(default_lib_dir)}"
 STATE_DIR="${OLLAMA_LIBRARIAN_STATE_DIR:-$HOME/Library/Application Support/ollama-librarian}"
 WEB_HOST="${OLLAMA_WEB_HOST:-127.0.0.1}"
 WEB_PORT="${OLLAMA_WEB_PORT:-8088}"
