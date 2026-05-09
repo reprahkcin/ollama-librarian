@@ -1001,7 +1001,10 @@ def ask_command(args) -> int:
     sources = [
         {
             "path": path,
+            "doc_type": Path(path).suffix.lower().lstrip("."),
+            "location_type": "page" if Path(path).suffix.lower() == ".pdf" else "section",
             "page": page,
+            "section": page,
             "location": page,
             "score": score,
             "title": (metadata_map.get(path) or {}).get("title", ""),
