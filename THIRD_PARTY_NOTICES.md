@@ -12,6 +12,22 @@ This project includes or uses third-party software. This file provides attributi
 - Local license text: scripts/assets/katex/LICENSE
 - Local asset path: scripts/assets/katex/
 
+2. epub.js
+
+- Purpose: In-app EPUB rendering for citation source links.
+- Source: https://github.com/futurepress/epub.js
+- License: BSD-2-Clause
+- Local license text: scripts/assets/epubjs/LICENSE
+- Local asset path: scripts/assets/epubjs/
+
+3. JSZip
+
+- Purpose: Runtime ZIP parser required by epub.js for EPUB archives.
+- Source: https://github.com/Stuk/jszip
+- License: MIT
+- Local license text: scripts/assets/jszip/LICENSE
+- Local asset path: scripts/assets/jszip/
+
 ## Runtime Dependencies (Not Vendored Here)
 
 1. Ollama
