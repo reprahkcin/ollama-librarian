@@ -26,6 +26,9 @@ ALLOW_INSECURE_BIND = os.environ.get("OLLAMA_WEB_ALLOW_INSECURE_BIND", "").strip
 }
 MAX_BODY_BYTES = max(1024, int(os.environ.get(
     "OLLAMA_WEB_MAX_BODY_BYTES", "1048576")))
+MAX_UPLOAD_BYTES = max(1024, int(os.environ.get(
+    "OLLAMA_WEB_MAX_UPLOAD_BYTES", "536870912")))
+SUPPORTED_DOC_EXTENSIONS = {".pdf", ".txt", ".md", ".html", ".htm", ".epub"}
 HISTORY_PATH = os.path.expanduser(
     os.environ.get(
         "OLLAMA_WEB_HISTORY_PATH",
@@ -554,10 +557,10 @@ HTML = """<!doctype html>
       word-break: break-word;
     }
     .status {
-      display: inline-flex;
+      display: flex;
       align-items: center;
       gap: 0.45rem;
-      width: fit-content;
+      width: 100%;
       padding: 0.35rem 0.55rem;
       border: 1px solid var(--border);
       border-radius: 999px;
@@ -849,6 +852,14 @@ HTML = """<!doctype html>
       padding: 0.28rem 0.45rem;
       font-size: 0.72rem;
     }
+    .model-row #refresh {
+      align-self: stretch;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding-top: 0;
+      padding-bottom: 0;
+    }
     .pdf-progress {
       height: 0.42rem;
       border-radius: 999px;
@@ -893,11 +904,19 @@ HTML = """<!doctype html>
     .composer-row {
       display: flex;
       gap: 0.5rem;
-      align-items: center;
+      align-items: stretch;
     }
     .composer-row button {
       width: auto;
       min-width: 110px;
+      min-height: 46px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      line-height: 1.2;
+      padding-top: 0.42rem;
+      padding-bottom: 0.42rem;
     }
     .subtle {
       font-size: 0.78rem;
@@ -1248,6 +1267,8 @@ HTML = """<!doctype html>
         Deep Study Mode
       </label>
       <button id="syncPdfLibrary" class="btn-soft" type="button" title="Indexes new or changed PDFs. OCR fallback is used for scanned/text-only images when available.">Sync New PDFs</button>
+      <button id="uploadLibraryDocs" class="btn-soft" type="button" title="Upload supported documents into the configured library (.pdf, .txt, .md, .html, .htm, .epub).">Upload Documents</button>
+      <input id="libraryUploadInput" type="file" accept=".pdf,.txt,.md,.html,.htm,.epub" multiple style="display:none" />
       <div id="pdfStatus" class="tiny">PDF index: checking...</div>
       <div id="pdfProgress" class="pdf-progress hidden"><div id="pdfProgressBar" class="pdf-progress-bar"></div></div>
 
@@ -1359,6 +1380,8 @@ HTML = """<!doctype html>
     const usePdfLibraryEl = document.getElementById('usePdfLibrary');
     const deepStudyEl = document.getElementById('deepStudy');
     const syncPdfLibraryEl = document.getElementById('syncPdfLibrary');
+    const uploadLibraryDocsEl = document.getElementById('uploadLibraryDocs');
+    const libraryUploadInputEl = document.getElementById('libraryUploadInput');
     const pdfProgressEl = document.getElementById('pdfProgress');
     const pdfProgressBarEl = document.getElementById('pdfProgressBar');
     const studyBriefEl = document.getElementById('studyBrief');
@@ -1406,6 +1429,84 @@ HTML = """<!doctype html>
     const PROMPT_HISTORY_STORAGE_KEY = 'ollama_web_prompt_history_v1';
     const PINNED_PROMPTS_STORAGE_KEY = 'ollama_web_pinned_prompts_v1';
     const MAX_PROMPT_HISTORY = 150;
+    const SUPPORTED_UPLOAD_EXTENSIONS = new Set(['.pdf', '.txt', '.md', '.html', '.htm', '.epub']);
+
+    function extensionOfName(name) {
+      const raw = String(name || '').trim().toLowerCase();
+      const idx = raw.lastIndexOf('.');
+      if (idx < 0) return '';
+      return raw.slice(idx);
+    }
+
+    async function uploadLibraryFiles(fileList) {
+      const allFiles = Array.from(fileList || []);
+      if (!allFiles.length) return;
+
+      const files = allFiles.filter((f) => SUPPORTED_UPLOAD_EXTENSIONS.has(extensionOfName(f && f.name)));
+      if (!files.length) {
+        metaEl.textContent = 'No supported files selected (.pdf, .txt, .md, .html, .htm, .epub)';
+        return;
+      }
+
+      uploadLibraryDocsEl.disabled = true;
+      const originalText = uploadLibraryDocsEl.textContent;
+      uploadLibraryDocsEl.textContent = 'Uploading...';
+
+      let uploaded = 0;
+      let failed = 0;
+      const failures = [];
+
+      try {
+        for (let i = 0; i < files.length; i += 1) {
+          const file = files[i];
+          metaEl.textContent = `Uploading ${i + 1}/${files.length}: ${file.name}`;
+          const url = `/api/library/upload?name=${encodeURIComponent(file.name)}`;
+          const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/octet-stream' },
+            body: file,
+          });
+          let data = {};
+          try {
+            data = await res.json();
+          } catch (_) {
+            data = {};
+          }
+          if (!res.ok || data.ok === false) {
+            failed += 1;
+            failures.push(`${file.name}: ${data.error || `HTTP ${res.status}`}`);
+            continue;
+          }
+          uploaded += 1;
+        }
+
+        if (uploaded > 0) {
+          try {
+            await fetch('/api/pdf/index', { method: 'POST' });
+          } catch (_) {
+            // Upload succeeded even if index trigger fails.
+          }
+          refreshPdfStatus();
+          if (!docsModalEl.classList.contains('docs-hidden')) {
+            try {
+              await loadLibraryDocs();
+            } catch (_) {
+              // Keep upload success message if docs refresh fails.
+            }
+          }
+        }
+
+        if (failed > 0) {
+          const sample = failures.slice(0, 2).join(' | ');
+          metaEl.textContent = `Uploaded ${uploaded}, failed ${failed}. ${sample}`;
+        } else {
+          metaEl.textContent = `Uploaded ${uploaded} file${uploaded === 1 ? '' : 's'}; indexing started`;
+        }
+      } finally {
+        uploadLibraryDocsEl.disabled = false;
+        uploadLibraryDocsEl.textContent = originalText;
+      }
+    }
 
     function loadPromptHistory() {
       try {
@@ -1626,12 +1727,25 @@ HTML = """<!doctype html>
       const raw = String(rawDescriptor || '').trim();
       if (!raw) return null;
 
-      const urlMatch = raw.match(/(?:https?:\/\/|\/api\/pdf\/file\?)[^\s;,)\]]+/i);
+      const buildDocHref = (path, loc) => {
+        const cleanPath = String(path || '').trim();
+        if (!cleanPath) return null;
+        const sectionOrPage = Math.max(1, Number(loc || 1));
+        if (/\\.epub$/i.test(cleanPath)) {
+          return `/epub-reader?path=${strictEncodeURIComponent(cleanPath)}&section=${sectionOrPage}`;
+        }
+        if (/\\.pdf$/i.test(cleanPath)) {
+          return `/api/pdf/file?path=${strictEncodeURIComponent(cleanPath)}#page=${sectionOrPage}`;
+        }
+        return null;
+      };
+
+      const urlMatch = raw.match(/(?:https?:\\/\\/|\\/api\\/pdf\\/file\\?|\\/epub-reader\\?)[^\\s;,)\\]]+/i);
       if (urlMatch) {
         return { href: urlMatch[0], title: raw, label: 'source' };
       }
 
-      const indexed = raw.match(/source\s+path\s*(\d+)(?:\s*,?\s*(?:location|page)\s*(\d+))?/i);
+      const indexed = raw.match(/source\\s+path\\s*(\\d+)(?:\\s*,?\\s*(?:location|page)\\s*(\\d+))?/i);
       if (indexed) {
         const idx = Math.max(1, Number(indexed[1] || 1)) - 1;
         const loc = Number(indexed[2] || 1);
@@ -1639,28 +1753,31 @@ HTML = """<!doctype html>
         const path = src && src.path ? String(src.path) : '';
         if (path) {
           const page = Number.isFinite(loc) && loc > 0 ? loc : Number(src.page || src.location || 1);
-          const href = `/api/pdf/file?path=${strictEncodeURIComponent(path)}#page=${Math.max(1, Number(page || 1))}`;
+          const href = buildDocHref(path, Math.max(1, Number(page || 1)));
+          if (!href) return null;
           return { href, title: raw, label: 'source' };
         }
       }
 
-      const explicitSource = raw.match(/source\s*=\s*(.+?\.pdf)\b/i);
+      const explicitSource = raw.match(/source\\s*=\\s*(.+?\\.(?:pdf|epub))\\b/i);
       if (explicitSource) {
         const path = String(explicitSource[1] || '').trim();
-        const locMatch = raw.match(/(?:location|page)\s*=\s*(\d+)/i);
+        const locMatch = raw.match(/(?:location|page)\\s*=\\s*(\\d+)/i);
         const loc = Number(locMatch && locMatch[1] ? locMatch[1] : 1);
         if (path) {
-          const href = `/api/pdf/file?path=${strictEncodeURIComponent(path)}#page=${Math.max(1, loc)}`;
+          const href = buildDocHref(path, Math.max(1, loc));
+          if (!href) return null;
           return { href, title: raw, label: 'source' };
         }
       }
 
-      const pathMatch = raw.match(/(?:\/[\w .\-()&%+]+)+\.pdf\b/i);
+      const pathMatch = raw.match(/(?:\\/[\\w .\\-()&%+]+)+\\.(?:pdf|epub)\\b/i);
       if (pathMatch) {
         const path = pathMatch[0];
-        const pageMatch = raw.match(/(?:page|location|p\.)\s*(\d+)/i);
+        const pageMatch = raw.match(/(?:page|location|p\\.)\\s*(\\d+)/i);
         const page = Number(pageMatch && pageMatch[1] ? pageMatch[1] : 1);
-        const href = `/api/pdf/file?path=${strictEncodeURIComponent(path)}#page=${Math.max(1, page)}`;
+        const href = buildDocHref(path, Math.max(1, page));
+        if (!href) return null;
         return { href, title: raw, label: 'source' };
       }
 
@@ -1684,11 +1801,11 @@ HTML = """<!doctype html>
       out = out.replace(/`([^`]+)`/g, '<code>$1</code>');
       out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
       out = out.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-      out = out.replace(/\[([^\]]+)\]\(((?:https?:\/\/|\/api\/pdf\/file\?)[^\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+      out = out.replace(/\[([^\]]+)\]\(((?:https?:\/\/|\/api\/pdf\/file\?|\/epub-reader\?)[^\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
       out = out.replace(/\[([^\]]*(?:source\s+path|source\s*=)[^\]]*)\]/gi, (_, inner) => {
         const raw = String(inner || '').trim();
         if (!raw) return '';
-        const descriptorMatches = Array.from(raw.matchAll(/source\s+path\s*\d+(?:\s*,?\s*(?:location|page)\s*\d+)?|source\s*=\s*.+?\.pdf(?:\s+(?:location|page)\s*=\s*\d+)?/gi));
+        const descriptorMatches = Array.from(raw.matchAll(/source\s+path\s*\d+(?:\s*,?\s*(?:location|page)\s*\d+)?|source\s*=\s*.+?\.(?:pdf|epub)(?:\s+(?:location|page)\s*=\s*\d+)?/gi));
         const descriptors = descriptorMatches.length
           ? descriptorMatches.map((m) => String(m[0] || '').trim()).filter(Boolean)
           : raw.split(/\s*;\s*/).map((x) => String(x || '').trim()).filter(Boolean);
@@ -1713,7 +1830,7 @@ HTML = """<!doctype html>
         }
         return `<span class="source-inline" title="${title}">source</span>`;
       });
-      out = out.replace(/\bsource\s*=\s*.+?\.pdf(?:\s+(?:location|page)\s*=\s*\d+)?/gi, (match) => {
+      out = out.replace(/\bsource\s*=\s*.+?\.(?:pdf|epub)(?:\s+(?:location|page)\s*=\s*\d+)?/gi, (match) => {
         const link = sourceLinkFromDescriptor(match);
         const title = String(match).replace(/"/g, '&quot;');
         if (link && link.href) {
@@ -1907,7 +2024,7 @@ HTML = """<!doctype html>
           }
         }
 
-        if (/\.pdf\b/i.test(t) && !/\[[^\]]+\]\([^\)]+\)/.test(t)) {
+        if (/\.(?:pdf|epub)\b/i.test(t) && !/\[[^\]]+\]\([^\)]+\)/.test(t)) {
           closeLists();
           const link = sourceLinkFromDescriptor(t);
           if (link && link.href) {
@@ -2522,7 +2639,24 @@ HTML = """<!doctype html>
     }
 
     function isPdfSourcePath(p) {
-      return /\.pdf$/i.test(String(p || '').trim());
+      return /\\.pdf$/i.test(String(p || '').trim());
+    }
+
+    function isEpubSourcePath(p) {
+      return /\\.epub$/i.test(String(p || '').trim());
+    }
+
+    function buildSourceOpenUrl(path, loc) {
+      const cleanPath = String(path || '').trim();
+      const location = Math.max(1, Number(loc || 1));
+      if (!cleanPath) return '';
+      if (isPdfSourcePath(cleanPath)) {
+        return `/api/pdf/file?path=${strictEncodeURIComponent(cleanPath)}#page=${location}`;
+      }
+      if (isEpubSourcePath(cleanPath)) {
+        return `/epub-reader?path=${strictEncodeURIComponent(cleanPath)}&section=${location}`;
+      }
+      return '';
     }
 
     function sourceTitleFromPath(p) {
@@ -2578,27 +2712,15 @@ HTML = """<!doctype html>
         const year = String(s.year || '').trim() || 'n.d.';
         let titlePart = `*${title}*`;
         let locator = `loc. ${loc}`;
-        if (!isPdfSourcePath(path)) {
-          const citation = author
-            ? `${author}. (${year}). ${titlePart}. (${locator}).`
-            : `${titlePart}. (${year}). (${locator}).`;
-          entries.push({
-            citation,
-            source: {
-              path,
-              page: loc,
-              location: loc,
-              title,
-              authors: Array.isArray(s.authors) ? s.authors : [],
-              year,
-            }
-          });
-          continue;
+        const openUrl = buildSourceOpenUrl(path, loc);
+        if (openUrl) {
+          titlePart = `*[${title}](${openUrl})*`;
         }
-        const encodedPath = strictEncodeURIComponent(path);
-        const openUrl = `/api/pdf/file?path=${encodedPath}#page=${loc}`;
-        titlePart = `*[${title}](${openUrl})*`;
-        locator = `p. ${loc}`;
+        if (isPdfSourcePath(path)) {
+          locator = `p. ${loc}`;
+        } else if (isEpubSourcePath(path)) {
+          locator = `section ${loc}`;
+        }
         const citation = author
           ? `${author}. (${year}). ${titlePart}. (${locator}).`
           : `${titlePart}. (${year}). (${locator}).`;
@@ -2890,6 +3012,7 @@ HTML = """<!doctype html>
       usePdfLibraryEl.disabled = isBusy;
       deepStudyEl.disabled = isBusy;
       syncPdfLibraryEl.disabled = isBusy;
+      uploadLibraryDocsEl.disabled = isBusy;
       openLibraryDocsEl.disabled = isBusy;
       openStashEl.disabled = isBusy;
       studyBriefEl.disabled = isBusy;
@@ -3129,6 +3252,16 @@ HTML = """<!doctype html>
     });
     saveInstructionsEl.addEventListener('click', saveInstructions);
     syncPdfLibraryEl.addEventListener('click', syncPdfLibrary);
+    uploadLibraryDocsEl.addEventListener('click', () => {
+      libraryUploadInputEl.click();
+    });
+    libraryUploadInputEl.addEventListener('change', async () => {
+      try {
+        await uploadLibraryFiles(libraryUploadInputEl.files);
+      } finally {
+        libraryUploadInputEl.value = '';
+      }
+    });
     usePdfLibraryEl.addEventListener('change', () => {
       if (usePdfLibraryEl.checked) {
         metaEl.textContent = 'PDF-grounded mode enabled';
@@ -3203,15 +3336,198 @@ HTML = """<!doctype html>
 </html>
 """
 
+EPUB_READER_HTML = """<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>EPUB Reader</title>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      background: #f7f7f4;
+      color: #1d232f;
+      height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+    .bar {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.65rem 0.85rem;
+      background: #ffffff;
+      border-bottom: 1px solid #d8dee8;
+    }
+    .bar button {
+      border: 1px solid #c8cfdb;
+      border-radius: 8px;
+      background: #eef3fb;
+      color: #1f2a44;
+      padding: 0.38rem 0.62rem;
+      cursor: pointer;
+    }
+    .meta {
+      margin-left: auto;
+      font-size: 0.86rem;
+      color: #4d5b75;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 65vw;
+    }
+    #viewer {
+      width: 100%;
+      height: calc(100vh - 52px);
+      background: #ffffff;
+    }
+  </style>
+  <script src="/assets/jszip/jszip.min.js"></script>
+  <script src="/assets/epubjs/epub.min.js"></script>
+</head>
+<body>
+  <div class="bar">
+    <button id="prev" type="button">Prev</button>
+    <button id="next" type="button">Next</button>
+    <div id="meta" class="meta">Loading EPUB...</div>
+  </div>
+  <div id="viewer"></div>
+  <script>
+    const API_KEY_REQUIRED = %API_KEY_REQUIRED%;
+    const API_KEY_STORAGE_KEY = 'ollama_web_api_key_v1';
+    let apiKey = localStorage.getItem(API_KEY_STORAGE_KEY) || '';
+
+    if (API_KEY_REQUIRED && !apiKey) {
+      const entered = window.prompt('Enter API key for Ollama Librarian');
+      if (typeof entered === 'string' && entered.trim()) {
+        apiKey = entered.trim();
+        localStorage.setItem(API_KEY_STORAGE_KEY, apiKey);
+      }
+    }
+
+    function strictEncodeURIComponent(value) {
+      return encodeURIComponent(String(value)).replace(/[!'()*]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`);
+    }
+
+    function getQuery() {
+      const params = new URLSearchParams(window.location.search);
+      return {
+        path: (params.get('path') || '').trim(),
+        section: Math.max(1, Number(params.get('section') || '1') || 1),
+        cfi: (params.get('cfi') || '').trim(),
+      };
+    }
+
+    async function loadEpub() {
+      const metaEl = document.getElementById('meta');
+      let openTimer = null;
+      try {
+        const q = getQuery();
+        if (!q.path) {
+          metaEl.textContent = 'Missing EPUB path';
+          return;
+        }
+
+        if (typeof window.JSZip === 'undefined') {
+          metaEl.textContent = 'EPUB dependency error: JSZip not loaded';
+          return;
+        }
+        if (typeof window.ePub !== 'function') {
+          metaEl.textContent = 'EPUB dependency error: epub.js not loaded';
+          return;
+        }
+
+        const headers = apiKey ? { 'X-API-Key': apiKey } : {};
+        const url = `/api/epub/file?path=${strictEncodeURIComponent(q.path)}`;
+        metaEl.textContent = 'Downloading EPUB...';
+        const res = await fetch(url, { headers });
+        if (!res.ok) {
+          metaEl.textContent = `Failed to load EPUB: HTTP ${res.status}`;
+          return;
+        }
+
+        metaEl.textContent = 'Parsing EPUB (large files can take a while)...';
+        const bytes = await res.arrayBuffer();
+        const openedAtMs = Date.now();
+        openTimer = window.setInterval(() => {
+          const elapsed = Math.max(0, Math.floor((Date.now() - openedAtMs) / 1000));
+          metaEl.textContent = `Opening EPUB... ${elapsed}s`;
+        }, 1000);
+        const book = ePub(bytes);
+        const rendition = book.renderTo('viewer', {
+          width: '100%',
+          height: '100%',
+        });
+
+        rendition.on('relocated', (loc) => {
+          if (openTimer) {
+            window.clearInterval(openTimer);
+            openTimer = null;
+          }
+          const start = loc && loc.start ? loc.start : null;
+          const href = start && start.href ? start.href : '';
+          const disp = start && start.displayed ? start.displayed : null;
+          const shown = disp && disp.page ? `p.${disp.page}` : href;
+          metaEl.textContent = `${q.path}${shown ? ` | ${shown}` : ''}`;
+        });
+
+        const prevBtn = document.getElementById('prev');
+        const nextBtn = document.getElementById('next');
+        prevBtn.addEventListener('click', () => rendition.prev());
+        nextBtn.addEventListener('click', () => rendition.next());
+
+        try {
+          if (q.cfi) {
+            await rendition.display(q.cfi);
+            return;
+          }
+          const spine = book.spine && typeof book.spine.get === 'function'
+            ? book.spine.get(Math.max(0, q.section - 1))
+            : null;
+          if (spine && spine.href) {
+            await rendition.display(spine.href);
+          } else {
+            await rendition.display();
+          }
+        } catch (err) {
+          metaEl.textContent = `Failed to open location: ${err && err.message ? err.message : err}`;
+          await rendition.display();
+        }
+      } catch (err) {
+        if (openTimer) {
+          window.clearInterval(openTimer);
+          openTimer = null;
+        }
+        metaEl.textContent = `Failed to load EPUB: ${err && err.message ? err.message : err}`;
+        console.error(err);
+      }
+    }
+
+    loadEpub();
+  </script>
+</body>
+</html>
+"""
+
 
 class Handler(BaseHTTPRequestHandler):
     def _send_security_headers(self):
-        self.send_header(
-            "Content-Security-Policy",
-            "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; "
-            "base-uri 'none'; form-action 'self'",
-        )
+        if self.path.startswith("/epub-reader"):
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self'; style-src 'self' 'unsafe-inline' blob:; script-src 'self' 'unsafe-inline'; "
+                "img-src 'self' data: blob:; font-src 'self' data: blob:; connect-src 'self' blob:; frame-src 'self' blob:; "
+                "object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+            )
+        else:
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
+                "img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; "
+                "base-uri 'none'; form-action 'self'",
+            )
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
@@ -3320,6 +3636,58 @@ class Handler(BaseHTTPRequestHandler):
                     break
                 self.wfile.write(chunk)
 
+    def _resolve_library_file_path(self, requested_path):
+        if not isinstance(requested_path, str) or not requested_path.strip():
+            return None, "path is required", 400
+
+        resolved_root = os.path.realpath(os.path.expanduser(PDF_SOURCE))
+        resolved_path = os.path.realpath(os.path.expanduser(requested_path))
+
+        if not resolved_path.startswith(resolved_root + os.sep):
+            return None, "path is outside configured PDF library", 403
+
+        if not os.path.isfile(resolved_path):
+            return None, "File not found", 404
+
+        return resolved_path, None, 200
+
+    def _resolve_upload_target_path(self, requested_name):
+        if not isinstance(requested_name, str) or not requested_name.strip():
+            return None, None, "name is required", 400
+
+        normalized_name = str(requested_name).replace(
+            "\\", "/").split("/")[-1].strip()
+        if not normalized_name or normalized_name in {".", ".."}:
+            return None, None, "invalid file name", 400
+
+        cleaned = "".join(ch for ch in normalized_name if 32 <=
+                          ord(ch) <= 126).strip()
+        if not cleaned:
+            return None, None, "invalid file name", 400
+
+        suffix = Path(cleaned).suffix.lower()
+        if suffix not in SUPPORTED_DOC_EXTENSIONS:
+            return None, None, (
+                "unsupported file extension (allowed: .pdf, .txt, .md, .html, .htm, .epub)"
+            ), 400
+
+        root = Path(os.path.expanduser(PDF_SOURCE)).resolve()
+        root.mkdir(parents=True, exist_ok=True)
+
+        base_name = Path(cleaned).stem.strip() or "document"
+        target = root / f"{base_name}{suffix}"
+        collision = 1
+        while target.exists():
+            target = root / f"{base_name} ({collision}){suffix}"
+            collision += 1
+
+        resolved_target = target.resolve()
+        root_prefix = str(root) + os.sep
+        if not str(resolved_target).startswith(root_prefix):
+            return None, None, "invalid target path", 400
+
+        return root, resolved_target, None, 200
+
     def _read_json_body(self):
         raw_length = self.headers.get("Content-Length", "0")
         try:
@@ -3373,6 +3741,12 @@ class Handler(BaseHTTPRequestHandler):
             html = HTML.replace("%OLLAMA_BASE%", OLLAMA_BASE)
             html = html.replace("%API_KEY_REQUIRED%",
                                 "true" if bool(API_KEY) else "false")
+            return self._send(200, html, "text/html; charset=utf-8")
+
+        if route_path == "/epub-reader":
+            html = EPUB_READER_HTML.replace(
+                "%API_KEY_REQUIRED%", "true" if bool(API_KEY) else "false"
+            )
             return self._send(200, html, "text/html; charset=utf-8")
 
         if route_path.startswith("/assets/"):
@@ -3487,27 +3861,16 @@ class Handler(BaseHTTPRequestHandler):
         if route_path == "/api/pdf/file":
             params = parse_qs(parsed_url.query)
             pdf_path = params.get("path", [""])[0]
-            if not isinstance(pdf_path, str) or not pdf_path.strip():
+            resolved_path, error, code = self._resolve_library_file_path(
+                pdf_path)
+            if error:
                 return self._send(
-                    400,
-                    json.dumps({"error": "path is required"},
-                               ensure_ascii=True),
+                    code,
+                    json.dumps({"error": error}, ensure_ascii=True),
                     "application/json; charset=utf-8",
                 )
 
-            resolved_root = os.path.realpath(os.path.expanduser(PDF_SOURCE))
-            resolved_path = os.path.realpath(os.path.expanduser(pdf_path))
-
-            if not resolved_path.startswith(resolved_root + os.sep):
-                return self._send(
-                    403,
-                    json.dumps(
-                        {"error": "path is outside configured PDF library"}, ensure_ascii=True
-                    ),
-                    "application/json; charset=utf-8",
-                )
-
-            if not os.path.isfile(resolved_path) or not resolved_path.lower().endswith(".pdf"):
+            if not resolved_path.lower().endswith(".pdf"):
                 return self._send(
                     404,
                     json.dumps({"error": "PDF not found"}, ensure_ascii=True),
@@ -3518,6 +3881,35 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_file(
                 resolved_path,
                 "application/pdf",
+                {
+                    "Content-Disposition": f'inline; filename="{filename}"',
+                    "Cache-Control": "no-cache",
+                },
+            )
+
+        if route_path == "/api/epub/file":
+            params = parse_qs(parsed_url.query)
+            epub_path = params.get("path", [""])[0]
+            resolved_path, error, code = self._resolve_library_file_path(
+                epub_path)
+            if error:
+                return self._send(
+                    code,
+                    json.dumps({"error": error}, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+
+            if not resolved_path.lower().endswith(".epub"):
+                return self._send(
+                    404,
+                    json.dumps({"error": "EPUB not found"}, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+
+            filename = os.path.basename(resolved_path)
+            return self._send_file(
+                resolved_path,
+                "application/epub+zip",
                 {
                     "Content-Disposition": f'inline; filename="{filename}"',
                     "Cache-Control": "no-cache",
@@ -3712,6 +4104,102 @@ class Handler(BaseHTTPRequestHandler):
                     json.dumps({"error": str(exc)}, ensure_ascii=True),
                     "application/json; charset=utf-8",
                 )
+
+        if route_path == "/api/library/upload":
+            params = parse_qs(parsed_url.query)
+            raw_name = params.get("name", [""])[0]
+            root, target_path, error, code = self._resolve_upload_target_path(
+                raw_name)
+            if error:
+                return self._send(
+                    code,
+                    json.dumps({"error": error}, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+
+            raw_length = self.headers.get("Content-Length", "0")
+            try:
+                length = int(raw_length)
+            except ValueError:
+                return self._send(
+                    400,
+                    json.dumps({"error": "Invalid Content-Length"},
+                               ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+
+            if length <= 0:
+                return self._send(
+                    400,
+                    json.dumps({"error": "Request body is required"},
+                               ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+
+            if length > MAX_UPLOAD_BYTES:
+                return self._send(
+                    413,
+                    json.dumps(
+                        {"error": "Upload exceeds maximum size"}, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+
+            tmp_path = root / \
+                f".upload-{int(time.time() * 1000)}-{os.getpid()}.part"
+            written = 0
+            try:
+                with open(tmp_path, "wb") as out_f:
+                    remaining = length
+                    while remaining > 0:
+                        chunk = self.rfile.read(min(64 * 1024, remaining))
+                        if not chunk:
+                            raise ValueError("Unexpected end of upload stream")
+                        out_f.write(chunk)
+                        written += len(chunk)
+                        remaining -= len(chunk)
+
+                if written != length:
+                    raise ValueError("Upload size mismatch")
+
+                os.replace(tmp_path, target_path)
+            except ValueError as exc:
+                try:
+                    if tmp_path.exists():
+                        tmp_path.unlink()
+                except Exception:
+                    pass
+                return self._send(
+                    400,
+                    json.dumps({"error": str(exc)}, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+            except Exception as exc:
+                try:
+                    if tmp_path.exists():
+                        tmp_path.unlink()
+                except Exception:
+                    pass
+                return self._send(
+                    500,
+                    json.dumps(
+                        {"error": f"Failed to save upload: {exc}"}, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+
+            rel_path = os.path.relpath(str(target_path), str(root))
+            return self._send(
+                200,
+                json.dumps(
+                    {
+                        "ok": True,
+                        "path": str(target_path),
+                        "rel_path": rel_path,
+                        "bytes": written,
+                    },
+                    ensure_ascii=True,
+                ),
+                "application/json; charset=utf-8",
+            )
 
         if route_path == "/api/stash":
             payload = self._read_json_body()
