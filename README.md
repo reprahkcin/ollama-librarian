@@ -43,6 +43,7 @@ For non-technical users, use:
 - OCR fallback applies to PDFs.
 - The web UI requires Python 3.10+.
 - Math rendering is fully offline via vendored KaTeX files served from `/assets`.
+- EPUB citations open in an in-app EPUB reader at section-level locations (EPUB does not have universal PDF-style page numbers).
 
 ## Security Defaults
 
