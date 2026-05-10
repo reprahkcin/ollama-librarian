@@ -149,7 +149,10 @@ http://127.0.0.1:8088
 From the UI:
 
 1. Enable Use PDF-grounded answers
-2. Click Sync New PDFs
+2. Add documents by either:
+  - Copying files into your library folder, or
+  - Clicking Upload Documents in the sidebar
+3. Click Sync New PDFs
 
 Optional CLI sync with prune:
 

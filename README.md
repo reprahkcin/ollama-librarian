@@ -44,6 +44,7 @@ For non-technical users, use:
 - The web UI requires Python 3.10+.
 - Math rendering is fully offline via vendored KaTeX files served from `/assets`.
 - EPUB citations open in an in-app EPUB reader at section-level locations (EPUB does not have universal PDF-style page numbers).
+- You can upload supported documents directly from the sidebar with `Upload Documents`, then sync/index from the same UI.
 
 ## Security Defaults
 
@@ -67,6 +68,7 @@ Core network/auth:
 - `OLLAMA_WEB_API_KEY` (default: empty)
 - `OLLAMA_WEB_ALLOW_INSECURE_BIND` (default: off)
 - `OLLAMA_WEB_MAX_BODY_BYTES` (default: `1048576`)
+- `OLLAMA_WEB_MAX_UPLOAD_BYTES` (default: `536870912`)
 
 Content/index paths and OCR:
 
