@@ -24,9 +24,17 @@ This project includes or uses third-party software. This file provides attributi
 
 - Purpose: Runtime ZIP parser required by epub.js for EPUB archives.
 - Source: https://github.com/Stuk/jszip
-- License: MIT
+- License: MIT OR GPL-3.0
 - Local license text: scripts/assets/jszip/LICENSE
 - Local asset path: scripts/assets/jszip/
+
+4. pako (included in bundled JSZip artifact)
+
+- Purpose: Deflate/inflate support used internally by the bundled JSZip build.
+- Source: https://github.com/nodeca/pako
+- License: MIT
+- Local license text: scripts/assets/jszip/PAKO_LICENSE
+- Local asset path: scripts/assets/jszip/jszip.min.js
 
 ## Runtime Dependencies (Not Vendored Here)
 
