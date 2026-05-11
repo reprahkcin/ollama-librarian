@@ -3922,7 +3922,7 @@ class Handler(BaseHTTPRequestHandler):
                 resolved_path,
                 "application/pdf",
                 {
-                "Content-Disposition": build_inline_content_disposition(filename),
+                    "Content-Disposition": build_inline_content_disposition(filename),
                     "Cache-Control": "no-cache",
                 },
             )
@@ -3951,7 +3951,7 @@ class Handler(BaseHTTPRequestHandler):
                 resolved_path,
                 "application/epub+zip",
                 {
-                "Content-Disposition": build_inline_content_disposition(filename),
+                    "Content-Disposition": build_inline_content_disposition(filename),
                     "Cache-Control": "no-cache",
                 },
             )
