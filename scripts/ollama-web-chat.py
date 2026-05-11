@@ -3701,8 +3701,9 @@ class Handler(BaseHTTPRequestHandler):
         # Keep Unicode, but normalize characters invalid on Windows filesystems.
         invalid_windows_chars = set('<>:"/\\|?*')
         cleaned = "".join(
-          "_" if (ch in invalid_windows_chars or ord(ch) < 32 or ord(ch) == 127) else ch
-          for ch in normalized_name
+            "_" if (ch in invalid_windows_chars or ord(
+                ch) < 32 or ord(ch) == 127) else ch
+            for ch in normalized_name
         ).strip().strip(". ")
         if not cleaned or cleaned in {".", ".."}:
             return None, None, "invalid file name", 400
@@ -3718,12 +3719,12 @@ class Handler(BaseHTTPRequestHandler):
 
         base_name = Path(cleaned).stem.strip().strip(". ") or "document"
         windows_reserved_names = {
-          "con", "prn", "aux", "nul",
-          "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
-          "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+            "con", "prn", "aux", "nul",
+            "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+            "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
         }
         if base_name.lower() in windows_reserved_names:
-          base_name = f"{base_name}_"
+            base_name = f"{base_name}_"
 
         target = root / f"{base_name}{suffix}"
         collision = 1
@@ -4196,7 +4197,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
 
             tmp_path = root / \
-              f".upload-{int(time.time() * 1000)}-{os.getpid()}-{uuid.uuid4().hex}.part"
+                f".upload-{int(time.time() * 1000)}-{os.getpid()}-{uuid.uuid4().hex}.part"
             written = 0
             try:
                 with open(tmp_path, "wb") as out_f:
