@@ -2,7 +2,23 @@
 set -euo pipefail
 
 REPO_DIR="${1:-$HOME/GIT/ollama-librarian}"
-LIB_DIR="${2:-$HOME/Documents/LLM Library}"
+default_lib_dir() {
+  local candidates=(
+    "$HOME/pdf_library"
+    "$HOME/Documents/LLM Library"
+    "/Volumes/shared/LLM Library"
+  )
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    if [[ -d "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+  printf '%s\n' "$HOME/Documents/LLM Library"
+}
+
+LIB_DIR="${2:-$(default_lib_dir)}"
 STATE_DIR="${3:-$HOME/Library/Application Support/ollama-librarian}"
 
 if ! command -v brew >/dev/null 2>&1; then

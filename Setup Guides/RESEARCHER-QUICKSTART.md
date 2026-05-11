@@ -70,6 +70,13 @@ Set-Location "$HOME\GIT\ollama-librarian"
 3. Enable Use PDF-grounded answers.
 4. Click Sync New PDFs.
 
+Optional in-UI upload flow:
+
+1. Open the web page.
+2. Click Upload Documents.
+3. Select one or more supported files.
+4. The app uploads files into your configured library path; then click Sync New PDFs (or wait if auto-sync is started).
+
 Supported file types:
 
 - .pdf

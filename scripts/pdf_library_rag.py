@@ -162,14 +162,20 @@ def extract_pdf_document_metadata(doc_path: Path) -> dict:
     if not meta:
         return out
 
+    def _safe_meta_attr(name: str) -> object:
+        try:
+            return getattr(meta, name, None)
+        except Exception:
+            return None
+
     title = clean_title_candidate(
-        getattr(meta, "title", None) or meta.get("/Title"))
+        _safe_meta_attr("title") or meta.get("/Title"))
     author_raw = normalize_text(
-        getattr(meta, "author", None) or meta.get("/Author"))
+        _safe_meta_attr("author") or meta.get("/Author"))
     created = normalize_text(
-        getattr(meta, "creation_date", None) or meta.get("/CreationDate"))
+        meta.get("/CreationDate") or _safe_meta_attr("creation_date"))
     modified = normalize_text(
-        getattr(meta, "modification_date", None) or meta.get("/ModDate"))
+        meta.get("/ModDate") or _safe_meta_attr("modification_date"))
 
     if title and len(title) >= 3 and title.lower() not in {"untitled", "document"}:
         out["title"] = title
@@ -1001,7 +1007,10 @@ def ask_command(args) -> int:
     sources = [
         {
             "path": path,
+            "doc_type": Path(path).suffix.lower().lstrip("."),
+            "location_type": "page" if Path(path).suffix.lower() == ".pdf" else "section",
             "page": page,
+            "section": page,
             "location": page,
             "score": score,
             "title": (metadata_map.get(path) or {}).get("title", ""),
