@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
@@ -1443,7 +1444,7 @@ HTML = """<!doctype html>
     const PROMPT_HISTORY_STORAGE_KEY = 'ollama_web_prompt_history_v1';
     const PINNED_PROMPTS_STORAGE_KEY = 'ollama_web_pinned_prompts_v1';
     const MAX_PROMPT_HISTORY = 150;
-    const MAX_UPLOAD_BYTES = 536870912;
+    const MAX_UPLOAD_BYTES = Number('%MAX_UPLOAD_BYTES%');
     const SUPPORTED_UPLOAD_EXTENSIONS = new Set(['.pdf', '.txt', '.md', '.html', '.htm', '.epub']);
 
     function extensionOfName(name) {
@@ -3697,11 +3698,12 @@ class Handler(BaseHTTPRequestHandler):
         if not normalized_name or normalized_name in {".", ".."}:
             return None, None, "invalid file name", 400
 
-        # Keep Unicode characters, but reject path separators and control chars.
+        # Keep Unicode, but normalize characters invalid on Windows filesystems.
+        invalid_windows_chars = set('<>:"/\\|?*')
         cleaned = "".join(
-            ch for ch in normalized_name
-            if ch not in {"/", "\\", "\x00"} and ord(ch) >= 32
-        ).strip().strip(".")
+          "_" if (ch in invalid_windows_chars or ord(ch) < 32 or ord(ch) == 127) else ch
+          for ch in normalized_name
+        ).strip().strip(". ")
         if not cleaned or cleaned in {".", ".."}:
             return None, None, "invalid file name", 400
 
@@ -3714,7 +3716,15 @@ class Handler(BaseHTTPRequestHandler):
         root = Path(os.path.expanduser(PDF_SOURCE)).resolve()
         root.mkdir(parents=True, exist_ok=True)
 
-        base_name = Path(cleaned).stem.strip() or "document"
+        base_name = Path(cleaned).stem.strip().strip(". ") or "document"
+        windows_reserved_names = {
+          "con", "prn", "aux", "nul",
+          "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+          "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+        }
+        if base_name.lower() in windows_reserved_names:
+          base_name = f"{base_name}_"
+
         target = root / f"{base_name}{suffix}"
         collision = 1
         while target.exists():
@@ -3781,6 +3791,7 @@ class Handler(BaseHTTPRequestHandler):
             html = HTML.replace("%OLLAMA_BASE%", OLLAMA_BASE)
             html = html.replace("%API_KEY_REQUIRED%",
                                 "true" if bool(API_KEY) else "false")
+            html = html.replace("%MAX_UPLOAD_BYTES%", str(MAX_UPLOAD_BYTES))
             return self._send(200, html, "text/html; charset=utf-8")
 
         if route_path == "/epub-reader":
@@ -4185,7 +4196,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
 
             tmp_path = root / \
-                f".upload-{int(time.time() * 1000)}-{os.getpid()}.part"
+              f".upload-{int(time.time() * 1000)}-{os.getpid()}-{uuid.uuid4().hex}.part"
             written = 0
             try:
                 with open(tmp_path, "wb") as out_f:
