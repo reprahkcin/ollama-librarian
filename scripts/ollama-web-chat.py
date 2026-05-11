@@ -9,7 +9,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -47,7 +47,6 @@ ASSET_ROOT = SCRIPT_DIR / "assets"
 def resolve_default_pdf_source() -> str:
     candidates = [
         "/Volumes/shared/LLM Library",
-        "/Volumes/shared/Doomsday School",
     ]
     for candidate in candidates:
         expanded = os.path.expanduser(candidate)
@@ -61,7 +60,6 @@ def resolve_default_stash_path() -> str:
     candidates = [
         local_default,
         "/Volumes/shared/LLM Library/ollama-response-stash.json",
-        "/Volumes/shared/Doomsday School/ollama-response-stash.json",
         "/Volumes/shared/ollama-response-stash.json",
     ]
 
@@ -421,6 +419,22 @@ def list_library_docs() -> dict:
         "documents": docs,
         "groups": group_list,
     }
+
+
+def build_inline_content_disposition(filename: str) -> str:
+    raw = str(filename or "").strip()
+    if not raw:
+        raw = "document"
+
+    fallback = "".join(
+        ch if 32 <= ord(ch) <= 126 and ch not in {'"', "\\", ";"} else "_"
+        for ch in raw
+    ).strip()
+    if not fallback:
+        fallback = "document"
+
+    encoded = quote(raw, safe="")
+    return f"inline; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"
 
 
 def _ensure_history_file():
@@ -3908,7 +3922,7 @@ class Handler(BaseHTTPRequestHandler):
                 resolved_path,
                 "application/pdf",
                 {
-                    "Content-Disposition": f'inline; filename="{filename}"',
+                "Content-Disposition": build_inline_content_disposition(filename),
                     "Cache-Control": "no-cache",
                 },
             )
@@ -3937,7 +3951,7 @@ class Handler(BaseHTTPRequestHandler):
                 resolved_path,
                 "application/epub+zip",
                 {
-                    "Content-Disposition": f'inline; filename="{filename}"',
+                "Content-Disposition": build_inline_content_disposition(filename),
                     "Cache-Control": "no-cache",
                 },
             )
@@ -4218,7 +4232,6 @@ class Handler(BaseHTTPRequestHandler):
                 json.dumps(
                     {
                         "ok": True,
-                        "path": str(target_path),
                         "rel_path": rel_path,
                         "bytes": written,
                     },
