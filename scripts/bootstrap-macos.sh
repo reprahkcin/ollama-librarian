@@ -7,7 +7,6 @@ default_lib_dir() {
     "$HOME/pdf_library"
     "$HOME/Documents/LLM Library"
     "/Volumes/shared/LLM Library"
-    "/Volumes/shared/Doomsday School"
   )
   local candidate
   for candidate in "${candidates[@]}"; do
