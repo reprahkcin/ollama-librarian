@@ -1429,6 +1429,7 @@ HTML = """<!doctype html>
     const PROMPT_HISTORY_STORAGE_KEY = 'ollama_web_prompt_history_v1';
     const PINNED_PROMPTS_STORAGE_KEY = 'ollama_web_pinned_prompts_v1';
     const MAX_PROMPT_HISTORY = 150;
+    const MAX_UPLOAD_BYTES = 536870912;
     const SUPPORTED_UPLOAD_EXTENSIONS = new Set(['.pdf', '.txt', '.md', '.html', '.htm', '.epub']);
 
     function extensionOfName(name) {
@@ -1445,6 +1446,14 @@ HTML = """<!doctype html>
       const files = allFiles.filter((f) => SUPPORTED_UPLOAD_EXTENSIONS.has(extensionOfName(f && f.name)));
       if (!files.length) {
         metaEl.textContent = 'No supported files selected (.pdf, .txt, .md, .html, .htm, .epub)';
+        return;
+      }
+
+      const tooLarge = files.filter((f) => Number(f && f.size) > MAX_UPLOAD_BYTES);
+      if (tooLarge.length) {
+        const limitMb = Math.round(MAX_UPLOAD_BYTES / (1024 * 1024));
+        const sample = tooLarge.slice(0, 2).map((f) => String(f.name || '')).join(' | ');
+        metaEl.textContent = `Upload blocked: ${tooLarge.length} file(s) exceed ${limitMb} MB. ${sample}`;
         return;
       }
 
@@ -1542,7 +1551,8 @@ HTML = """<!doctype html>
 
     function persistPromptHistory() {
       try {
-        localStorage.setItem(PROMPT_HISTORY_STORAGE_KEY, JSON.stringify(promptHistory.slice(-MAX_PROMPT_HISTORY)));
+        localStorage.setItem(PROMPT_HISTORY_STORAGE_KEY, JSON.stringify(
+            promptHistory.slice(-MAX_PROMPT_HISTORY)));
       } catch (_) {
         // Ignore storage errors.
       }
@@ -1550,7 +1560,8 @@ HTML = """<!doctype html>
 
     function persistPinnedPrompts() {
       try {
-        localStorage.setItem(PINNED_PROMPTS_STORAGE_KEY, JSON.stringify(pinnedPrompts.slice(-MAX_PROMPT_HISTORY)));
+        localStorage.setItem(PINNED_PROMPTS_STORAGE_KEY, JSON.stringify(
+            pinnedPrompts.slice(-MAX_PROMPT_HISTORY)));
       } catch (_) {
         // Ignore storage errors.
       }
@@ -1627,7 +1638,8 @@ HTML = """<!doctype html>
       if (direction < 0) {
         promptHistoryIndex = Math.max(0, promptHistoryIndex - 1);
       } else {
-        promptHistoryIndex = Math.min(promptHistory.length, promptHistoryIndex + 1);
+        promptHistoryIndex = Math.min(
+            promptHistory.length, promptHistoryIndex + 1);
       }
 
       if (promptHistoryIndex >= promptHistory.length) {
@@ -2362,7 +2374,8 @@ HTML = """<!doctype html>
         if (!child) continue;
         if (!rootNode.children.has(child)) {
           const childLabel = child.split('/').slice(-1)[0] || child;
-          rootNode.children.set(child, { key: child, label: childLabel, docs: [] });
+          rootNode.children.set(
+              child, { key: child, label: childLabel, docs: [] });
         }
         rootNode.children.get(child).docs.push(doc);
       }
@@ -2807,14 +2820,16 @@ HTML = """<!doctype html>
 
     async function generateBibliographyFromLatestSources() {
       if (!Array.isArray(lastPdfSources) || !lastPdfSources.length) {
-        addMessage('system', 'No recent PDF-grounded sources found. Ask with PDF-grounded mode first.');
+        addMessage(
+            'system', 'No recent PDF-grounded sources found. Ask with PDF-grounded mode first.');
         return;
       }
 
       const citationEntries = buildApaCitationEntries(lastPdfSources);
       const bibliographyText = buildBibliographyText(lastPdfSources, lastCitationQuery);
       if (!bibliographyText) {
-        addMessage('system', 'Could not generate bibliography from current sources.');
+        addMessage(
+            'system', 'Could not generate bibliography from current sources.');
         return;
       }
 
@@ -2839,11 +2854,13 @@ HTML = """<!doctype html>
     async function createStudyBrief() {
       const query = promptEl.value.trim() || lastUserPrompt;
       if (!query) {
-        addMessage('system', 'Enter a topic first (or ask a question) to create a study brief.');
+        addMessage(
+            'system', 'Enter a topic first (or ask a question) to create a study brief.');
         return;
       }
       if (!usePdfLibraryEl.checked) {
-        addMessage('system', 'Enable PDF-grounded answers to create a study brief.');
+        addMessage(
+            'system', 'Enable PDF-grounded answers to create a study brief.');
         return;
       }
 
@@ -2946,7 +2963,8 @@ HTML = """<!doctype html>
           let etaText = 'ETA: estimating';
 
           if (Number.isFinite(total) && total > 0 && Number.isFinite(processed) && processed >= 0) {
-            progressPct = Math.max(0, Math.min(100, Math.round((processed / total) * 100)));
+            progressPct = Math.max(0, Math.min(
+                100, Math.round((processed / total) * 100)));
             const remaining = Math.max(0, total - processed);
             const perSec = processed > 0 ? processed / elapsedSec : 0;
             if (perSec > 0) {
@@ -2954,7 +2972,8 @@ HTML = """<!doctype html>
               etaText = `ETA: ~${Math.max(0, Math.ceil(etaSec / 60))} min`;
             }
           } else {
-            progressPct = Math.max(8, Math.min(92, 12 + Math.round(Math.min(80, elapsedSec / 3))));
+            progressPct = Math.max(8, Math.min(
+                92, 12 + Math.round(Math.min(80, elapsedSec / 3))));
           }
 
           pdfProgressEl.classList.remove('hidden');
@@ -3068,7 +3087,8 @@ HTML = """<!doctype html>
         const data = await res.json();
         const items = Array.isArray(data.messages) ? data.messages : [];
         if (!items.length) {
-          addMessage('assistant', 'Shared history is empty. Start the conversation.', { showAssistantTools: false });
+          addMessage('assistant', 'Shared history is empty. Start the conversation.', {
+                     showAssistantTools: false });
           return;
         }
         for (const item of items) {
@@ -3097,7 +3117,8 @@ HTML = """<!doctype html>
       const deepStudy = deepStudyEl.checked;
       if (!prompt) return;
       if (!model) {
-        addMessage('system', 'No model is available. Install a model and refresh.');
+        addMessage(
+            'system', 'No model is available. Install a model and refresh.');
         return;
       }
 
@@ -3278,7 +3299,8 @@ HTML = """<!doctype html>
       metaEl.textContent = 'Ungrounded mode enabled';
     });
     studyBriefEl.addEventListener('click', createStudyBrief);
-    makeBibliographyEl.addEventListener('click', generateBibliographyFromLatestSources);
+    makeBibliographyEl.addEventListener(
+        'click', generateBibliographyFromLatestSources);
     cancelEl.addEventListener('click', cancelPromptRequest);
     clearEl.addEventListener('click', async () => {
       try {
@@ -3287,7 +3309,8 @@ HTML = """<!doctype html>
         // If delete fails, still clear local view for usability.
       }
       messagesEl.innerHTML = '';
-      addMessage('assistant', 'Shared history cleared.', { showAssistantTools: false });
+      addMessage('assistant', 'Shared history cleared.',
+                 { showAssistantTools: false });
       metaEl.textContent = 'Ready';
       promptEl.focus();
     });
@@ -3660,9 +3683,12 @@ class Handler(BaseHTTPRequestHandler):
         if not normalized_name or normalized_name in {".", ".."}:
             return None, None, "invalid file name", 400
 
-        cleaned = "".join(ch for ch in normalized_name if 32 <=
-                          ord(ch) <= 126).strip()
-        if not cleaned:
+        # Keep Unicode characters, but reject path separators and control chars.
+        cleaned = "".join(
+            ch for ch in normalized_name
+            if ch not in {"/", "\\", "\x00"} and ord(ch) >= 32
+        ).strip().strip(".")
+        if not cleaned or cleaned in {".", ".."}:
             return None, None, "invalid file name", 400
 
         suffix = Path(cleaned).suffix.lower()
