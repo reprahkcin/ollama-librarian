@@ -148,8 +148,10 @@ From the UI:
 
 1. Enable Use PDF-grounded answers
 2. Add documents by either:
-  - Copying files into your library folder, or
-  - Clicking Upload Documents in the sidebar
+
+- Copying files into your library folder, or
+- Clicking Upload Documents in the sidebar
+
 3. Click Sync New PDFs
 
 Optional CLI sync with prune:
