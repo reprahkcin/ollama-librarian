@@ -241,7 +241,7 @@ while true; do
 done
 ```
 
-6. Negative test (git mode blocks non-main target):
+6. Negative test (git mode blocks targets that differ from `OLLAMA_WEB_UPDATE_BRANCH`):
 
 ```bash
 ./scripts/librarian-stop-macos.sh

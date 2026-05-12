@@ -30,7 +30,7 @@ This is the source of truth for implementation behavior.
 
 ## Guiding Principles
 
-- Safety first: never replace current install without backup.
+- Safety first: enforce preflight checks before any apply operation.
 - Predictable behavior: all update states visible to user.
 - Recoverability: explicit failure states and actionable errors.
 - Cross-platform parity: same UX on macOS and Windows.
@@ -193,7 +193,7 @@ States:
 
 - Log file for updater operations per platform.
 - Backend endpoint returns last N update events.
-- UI shows concise error and suggests retry/rollback state.
+- UI shows concise error and the latest failure state.
 
 ## Operational Constraints
 

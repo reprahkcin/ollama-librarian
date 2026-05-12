@@ -135,7 +135,7 @@ curl -sS -X POST http://127.0.0.1:8088/api/update/apply \
   -d '{"target_version":"main"}' | jq .
 ```
 
-1. Optional negative test (git mode rejects non-main target):
+1. Optional negative test (git mode rejects targets that differ from `OLLAMA_WEB_UPDATE_BRANCH`):
 
 ```bash
 ./scripts/librarian-stop-macos.sh
