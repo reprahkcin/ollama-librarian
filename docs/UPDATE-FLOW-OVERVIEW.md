@@ -7,7 +7,7 @@ This document defines the full update feature for Ollama Librarian:
 - Detect when a newer release is available.
 - Notify researchers in the UI.
 - Allow one-click update from within the app.
-- Apply updates safely with integrity checks and rollback.
+- Apply repository updates safely with preflight checks and fast-forward sync.
 
 This is the source of truth for implementation behavior.
 
@@ -18,8 +18,7 @@ This is the source of truth for implementation behavior.
 - Versioning and release contract.
 - In-app update check and status UI.
 - Update apply flow for macOS and Windows.
-- CI/CD release automation with checksums.
-- Rollback behavior and failure handling.
+- Failure handling for preflight and apply operations.
 
 ### Out of Scope (Initial MVP)
 
@@ -27,14 +26,15 @@ This is the source of truth for implementation behavior.
 - Auto-updates without user action.
 - Linux updater.
 - Differential/binary patch updates.
+- Artifact download/checksum/rollback installer behavior.
 
 ## Guiding Principles
 
 - Safety first: never replace current install without backup.
 - Predictable behavior: all update states visible to user.
-- Recoverability: easy rollback and restart.
+- Recoverability: explicit failure states and actionable errors.
 - Cross-platform parity: same UX on macOS and Windows.
-- Minimal trust: verify artifact integrity before apply.
+- Minimal trust: only sync from configured repository and branch.
 
 ## Versioning Strategy
 
@@ -76,9 +76,7 @@ v1.5.0
 
 4. CI/CD Pipeline (GitHub Actions)
 
-- Build release artifacts.
-- Generate checksums.
-- Publish GitHub Release and metadata.
+- Publish GitHub releases/tags used by update checks.
 
 ## API Contract
 
@@ -89,24 +87,20 @@ Returns current and latest release info.
 ```json
 {
   "ok": true,
+  "repo": "reprahkcin/ollama-librarian",
   "current_version": "v1.5.0",
   "latest_version": "v1.6.0",
   "update_available": true,
-  "channel": "stable",
+  "source": "release",
+  "apply_mode": "git",
+  "branch": "main",
+  "apply_target": "main",
+  "local_sha": null,
+  "remote_sha": null,
   "release": {
     "tag": "v1.6.0",
     "published_at": "2026-05-11T22:10:00Z",
-    "notes_url": "https://github.com/reprahkcin/ollama-librarian/releases/tag/v1.6.0",
-    "assets": {
-      "macos": {
-        "url": "https://.../ollama-librarian-macos-v1.6.0.tar.gz",
-        "sha256": "..."
-      },
-      "windows": {
-        "url": "https://.../ollama-librarian-windows-v1.6.0.zip",
-        "sha256": "..."
-      }
-    }
+    "notes_url": "https://github.com/reprahkcin/ollama-librarian/releases/tag/v1.6.0"
   }
 }
 ```
@@ -119,7 +113,7 @@ Request:
 
 ```json
 {
-  "target_version": "v1.6.0"
+  "target_version": "main"
 }
 ```
 
@@ -129,7 +123,7 @@ Response:
 {
   "ok": true,
   "started": true,
-  "job_id": "update-20260511-221200"
+  "job_id": "update-1778537520-a1b2c3d4"
 }
 ```
 
@@ -140,15 +134,20 @@ Returns current update status.
 ```json
 {
   "ok": true,
-  "job_id": "update-20260511-221200",
-  "state": "downloading",
-  "step": "download_artifact",
-  "progress_pct": 42,
-  "message": "Downloading release artifact",
+  "repo": "reprahkcin/ollama-librarian",
+  "job_id": "update-1778537520-a1b2c3d4",
+  "state": "applying",
+  "step": "git_fetch",
+  "progress_pct": 30,
+  "message": "Fetching repository updates",
   "started_at": 1778537520,
-  "updated_at": 1778537545,
-  "target_version": "v1.6.0",
-  "error": null
+  "finished_at": null,
+  "target_version": "main",
+  "last_error": null,
+  "source": "git",
+  "apply_mode": "git",
+  "branch": "main",
+  "apply_target": "main"
 }
 ```
 
@@ -157,54 +156,38 @@ States:
 - `idle`
 - `checking`
 - `available`
-- `downloading`
-- `verifying`
 - `applying`
-- `restarting`
 - `done`
 - `failed`
-- `rolled_back`
 
 ## Updater Behavior
 
 ### Common Flow
 
-1. Validate target version and release asset.
-2. Download asset to temp path.
-3. Verify checksum matches expected SHA-256.
-4. Stop app process cleanly.
-5. Backup current installation directory.
-6. Replace installation with downloaded artifact.
-7. Run minimal health check.
-8. Restart app.
-9. Report `done` if healthy.
-10. If health check fails, restore backup and report `rolled_back`.
+1. Resolve update mode (`git` or `script`) and target.
+2. Run preflight checks (branch, clean worktree, remote accessibility).
+3. Start async update worker.
+4. Fetch from remote and apply fast-forward sync.
+5. Report `done` if changed or `Already up to date` if unchanged.
+6. Report `failed` with `last_error` if any step fails.
 
 ### Required Safeguards
 
-- One updater at a time (lock file).
+- One updater at a time (in-process lock/state gate).
 - Timeouts per step.
-- Never delete backup until health check passes.
 - Always write structured logs for each step.
 
 ## Security Requirements
 
 - Fetch updates only from trusted repository owner/name.
-- Require HTTPS for artifact download URLs.
-- Verify SHA-256 before applying update.
-- Reject version downgrade by default (optional override for admins).
+- Restrict git apply mode to the configured branch target.
 - Keep update endpoints behind existing same-origin and API auth controls.
 
 ## CI/CD Release Requirements
 
 - Trigger on tag matching `v*`.
-- Build and package platform artifacts.
-- Produce SHA-256 checksum file.
 - Publish release with:
-  - artifacts
-  - checksums
   - release notes
-- Optionally publish machine-readable release metadata JSON.
 
 ## Observability
 
@@ -222,9 +205,7 @@ States:
 
 - User can detect newer release from app UI.
 - User can trigger update with one click.
-- Update applies and app restarts to new version.
-- Corrupt or tampered artifact fails verification and does not apply.
-- Failed post-update health check auto-rolls back.
+- Update applies via git/script mode and reports completion state.
 - Clear status and errors visible in UI.
 - Logs provide enough detail for support diagnosis.
 
