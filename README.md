@@ -81,6 +81,73 @@ Content/index paths and OCR:
 - `OLLAMA_WEB_PDF_OCR_JOBS`
 - `OLLAMA_WEB_PDF_OCR_TIMEOUT`
 
+Updater behavior:
+
+- `OLLAMA_WEB_UPDATE_REPO_OWNER` (default: `reprahkcin`)
+- `OLLAMA_WEB_UPDATE_REPO_NAME` (default: `ollama-librarian`)
+- `OLLAMA_WEB_UPDATE_GITHUB_TOKEN` (default: empty)
+- `OLLAMA_WEB_UPDATE_BRANCH` (default: `main`)
+- `OLLAMA_WEB_UPDATE_APPLY_MODE` (default: `git`, options: `git` or `script`)
+
+## Update Flow Smoke Test
+
+Run these endpoint checks from repo root while the app is running on `127.0.0.1:8088`.
+
+1. Check current update state:
+
+```bash
+curl -sS http://127.0.0.1:8088/api/update/status | jq .
+```
+
+1. Trigger update check:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8088/api/update/check | jq .
+```
+
+1. Apply in default git mode:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8088/api/update/apply \
+  -H 'Content-Type: application/json' \
+  -d '{"target_version":"main"}' | jq .
+```
+
+1. Poll status until running is false:
+
+```bash
+while true; do
+  out="$(curl -sS http://127.0.0.1:8088/api/update/status)"
+  echo "$out" | jq '{state,step,running,message,last_error}'
+  test "$(echo "$out" | jq -r '.running')" = "false" && break
+  sleep 1
+done
+```
+
+1. Apply in script mode (macOS):
+
+```bash
+./scripts/librarian-stop-macos.sh
+OLLAMA_WEB_UPDATE_APPLY_MODE=script ./scripts/librarian-start-macos.sh
+
+target="$(curl -sS -X POST http://127.0.0.1:8088/api/update/check | jq -r '.apply_target // "main"')"
+
+curl -sS -X POST http://127.0.0.1:8088/api/update/apply \
+  -H 'Content-Type: application/json' \
+  -d "{\"target_version\":\"$target\"}" | jq .
+```
+
+1. Optional negative test (git mode rejects targets that differ from `OLLAMA_WEB_UPDATE_BRANCH`):
+
+```bash
+./scripts/librarian-stop-macos.sh
+OLLAMA_WEB_UPDATE_APPLY_MODE=git ./scripts/librarian-start-macos.sh
+
+curl -sS -X POST http://127.0.0.1:8088/api/update/apply \
+  -H 'Content-Type: application/json' \
+  -d '{"target_version":"not-main"}' | jq .
+```
+
 ## On/Off Controls
 
 macOS:

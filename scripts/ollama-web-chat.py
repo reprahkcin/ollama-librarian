@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 
 import json
+import logging
 import mimetypes
 import os
+import re
 import sqlite3
 import subprocess
 import threading
@@ -108,6 +110,23 @@ STASH_PATH = os.path.expanduser(
         resolve_default_stash_path(),
     )
 )
+APP_VERSION_FILE = REPO_ROOT / "scripts" / "VERSION"
+UPDATE_STATE_PATH = Path(os.path.dirname(HISTORY_PATH)
+                         or str(REPO_ROOT)) / "update-state.json"
+UPDATE_REPO_OWNER = os.environ.get(
+    "OLLAMA_WEB_UPDATE_REPO_OWNER", "reprahkcin")
+UPDATE_REPO_NAME = os.environ.get(
+    "OLLAMA_WEB_UPDATE_REPO_NAME", "ollama-librarian")
+UPDATE_GITHUB_TOKEN = os.environ.get("OLLAMA_WEB_UPDATE_GITHUB_TOKEN", "")
+UPDATE_GIT_BRANCH = os.environ.get("OLLAMA_WEB_UPDATE_BRANCH", "main")
+UPDATE_APPLY_MODE = os.environ.get(
+    "OLLAMA_WEB_UPDATE_APPLY_MODE", "git").strip().lower()
+UPDATE_APPLY_MODE_RESOLVED = (
+    UPDATE_APPLY_MODE if UPDATE_APPLY_MODE in {"git", "script"} else "git"
+)
+UPDATE_SCRIPT_MACOS = REPO_ROOT / "scripts" / "librarian-update-macos.sh"
+UPDATE_SCRIPT_WINDOWS = REPO_ROOT / "scripts" / "librarian-update-windows.ps1"
+LOGGER = logging.getLogger("ollama_web_chat")
 
 PDF_INDEX_STATE = {
     "running": False,
@@ -116,6 +135,597 @@ PDF_INDEX_STATE = {
     "last_result": None,
     "last_error": None,
 }
+UPDATE_LOCK = threading.Lock()
+UPDATE_STATE = {
+    "job_id": None,
+    "running": False,
+    "state": "idle",
+    "step": "none",
+    "progress_pct": 0,
+    "message": "Not checked",
+    "started_at": None,
+    "finished_at": None,
+    "last_checked_at": None,
+    "current_version": None,
+    "latest_version": None,
+    "source": None,
+    "apply_mode": UPDATE_APPLY_MODE_RESOLVED,
+    "branch": UPDATE_GIT_BRANCH,
+    "apply_target": UPDATE_GIT_BRANCH,
+    "local_sha": None,
+    "remote_sha": None,
+    "update_available": False,
+    "target_version": None,
+    "last_error": None,
+}
+
+
+def _persist_update_state_unlocked():
+    try:
+        UPDATE_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = UPDATE_STATE_PATH.with_suffix(".tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(UPDATE_STATE, f, ensure_ascii=True)
+        os.replace(tmp_path, UPDATE_STATE_PATH)
+    except Exception as exc:
+        LOGGER.exception("Failed to persist update state")
+
+
+def _set_update_state(**changes):
+    with UPDATE_LOCK:
+        UPDATE_STATE.update(changes)
+        _persist_update_state_unlocked()
+
+
+def _load_update_state():
+    try:
+        if not UPDATE_STATE_PATH.is_file():
+            return
+        data = json.loads(UPDATE_STATE_PATH.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return
+        with UPDATE_LOCK:
+            for key in list(UPDATE_STATE.keys()):
+                if key in data:
+                    UPDATE_STATE[key] = data[key]
+            # Recover from stale in-progress state left behind by crash/restart.
+            if UPDATE_STATE.get("running"):
+                now = int(time.time())
+                UPDATE_STATE["running"] = False
+                UPDATE_STATE["state"] = "failed"
+                UPDATE_STATE["step"] = "recovered_after_restart"
+                UPDATE_STATE["finished_at"] = now
+                UPDATE_STATE["message"] = "Recovered stale update job after restart"
+                if not UPDATE_STATE.get("last_error"):
+                    UPDATE_STATE["last_error"] = (
+                        "Previous update job did not complete before restart"
+                    )
+                _persist_update_state_unlocked()
+    except Exception as exc:
+        LOGGER.exception("Failed to load persisted update state")
+        with UPDATE_LOCK:
+            UPDATE_STATE["last_error"] = f"Failed to load persisted update state: {exc}"
+
+
+_load_update_state()
+
+
+def read_current_version() -> str:
+    try:
+        text = APP_VERSION_FILE.read_text(encoding="utf-8").strip()
+        return text or "v0.0.0"
+    except Exception:
+        return "v0.0.0"
+
+
+def _resolved_update_apply_mode() -> str:
+    return UPDATE_APPLY_MODE_RESOLVED
+
+
+def _parse_semver(v: str) -> tuple[int, int, int] | None:
+    raw = str(v or "").strip()
+    if raw.lower().startswith("v"):
+        raw = raw[1:]
+    parts = raw.split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        return int(parts[0]), int(parts[1]), int(parts[2])
+    except Exception:
+        return None
+
+
+def is_newer_version(latest: str, current: str) -> bool:
+    latest_tuple = _parse_semver(latest)
+    current_tuple = _parse_semver(current)
+    if latest_tuple is None or current_tuple is None:
+        return False
+    return latest_tuple > current_tuple
+
+
+def fetch_latest_release() -> dict:
+    api_url = (
+        f"https://api.github.com/repos/{UPDATE_REPO_OWNER}/{UPDATE_REPO_NAME}/releases/latest"
+    )
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "ollama-librarian-update-check",
+    }
+    if UPDATE_GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {UPDATE_GITHUB_TOKEN}"
+    req = Request(api_url, headers=headers)
+    with urlopen(req, timeout=15) as resp:
+        payload = resp.read().decode("utf-8")
+    data = json.loads(payload) if payload else {}
+    if not isinstance(data, dict):
+        raise RuntimeError("Unexpected release payload")
+    if data.get("draft"):
+        raise RuntimeError("Latest release is draft")
+
+    tag = str(data.get("tag_name") or "").strip()
+    if not tag:
+        raise RuntimeError("Latest release missing tag_name")
+
+    return {
+        "tag": tag,
+        "published_at": data.get("published_at"),
+        "notes_url": data.get("html_url"),
+    }
+
+
+def get_update_status() -> dict:
+    current = read_current_version()
+    with UPDATE_LOCK:
+        state = dict(UPDATE_STATE)
+
+    origin_url = ""
+    origin_matches = None
+    try:
+        origin_url = _get_origin_remote_url()
+        origin_matches = _origin_matches_configured_repo(origin_url)
+    except Exception:
+        origin_url = ""
+        origin_matches = None
+
+    state["current_version"] = current
+    state["origin_remote"] = origin_url
+    state["origin_matches_repo"] = origin_matches
+
+    return {
+        "ok": True,
+        "repo": f"{UPDATE_REPO_OWNER}/{UPDATE_REPO_NAME}",
+        **state,
+    }
+
+
+def _run_git(args: list[str], timeout: int = 60) -> tuple[str, str]:
+    proc = subprocess.run(
+        ["git", "-C", str(REPO_ROOT)] + list(args),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    out = (proc.stdout or "").strip()
+    err = (proc.stderr or "").strip()
+    if proc.returncode != 0:
+        raise RuntimeError(
+            err or out or f"git command failed: {' '.join(args)}")
+    return out, err
+
+
+def _get_origin_remote_url() -> str:
+    out, _ = _run_git(["remote", "get-url", "origin"], timeout=20)
+    return out.splitlines()[0].strip() if out else ""
+
+
+def _origin_matches_configured_repo(origin_url: str) -> bool:
+    normalized = str(origin_url or "").strip().lower()
+    if not normalized:
+        return False
+    owner = UPDATE_REPO_OWNER.strip().lower()
+    name = UPDATE_REPO_NAME.strip().lower()
+    slash_form = f"github.com/{owner}/{name}"
+    scp_form = f"github.com:{owner}/{name}"
+    return slash_form in normalized or scp_form in normalized
+
+
+def _ensure_origin_matches_configured_repo() -> None:
+    origin_url = _get_origin_remote_url()
+    if not _origin_matches_configured_repo(origin_url):
+        raise RuntimeError(
+            "git remote 'origin' does not match configured update repo "
+            f"{UPDATE_REPO_OWNER}/{UPDATE_REPO_NAME}"
+        )
+
+
+def _run_update_script(target_version: str, timeout: int = 300) -> tuple[str, str]:
+    branch = str(target_version or UPDATE_GIT_BRANCH).strip(
+    ) or UPDATE_GIT_BRANCH
+    if os.name == "nt":
+        if not UPDATE_SCRIPT_WINDOWS.is_file():
+            raise RuntimeError(
+                f"Updater script not found: {UPDATE_SCRIPT_WINDOWS}")
+        cmd = [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(UPDATE_SCRIPT_WINDOWS),
+            "-Branch",
+            branch,
+        ]
+    else:
+        if not UPDATE_SCRIPT_MACOS.is_file():
+            raise RuntimeError(
+                f"Updater script not found: {UPDATE_SCRIPT_MACOS}")
+        cmd = [str(UPDATE_SCRIPT_MACOS), "--branch", branch]
+
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    out = (proc.stdout or "").strip()
+    err = (proc.stderr or "").strip()
+    if proc.returncode != 0:
+        raise RuntimeError(err or out or "Update script failed")
+    return out, err
+
+
+def check_for_git_updates() -> dict:
+    mode = _resolved_update_apply_mode()
+    _ensure_origin_matches_configured_repo()
+    local_out, _ = _run_git(["rev-parse", "HEAD"], timeout=20)
+    remote_out, _ = _run_git(
+        ["ls-remote", "origin", f"refs/heads/{UPDATE_GIT_BRANCH}"],
+        timeout=20,
+    )
+    local_sha = local_out.splitlines()[0].strip() if local_out else ""
+    remote_sha = ""
+    if remote_out:
+        remote_sha = remote_out.split()[0].strip()
+
+    if not local_sha or not remote_sha:
+        raise RuntimeError("Unable to resolve local/remote git revision")
+
+    available = local_sha != remote_sha
+    now = int(time.time())
+    _set_update_state(
+        state="available" if available else "idle",
+        step="checked",
+        progress_pct=100,
+        message=(
+            f"Repository update available ({remote_sha[:8]})"
+            if available
+            else "Repository is up to date"
+        ),
+        latest_version=remote_sha[:8],
+        source="git",
+        apply_mode=mode,
+        branch=UPDATE_GIT_BRANCH,
+        apply_target=UPDATE_GIT_BRANCH,
+        local_sha=local_sha,
+        remote_sha=remote_sha,
+        update_available=available,
+        last_checked_at=now,
+        last_error=None,
+    )
+    out = get_update_status()
+    return out
+
+
+def check_for_updates() -> dict:
+    mode = _resolved_update_apply_mode()
+    current = read_current_version()
+    _set_update_state(
+        state="checking",
+        step="fetch_latest_release",
+        message="Checking latest release",
+        last_error=None,
+        current_version=current,
+    )
+    try:
+        release = fetch_latest_release()
+        latest = str(release.get("tag") or "").strip()
+        available = is_newer_version(latest, current)
+        now = int(time.time())
+        _set_update_state(
+            state="available" if available else "idle",
+            step="checked",
+            progress_pct=100,
+            message=(
+                f"Update available: {latest}" if available else "You are up to date"
+            ),
+            latest_version=latest,
+            source="release",
+            apply_mode=mode,
+            branch=UPDATE_GIT_BRANCH,
+            apply_target=UPDATE_GIT_BRANCH,
+            local_sha=None,
+            remote_sha=None,
+            update_available=available,
+            last_checked_at=now,
+            last_error=None,
+        )
+        out = get_update_status()
+        out["release"] = release
+        return out
+    except HTTPError as exc:
+        if int(getattr(exc, "code", 0) or 0) == 404:
+            return check_for_git_updates()
+
+        now = int(time.time())
+        _set_update_state(
+            state="failed",
+            step="check_failed",
+            progress_pct=0,
+            message="Update check failed",
+            last_checked_at=now,
+            source=None,
+            last_error=str(exc),
+        )
+        out = get_update_status()
+        out["ok"] = False
+        out["error"] = str(exc)
+        return out
+    except Exception as exc:
+        now = int(time.time())
+        _set_update_state(
+            state="failed",
+            step="check_failed",
+            progress_pct=0,
+            message="Update check failed",
+            last_checked_at=now,
+            source=None,
+            last_error=str(exc),
+        )
+        out = get_update_status()
+        out["ok"] = False
+        out["error"] = str(exc)
+        return out
+
+
+def _apply_update_worker(job_id: str, target_version: str):
+    started_at = int(time.time())
+    mode = _resolved_update_apply_mode()
+    _set_update_state(
+        running=True,
+        job_id=job_id,
+        target_version=target_version or UPDATE_GIT_BRANCH,
+        state="applying",
+        step="starting",
+        progress_pct=10,
+        message="Starting update apply",
+        started_at=started_at,
+        finished_at=None,
+        last_error=None,
+    )
+    try:
+        changed = False
+        if mode == "script":
+            _set_update_state(
+                state="applying",
+                step="script_apply",
+                progress_pct=55,
+                message="Applying update with platform script",
+            )
+            script_out, _ = _run_update_script(target_version, timeout=600)
+            changed = "already up to date" not in script_out.lower()
+        else:
+            _set_update_state(
+                state="applying",
+                step="git_fetch",
+                progress_pct=30,
+                message="Fetching repository updates",
+            )
+            _run_git(["fetch", "origin", target_version], timeout=90)
+            _set_update_state(
+                state="applying",
+                step="git_pull",
+                progress_pct=55,
+                message="Applying fast-forward update",
+            )
+            pull_out, _ = _run_git(
+                ["pull", "--ff-only", "origin", target_version], timeout=120
+            )
+            changed = "Already up to date" not in pull_out
+
+        finished_at = int(time.time())
+        _set_update_state(
+            running=False,
+            state="done",
+            step="completed",
+            progress_pct=100,
+            message=(
+                "Update applied. Restart app services to pick up all changes."
+                if changed
+                else "Already up to date"
+            ),
+            update_available=False,
+            target_version=target_version,
+            finished_at=finished_at,
+            last_error=None,
+        )
+    except Exception as exc:
+        finished_at = int(time.time())
+        _set_update_state(
+            running=False,
+            state="failed",
+            step="apply_failed",
+            progress_pct=0,
+            message="Update apply failed",
+            finished_at=finished_at,
+            last_error=str(exc),
+        )
+
+
+def _git_worktree_is_clean() -> tuple[bool, str]:
+    out, _ = _run_git(["status", "--porcelain"], timeout=20)
+    if not out.strip():
+        return True, ""
+    lines = out.splitlines()
+    sample = " | ".join(lines[:3])
+    return False, sample
+
+
+def _git_current_branch() -> str:
+    out, _ = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], timeout=20)
+    return out.splitlines()[0].strip() if out else ""
+
+
+def _is_valid_branch_target(target: str) -> bool:
+    value = str(target or "").strip()
+    # Keep a conservative branch charset to prevent option/path injection.
+    return bool(re.fullmatch(r"[A-Za-z0-9._/-]{1,128}", value))
+
+
+def start_update_apply(target_version: str) -> dict:
+    now = int(time.time())
+    mode = _resolved_update_apply_mode()
+    requested_target = str(target_version or "").strip()
+    resolved_target = UPDATE_GIT_BRANCH
+
+    if requested_target and not _is_valid_branch_target(requested_target):
+        return {
+            "ok": False,
+            "started": False,
+            "error": "Invalid target_version",
+            "error_code": "invalid_target",
+            "state": get_update_status(),
+        }
+
+    if requested_target and requested_target != UPDATE_GIT_BRANCH:
+        return {
+            "ok": False,
+            "started": False,
+            "error": f"update apply only supports target '{UPDATE_GIT_BRANCH}'",
+            "error_code": "invalid_target",
+            "state": get_update_status(),
+        }
+
+    job_id = f"update-{now}-{uuid.uuid4().hex[:8]}"
+
+    with UPDATE_LOCK:
+        if UPDATE_STATE.get("running"):
+            return {
+                "ok": False,
+                "started": False,
+                "error": "Update job already running",
+                "error_code": "already_running",
+                "state": dict(UPDATE_STATE),
+            }
+        UPDATE_STATE.update({
+            "running": True,
+            "job_id": job_id,
+            "target_version": resolved_target,
+            "state": "applying",
+            "step": "preflight",
+            "progress_pct": 2,
+            "message": f"Running update preflight for {resolved_target} ({mode} mode)",
+            "started_at": now,
+            "finished_at": None,
+            "last_error": None,
+            "apply_mode": mode,
+        })
+        _persist_update_state_unlocked()
+
+    try:
+        if mode == "script":
+            if os.name == "nt":
+                if not UPDATE_SCRIPT_WINDOWS.is_file():
+                    raise RuntimeError(
+                        f"Updater script not found: {UPDATE_SCRIPT_WINDOWS}"
+                    )
+            else:
+                if not UPDATE_SCRIPT_MACOS.is_file():
+                    raise RuntimeError(
+                        f"Updater script not found: {UPDATE_SCRIPT_MACOS}"
+                    )
+
+        current_branch = _git_current_branch()
+        if current_branch != UPDATE_GIT_BRANCH:
+            raise RuntimeError(
+                f"Cannot apply update while on branch '{current_branch}'"
+            )
+
+        clean, dirty_sample = _git_worktree_is_clean()
+        if not clean:
+            raise RuntimeError(
+                f"Working tree is dirty. Commit/stash changes first ({dirty_sample})"
+            )
+
+        _ensure_origin_matches_configured_repo()
+        _run_git(["ls-remote", "origin",
+                  f"refs/heads/{resolved_target}"], timeout=20)
+    except Exception as exc:
+        finished_at = int(time.time())
+        _set_update_state(
+            running=False,
+            state="failed",
+            step="preflight_failed",
+            progress_pct=0,
+            message="Update preflight failed",
+            finished_at=finished_at,
+            last_error=str(exc),
+            apply_mode=mode,
+        )
+        return {
+            "ok": False,
+            "started": False,
+            "error": f"Update preflight failed: {exc}",
+            "error_code": "preflight_failed",
+            "state": get_update_status(),
+        }
+
+    _set_update_state(
+        running=True,
+        job_id=job_id,
+        target_version=resolved_target,
+        state="applying",
+        step="queued",
+        progress_pct=5,
+        message=f"Update queued for {resolved_target} ({mode} mode)",
+        started_at=now,
+        finished_at=None,
+        last_error=None,
+        apply_mode=mode,
+    )
+    try:
+        t = threading.Thread(
+            target=_apply_update_worker,
+            args=(job_id, resolved_target),
+            daemon=True,
+        )
+        t.start()
+    except Exception as exc:
+        finished_at = int(time.time())
+        _set_update_state(
+            running=False,
+            state="failed",
+            step="apply_start_failed",
+            progress_pct=0,
+            message="Failed to launch update worker",
+            finished_at=finished_at,
+            last_error=str(exc),
+            apply_mode=mode,
+        )
+        return {
+            "ok": False,
+            "started": False,
+            "error": f"Failed to launch update worker: {exc}",
+            "error_code": "apply_start_failed",
+            "state": get_update_status(),
+        }
+    status = get_update_status()
+    return {
+        "ok": True,
+        "started": True,
+        "job_id": job_id,
+        "message": "Update job started",
+        "state": status,
+    }
 
 
 def run_pdf_rag(extra_args, timeout=600):
@@ -1287,6 +1897,12 @@ HTML = """<!doctype html>
       <div id="pdfStatus" class="tiny">PDF index: checking...</div>
       <div id="pdfProgress" class="pdf-progress hidden"><div id="pdfProgressBar" class="pdf-progress-bar"></div></div>
 
+      <label>App Updates</label>
+      <div id="appVersion" class="tiny">Version: %CURRENT_VERSION%</div>
+      <div id="updateStatus" class="tiny">Updates: not checked</div>
+      <button id="checkUpdates" class="btn-soft" type="button">Check for Updates</button>
+      <button id="applyUpdate" class="btn-soft" type="button" disabled>Update to Latest</button>
+
       <button id="openLibraryDocs" class="btn-soft" type="button">Library Docs</button>
       <button id="openStash" class="btn-soft" type="button">View Stash</button>
       <button id="openBibliography" class="btn-soft" type="button">View Bibliography</button>
@@ -1399,6 +2015,10 @@ HTML = """<!doctype html>
     const libraryUploadInputEl = document.getElementById('libraryUploadInput');
     const pdfProgressEl = document.getElementById('pdfProgress');
     const pdfProgressBarEl = document.getElementById('pdfProgressBar');
+    const appVersionEl = document.getElementById('appVersion');
+    const updateStatusEl = document.getElementById('updateStatus');
+    const checkUpdatesEl = document.getElementById('checkUpdates');
+    const applyUpdateEl = document.getElementById('applyUpdate');
     const studyBriefEl = document.getElementById('studyBrief');
     const makeBibliographyEl = document.getElementById('makeBibliography');
     const promptHistorySelectEl = document.getElementById('promptHistorySelect');
@@ -1446,6 +2066,7 @@ HTML = """<!doctype html>
     const MAX_PROMPT_HISTORY = 150;
     const MAX_UPLOAD_BYTES = Number('%MAX_UPLOAD_BYTES%');
     const SUPPORTED_UPLOAD_EXTENSIONS = new Set(['.pdf', '.txt', '.md', '.html', '.htm', '.epub']);
+    let latestUpdateVersion = '';
 
     function extensionOfName(name) {
       const raw = String(name || '').trim().toLowerCase();
@@ -3009,6 +3630,96 @@ HTML = """<!doctype html>
       }
     }
 
+    function renderUpdateUi(data) {
+      const currentVersion = String((data && data.current_version) || 'unknown');
+      const latestVersion = String((data && data.latest_version) || '').trim();
+      const updateAvailable = Boolean(data && data.update_available);
+      const source = String((data && data.source) || 'none');
+      const branch = String((data && data.branch) || 'main');
+      const applyTarget = String((data && data.apply_target) || '').trim();
+      const state = String((data && data.state) || 'idle');
+      const message = String((data && data.message) || 'Not checked');
+      const err = data && data.last_error ? ` | ${data.last_error}` : '';
+
+      appVersionEl.textContent = `Version: ${currentVersion}`;
+      updateStatusEl.textContent = `Updates: ${state} (${source}) - ${message}${err}`;
+
+      if (source === 'git') {
+        latestUpdateVersion = updateAvailable ? branch : '';
+      } else {
+        latestUpdateVersion = updateAvailable ? (applyTarget || latestVersion) : '';
+      }
+      applyUpdateEl.disabled = !latestUpdateVersion;
+      if (source === 'git') {
+        applyUpdateEl.textContent = latestUpdateVersion
+          ? `Sync from ${latestUpdateVersion}`
+          : `Sync from ${branch}`;
+      } else {
+        applyUpdateEl.textContent = latestUpdateVersion
+          ? `Update to ${latestUpdateVersion}`
+          : 'Update to Latest';
+      }
+    }
+
+    async function refreshUpdateStatus() {
+      try {
+        const res = await fetch('/api/update/status');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        renderUpdateUi(data || {});
+      } catch (err) {
+        updateStatusEl.textContent = `Updates: status error - ${err.message}`;
+      }
+    }
+
+    async function checkForUpdates() {
+      checkUpdatesEl.disabled = true;
+      const original = checkUpdatesEl.textContent;
+      checkUpdatesEl.textContent = 'Checking...';
+      try {
+        const res = await fetch('/api/update/check', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok || data.ok === false) {
+          const detail = (data && (data.error || data.last_error)) || `HTTP ${res.status}`;
+          throw new Error(detail);
+        }
+        renderUpdateUi(data || {});
+        metaEl.textContent = data.update_available
+          ? `Update available: ${data.latest_version}`
+          : 'Already on latest version';
+      } catch (err) {
+        updateStatusEl.textContent = `Updates: check failed - ${err.message}`;
+        metaEl.textContent = 'Update check failed';
+      } finally {
+        checkUpdatesEl.disabled = false;
+        checkUpdatesEl.textContent = original;
+      }
+    }
+
+    async function applyUpdate() {
+      if (!latestUpdateVersion) return;
+      applyUpdateEl.disabled = true;
+      try {
+        const res = await fetch('/api/update/apply', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ target_version: latestUpdateVersion }),
+        });
+        const data = await res.json();
+        if (!res.ok || data.ok === false) {
+          const detail = (data && (data.error || data.message)) || `HTTP ${res.status}`;
+          throw new Error(detail);
+        }
+        renderUpdateUi((data && data.state) || data || {});
+        metaEl.textContent = data.message || 'Update job started';
+      } catch (err) {
+        updateStatusEl.textContent = `Updates: apply failed - ${err.message}`;
+        metaEl.textContent = 'Update apply failed';
+      } finally {
+        applyUpdateEl.disabled = !latestUpdateVersion;
+      }
+    }
+
     async function syncPdfLibrary() {
       syncPdfLibraryEl.disabled = true;
       syncPdfLibraryEl.textContent = 'Syncing...';
@@ -3288,6 +3999,8 @@ HTML = """<!doctype html>
     });
     saveInstructionsEl.addEventListener('click', saveInstructions);
     syncPdfLibraryEl.addEventListener('click', syncPdfLibrary);
+    checkUpdatesEl.addEventListener('click', checkForUpdates);
+    applyUpdateEl.addEventListener('click', applyUpdate);
     uploadLibraryDocsEl.addEventListener('click', () => {
       libraryUploadInputEl.click();
     });
@@ -3368,7 +4081,9 @@ HTML = """<!doctype html>
     loadInstructions();
     loadModels();
     refreshPdfStatus();
+    refreshUpdateStatus();
     setInterval(refreshPdfStatus, 15000);
+    setInterval(refreshUpdateStatus, 30000);
   </script>
 </body>
 </html>
@@ -3793,6 +4508,7 @@ class Handler(BaseHTTPRequestHandler):
             html = html.replace("%API_KEY_REQUIRED%",
                                 "true" if bool(API_KEY) else "false")
             html = html.replace("%MAX_UPLOAD_BYTES%", str(MAX_UPLOAD_BYTES))
+            html = html.replace("%CURRENT_VERSION%", read_current_version())
             return self._send(200, html, "text/html; charset=utf-8")
 
         if route_path == "/epub-reader":
@@ -3907,6 +4623,20 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(
                 200,
                 json.dumps(get_pdf_status(), ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        if route_path == "/api/update/status":
+            return self._send(
+                200,
+                json.dumps(get_update_status(), ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        if route_path == "/api/update/check":
+            return self._send(
+                200,
+                json.dumps(get_update_status(), ensure_ascii=True),
                 "application/json; charset=utf-8",
             )
 
@@ -4048,6 +4778,42 @@ class Handler(BaseHTTPRequestHandler):
                 200,
                 json.dumps({"ok": True, "started": started},
                            ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        if route_path == "/api/update/apply":
+            payload = self._read_json_body()
+            if payload is None:
+                return
+
+            requested_target = payload.get("target_version", "")
+            target_version = str(requested_target or "").strip()
+            result = start_update_apply(target_version)
+            code = 202
+            if not result.get("ok"):
+                error_code = str(result.get("error_code") or "")
+                if error_code == "already_running":
+                    code = 409
+                elif error_code == "invalid_target":
+                    code = 400
+                elif error_code == "preflight_failed":
+                    code = 412
+                elif error_code == "apply_start_failed":
+                    code = 500
+                else:
+                    code = 400
+            return self._send(
+                code,
+                json.dumps(result, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        if route_path == "/api/update/check":
+            payload = check_for_updates()
+            code = 200 if payload.get("ok") else 502
+            return self._send(
+                code,
+                json.dumps(payload, ensure_ascii=True),
                 "application/json; charset=utf-8",
             )
 

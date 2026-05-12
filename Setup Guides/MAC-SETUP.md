@@ -192,6 +192,68 @@ Ollama not reachable:
 curl http://127.0.0.1:11434/api/tags
 ```
 
+## Update Process Test
+
+Use this section to validate update endpoints and apply flows.
+
+1. Check update status:
+
+```bash
+curl -sS http://127.0.0.1:8088/api/update/status | jq .
+```
+
+2. Check for updates:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8088/api/update/check | jq .
+```
+
+3. Test apply in git mode:
+
+```bash
+./scripts/librarian-stop-macos.sh
+OLLAMA_WEB_UPDATE_APPLY_MODE=git ./scripts/librarian-start-macos.sh
+
+curl -sS -X POST http://127.0.0.1:8088/api/update/apply \
+  -H 'Content-Type: application/json' \
+  -d '{"target_version":"main"}' | jq .
+```
+
+4. Test apply in script mode:
+
+```bash
+./scripts/librarian-stop-macos.sh
+OLLAMA_WEB_UPDATE_APPLY_MODE=script ./scripts/librarian-start-macos.sh
+
+target="$(curl -sS -X POST http://127.0.0.1:8088/api/update/check | jq -r '.apply_target // "main"')"
+
+curl -sS -X POST http://127.0.0.1:8088/api/update/apply \
+  -H 'Content-Type: application/json' \
+  -d "{\"target_version\":\"$target\"}" | jq .
+```
+
+5. Poll update status until complete:
+
+```bash
+while true; do
+  out="$(curl -sS http://127.0.0.1:8088/api/update/status)"
+  echo "$out" | jq '{state,step,running,message,last_error}'
+  test "$(echo "$out" | jq -r '.running')" = "false" && break
+  sleep 1
+done
+```
+
+6. Negative test (git mode blocks targets that differ from `OLLAMA_WEB_UPDATE_BRANCH`):
+
+```bash
+./scripts/librarian-stop-macos.sh
+OLLAMA_WEB_UPDATE_APPLY_MODE=git ./scripts/librarian-start-macos.sh
+
+curl -sS -X POST http://127.0.0.1:8088/api/update/apply \
+  -H 'Content-Type: application/json' \
+  -d '{"target_version":"not-main"}' | jq .
+```
+
 ## Daily Use (Non-Technical)
 
 After initial setup, users only need these commands:
