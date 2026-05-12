@@ -16,14 +16,19 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
   exit 1
 }
 
+if ($Branch -notmatch '^[A-Za-z0-9._/-]{1,128}$') {
+  Write-Error "invalid branch name: $Branch"
+  exit 2
+}
+
 Write-Output "update-script: fetch origin/$Branch"
-& git fetch origin $Branch
+& git fetch origin -- $Branch
 if ($LASTEXITCODE -ne 0) {
   exit $LASTEXITCODE
 }
 
 Write-Output "update-script: pull --ff-only origin/$Branch"
-& git pull --ff-only origin $Branch
+& git pull --ff-only origin -- $Branch
 if ($LASTEXITCODE -ne 0) {
   exit $LASTEXITCODE
 }

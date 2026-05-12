@@ -35,10 +35,15 @@ if ! command -v git >/dev/null 2>&1; then
   exit 1
 fi
 
+if [[ ! "$BRANCH" =~ ^[A-Za-z0-9._/-]{1,128}$ ]]; then
+  echo "invalid branch name: $BRANCH" >&2
+  exit 2
+fi
+
 echo "update-script: fetch origin/$BRANCH"
-git fetch origin "$BRANCH"
+git fetch origin -- "$BRANCH"
 
 echo "update-script: pull --ff-only origin/$BRANCH"
-git pull --ff-only origin "$BRANCH"
+git pull --ff-only origin -- "$BRANCH"
 
 echo "update-script: completed"

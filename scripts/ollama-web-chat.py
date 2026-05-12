@@ -4,6 +4,7 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import sqlite3
 import subprocess
 import threading
@@ -188,6 +189,19 @@ def _load_update_state():
             for key in list(UPDATE_STATE.keys()):
                 if key in data:
                     UPDATE_STATE[key] = data[key]
+            # Recover from stale in-progress state left behind by crash/restart.
+            if UPDATE_STATE.get("running"):
+                now = int(time.time())
+                UPDATE_STATE["running"] = False
+                UPDATE_STATE["state"] = "failed"
+                UPDATE_STATE["step"] = "recovered_after_restart"
+                UPDATE_STATE["finished_at"] = now
+                UPDATE_STATE["message"] = "Recovered stale update job after restart"
+                if not UPDATE_STATE.get("last_error"):
+                    UPDATE_STATE["last_error"] = (
+                        "Previous update job did not complete before restart"
+                    )
+                _persist_update_state_unlocked()
     except Exception as exc:
         LOGGER.exception("Failed to load persisted update state")
         with UPDATE_LOCK:
@@ -523,6 +537,12 @@ def _git_current_branch() -> str:
     return out.splitlines()[0].strip() if out else ""
 
 
+def _is_valid_branch_target(target: str) -> bool:
+  value = str(target or "").strip()
+  # Keep a conservative branch charset to prevent option/path injection.
+  return bool(re.fullmatch(r"[A-Za-z0-9._/-]{1,128}", value))
+
+
 def start_update_apply(target_version: str) -> dict:
     now = int(time.time())
     mode = _resolved_update_apply_mode()
@@ -530,6 +550,25 @@ def start_update_apply(target_version: str) -> dict:
     resolved_target = UPDATE_GIT_BRANCH if mode == "git" else (
         requested_target or UPDATE_GIT_BRANCH
     )
+
+    if requested_target and not _is_valid_branch_target(requested_target):
+      return {
+        "ok": False,
+        "started": False,
+        "error": "Invalid target_version",
+        "error_code": "invalid_target",
+        "state": get_update_status(),
+      }
+
+    if mode == "git" and requested_target and requested_target != UPDATE_GIT_BRANCH:
+      return {
+        "ok": False,
+        "started": False,
+        "error": f"git apply mode only supports target '{UPDATE_GIT_BRANCH}'",
+        "error_code": "invalid_target",
+        "state": get_update_status(),
+      }
+
     job_id = f"update-{now}-{uuid.uuid4().hex[:8]}"
 
     with UPDATE_LOCK:
@@ -538,6 +577,7 @@ def start_update_apply(target_version: str) -> dict:
                 "ok": False,
                 "started": False,
                 "error": "Update job already running",
+            "error_code": "already_running",
                 "state": dict(UPDATE_STATE),
             }
         UPDATE_STATE.update({
@@ -556,32 +596,31 @@ def start_update_apply(target_version: str) -> dict:
         _persist_update_state_unlocked()
 
     try:
-        if mode == "git":
-            current_branch = _git_current_branch()
-            if current_branch != UPDATE_GIT_BRANCH:
-                raise RuntimeError(
-                    f"Cannot apply update while on branch '{current_branch}'"
-                )
-
-            clean, dirty_sample = _git_worktree_is_clean()
-            if not clean:
-                raise RuntimeError(
-                    f"Working tree is dirty. Commit/stash changes first ({dirty_sample})"
-                )
-
-            _run_git(["ls-remote", "origin",
-                     f"refs/heads/{UPDATE_GIT_BRANCH}"], timeout=20)
+      if mode == "script":
+        if os.name == "nt":
+          if not UPDATE_SCRIPT_WINDOWS.is_file():
+            raise RuntimeError(
+              f"Updater script not found: {UPDATE_SCRIPT_WINDOWS}"
+            )
         else:
-            if os.name == "nt":
-                if not UPDATE_SCRIPT_WINDOWS.is_file():
-                    raise RuntimeError(
-                        f"Updater script not found: {UPDATE_SCRIPT_WINDOWS}"
-                    )
-            else:
-                if not UPDATE_SCRIPT_MACOS.is_file():
-                    raise RuntimeError(
-                        f"Updater script not found: {UPDATE_SCRIPT_MACOS}"
-                    )
+          if not UPDATE_SCRIPT_MACOS.is_file():
+            raise RuntimeError(
+              f"Updater script not found: {UPDATE_SCRIPT_MACOS}"
+            )
+
+      current_branch = _git_current_branch()
+      if current_branch != UPDATE_GIT_BRANCH:
+        raise RuntimeError(
+          f"Cannot apply update while on branch '{current_branch}'"
+        )
+
+      clean, dirty_sample = _git_worktree_is_clean()
+      if not clean:
+        raise RuntimeError(
+          f"Working tree is dirty. Commit/stash changes first ({dirty_sample})"
+        )
+
+      _run_git(["ls-remote", "origin", f"refs/heads/{UPDATE_GIT_BRANCH}"], timeout=20)
     except Exception as exc:
         finished_at = int(time.time())
         _set_update_state(
@@ -598,6 +637,7 @@ def start_update_apply(target_version: str) -> dict:
             "ok": False,
             "started": False,
             "error": f"Update preflight failed: {exc}",
+          "error_code": "preflight_failed",
             "state": get_update_status(),
         }
 
@@ -637,6 +677,7 @@ def start_update_apply(target_version: str) -> dict:
             "ok": False,
             "started": False,
             "error": f"Failed to launch update worker: {exc}",
+          "error_code": "apply_start_failed",
             "state": get_update_status(),
         }
     status = get_update_status()
@@ -4712,7 +4753,19 @@ class Handler(BaseHTTPRequestHandler):
             requested_target = payload.get("target_version", "")
             target_version = str(requested_target or "").strip()
             result = start_update_apply(target_version)
-            code = 202 if result.get("ok") else 409
+            code = 202
+            if not result.get("ok"):
+              error_code = str(result.get("error_code") or "")
+              if error_code == "already_running":
+                code = 409
+              elif error_code == "invalid_target":
+                code = 400
+              elif error_code == "preflight_failed":
+                code = 412
+              elif error_code == "apply_start_failed":
+                code = 500
+              else:
+                code = 400
             return self._send(
                 code,
                 json.dumps(result, ensure_ascii=True),
