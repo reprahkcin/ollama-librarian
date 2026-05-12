@@ -169,7 +169,6 @@ def _persist_update_state_unlocked():
         os.replace(tmp_path, UPDATE_STATE_PATH)
     except Exception as exc:
         LOGGER.exception("Failed to persist update state")
-        UPDATE_STATE["last_error"] = f"Failed to persist update state: {exc}"
 
 
 def _set_update_state(**changes):
@@ -275,15 +274,28 @@ def fetch_latest_release() -> dict:
 
 
 def get_update_status() -> dict:
-    current = read_current_version()
-    with UPDATE_LOCK:
-        state = dict(UPDATE_STATE)
-    state["current_version"] = current
-    return {
-        "ok": True,
-        "repo": f"{UPDATE_REPO_OWNER}/{UPDATE_REPO_NAME}",
-        **state,
-    }
+  current = read_current_version()
+  with UPDATE_LOCK:
+    state = dict(UPDATE_STATE)
+
+  origin_url = ""
+  origin_matches = None
+  try:
+    origin_url = _get_origin_remote_url()
+    origin_matches = _origin_matches_configured_repo(origin_url)
+  except Exception:
+    origin_url = ""
+    origin_matches = None
+
+  state["current_version"] = current
+  state["origin_remote"] = origin_url
+  state["origin_matches_repo"] = origin_matches
+
+  return {
+    "ok": True,
+    "repo": f"{UPDATE_REPO_OWNER}/{UPDATE_REPO_NAME}",
+    **state,
+  }
 
 
 def _run_git(args: list[str], timeout: int = 60) -> tuple[str, str]:
@@ -299,6 +311,31 @@ def _run_git(args: list[str], timeout: int = 60) -> tuple[str, str]:
         raise RuntimeError(
             err or out or f"git command failed: {' '.join(args)}")
     return out, err
+
+
+def _get_origin_remote_url() -> str:
+    out, _ = _run_git(["remote", "get-url", "origin"], timeout=20)
+    return out.splitlines()[0].strip() if out else ""
+
+
+def _origin_matches_configured_repo(origin_url: str) -> bool:
+    normalized = str(origin_url or "").strip().lower()
+    if not normalized:
+        return False
+    owner = UPDATE_REPO_OWNER.strip().lower()
+    name = UPDATE_REPO_NAME.strip().lower()
+    slash_form = f"github.com/{owner}/{name}"
+    scp_form = f"github.com:{owner}/{name}"
+    return slash_form in normalized or scp_form in normalized
+
+
+def _ensure_origin_matches_configured_repo() -> None:
+    origin_url = _get_origin_remote_url()
+    if not _origin_matches_configured_repo(origin_url):
+        raise RuntimeError(
+            "git remote 'origin' does not match configured update repo "
+            f"{UPDATE_REPO_OWNER}/{UPDATE_REPO_NAME}"
+        )
 
 
 def _run_update_script(target_version: str, timeout: int = 300) -> tuple[str, str]:
@@ -339,6 +376,7 @@ def _run_update_script(target_version: str, timeout: int = 300) -> tuple[str, st
 
 def check_for_git_updates() -> dict:
     mode = _resolved_update_apply_mode()
+    _ensure_origin_matches_configured_repo()
     local_out, _ = _run_git(["rev-parse", "HEAD"], timeout=20)
     remote_out, _ = _run_git(
         ["ls-remote", "origin", f"refs/heads/{UPDATE_GIT_BRANCH}"],
@@ -404,7 +442,7 @@ def check_for_updates() -> dict:
             source="release",
             apply_mode=mode,
             branch=UPDATE_GIT_BRANCH,
-            apply_target=(UPDATE_GIT_BRANCH if mode == "git" else latest),
+            apply_target=UPDATE_GIT_BRANCH,
             local_sha=None,
             remote_sha=None,
             update_available=available,
@@ -620,6 +658,7 @@ def start_update_apply(target_version: str) -> dict:
                 f"Working tree is dirty. Commit/stash changes first ({dirty_sample})"
             )
 
+        _ensure_origin_matches_configured_repo()
         _run_git(["ls-remote", "origin",
                  f"refs/heads/{UPDATE_GIT_BRANCH}"], timeout=20)
     except Exception as exc:
