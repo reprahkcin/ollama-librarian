@@ -121,7 +121,7 @@ UPDATE_GIT_BRANCH = os.environ.get("OLLAMA_WEB_UPDATE_BRANCH", "main")
 UPDATE_APPLY_MODE = os.environ.get(
     "OLLAMA_WEB_UPDATE_APPLY_MODE", "git").strip().lower()
 UPDATE_APPLY_MODE_RESOLVED = (
-  UPDATE_APPLY_MODE if UPDATE_APPLY_MODE in {"git", "script"} else "git"
+    UPDATE_APPLY_MODE if UPDATE_APPLY_MODE in {"git", "script"} else "git"
 )
 UPDATE_SCRIPT_MACOS = REPO_ROOT / "scripts" / "librarian-update-macos.sh"
 UPDATE_SCRIPT_WINDOWS = REPO_ROOT / "scripts" / "librarian-update-windows.ps1"

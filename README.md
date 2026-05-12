@@ -99,13 +99,13 @@ Run these endpoint checks from repo root while the app is running on `127.0.0.1:
 curl -sS http://127.0.0.1:8088/api/update/status | jq .
 ```
 
-2. Trigger update check:
+1. Trigger update check:
 
 ```bash
 curl -sS http://127.0.0.1:8088/api/update/check | jq .
 ```
 
-3. Apply in default git mode:
+1. Apply in default git mode:
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8088/api/update/apply \
@@ -113,7 +113,7 @@ curl -sS -X POST http://127.0.0.1:8088/api/update/apply \
   -d '{"target_version":"main"}' | jq .
 ```
 
-4. Poll status until running is false:
+1. Poll status until running is false:
 
 ```bash
 while true; do
@@ -124,7 +124,7 @@ while true; do
 done
 ```
 
-5. Apply in script mode (macOS):
+1. Apply in script mode (macOS):
 
 ```bash
 ./scripts/librarian-stop-macos.sh
@@ -135,7 +135,7 @@ curl -sS -X POST http://127.0.0.1:8088/api/update/apply \
   -d '{"target_version":"main"}' | jq .
 ```
 
-6. Optional negative test (git mode rejects non-main target):
+1. Optional negative test (git mode rejects non-main target):
 
 ```bash
 ./scripts/librarian-stop-macos.sh
