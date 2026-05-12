@@ -22,7 +22,8 @@ Definition of Done:
 
 ## 2) Backend API Surface
 
-- [ ] Implement `GET /api/update/check`.
+- [ ] Implement `POST /api/update/check` (trigger check).
+- [ ] Implement `GET /api/update/check` (read cached state).
 - [ ] Implement `POST /api/update/apply`.
 - [ ] Implement `GET /api/update/status`.
 - [ ] Add in-memory + persisted update job state.
@@ -37,7 +38,6 @@ Definition of Done:
 
 - [ ] Implement GitHub release fetch logic.
 - [ ] Validate release tag format.
-- [ ] Resolve platform-specific artifact URL + checksum.
 - [ ] Handle network errors, rate limits, and malformed release data.
 
 Definition of Done:
@@ -48,27 +48,25 @@ Definition of Done:
 ## 4) macOS Updater Script
 
 - [ ] Create `scripts/librarian-update-macos.sh`.
-- [ ] Add steps: download, verify, stop, backup, apply, health check, restart.
-- [ ] Add rollback on failure.
+- [ ] Add steps: branch validation, clean-worktree preflight, fast-forward apply.
 - [ ] Emit structured status/log lines consumable by backend.
 
 Definition of Done:
 
 - [ ] Happy path update succeeds locally.
-- [ ] Forced verify failure aborts safely with no install mutation.
-- [ ] Forced health-check failure rolls back successfully.
+- [ ] Forced preflight failure aborts safely with no repo mutation.
 
 ## 5) Windows Updater Script
 
 - [ ] Create `scripts/librarian-update-windows.ps1`.
-- [ ] Implement same lifecycle as macOS script.
+- [ ] Implement same preflight + fast-forward lifecycle as macOS script.
 - [ ] Include safe process stop/start and path handling.
-- [ ] Include rollback and status logging.
+- [ ] Include explicit failure exit codes and status logging.
 
 Definition of Done:
 
 - [ ] Happy path update succeeds on Windows environment.
-- [ ] Failure scenarios preserve recoverable install state.
+- [ ] Failure scenarios fail before repo mutation.
 
 ## 6) Frontend UX
 
@@ -87,26 +85,21 @@ Definition of Done:
 
 - [ ] Add GitHub Actions workflow for tagged releases.
 - [ ] Build/package macOS + Windows artifacts.
-- [ ] Generate SHA-256 checksums.
 - [ ] Publish release assets and release notes.
 - [ ] Store build metadata for troubleshooting.
 
 Definition of Done:
 
 - [ ] Tag push produces complete release package automatically.
-- [ ] Released checksums match downloaded artifacts.
 
 ## 8) Security Hardening
 
-- [ ] Enforce HTTPS-only artifact URLs.
-- [ ] Verify checksum before apply.
 - [ ] Enforce repo owner/name allowlist.
-- [ ] Reject downgrades by default.
+- [ ] Validate target branch and reject unexpected values.
 - [ ] Keep API auth and same-origin checks on update routes.
 
 Definition of Done:
 
-- [ ] Tampered artifact is rejected.
 - [ ] Untrusted source is rejected.
 
 ## 9) Test Plan
@@ -127,9 +120,9 @@ Definition of Done:
 
 - [ ] No update available path.
 - [ ] Update available + successful apply path.
-- [ ] Network failure during download.
-- [ ] Checksum mismatch.
-- [ ] Restart failure and rollback.
+- [ ] Network failure during preflight (`ls-remote`).
+- [ ] Dirty-worktree preflight rejection.
+- [ ] Branch mismatch preflight rejection.
 
 Definition of Done:
 
@@ -150,7 +143,7 @@ Definition of Done:
 
 - [ ] All checklist sections complete.
 - [ ] One full end-to-end dry run completed.
-- [ ] Rollback drill completed successfully.
+- [ ] Preflight failure drills completed successfully.
 - [ ] Final security review completed.
 - [ ] Sign-off from maintainer.
 

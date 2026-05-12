@@ -98,7 +98,7 @@ Follow this exact order:
 6. Windows updater script.
 7. Frontend status and buttons.
 8. CI release workflow.
-9. Security checks and rollback drill.
+9. Security checks and preflight failure drills.
 
 This order limits blast radius and keeps each milestone testable.
 
@@ -112,12 +112,12 @@ This order limits blast radius and keeps each milestone testable.
 ### Gate 2: Safe Apply Flow
 
 - Update job lock prevents overlap.
-- Checksum mismatch aborts without install mutation.
+- Preflight failures abort without repo mutation.
 
-### Gate 3: Rollback Integrity
+### Gate 3: Failure Integrity
 
-- Simulated post-update health failure triggers rollback.
-- App returns to previous working version.
+- Simulated dirty-worktree and branch mismatch fail preflight.
+- App remains available and reports actionable failure states.
 
 ### Gate 4: CI Release Integrity
 
@@ -138,37 +138,26 @@ Fix:
 - Ensure `apply` returns immediately with `job_id`.
 - Ensure status state is persisted and updated by updater output parser.
 
-### Symptom: Update applies but app fails to restart
+### Symptom: Update preflight fails unexpectedly
 
 Likely causes:
 
-- Bad start command or wrong paths.
-- Permission issues on replaced files.
+- Current branch does not match configured update branch.
+- Local worktree is dirty.
+- `origin` remote/branch is unavailable.
 
 Fix:
 
-- Validate startup command in scripts.
-- Ensure executable permissions are preserved.
-- Add health-check timeout and rollback.
-
-### Symptom: Users get checksum mismatch unexpectedly
-
-Likely causes:
-
-- Wrong checksum file uploaded.
-- Artifact recompressed after checksum generated.
-
-Fix:
-
-- Generate checksum as final build step.
-- Publish checksum from same artifact path used by updater.
+- Checkout configured branch and retry.
+- Commit/stash local changes, then retry.
+- Validate `origin` remote and network access.
 
 ## 8) Go/No-Go Checklist for Relaunch
 
 - [ ] All required checklist items complete.
 - [ ] At least one full dry run on macOS.
 - [ ] At least one full dry run on Windows.
-- [ ] Rollback tested and successful on both.
+- [ ] Preflight failure drills tested and successful on both.
 - [ ] Researcher-facing docs updated.
 - [ ] Maintainer release docs updated.
 

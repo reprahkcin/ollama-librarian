@@ -65,7 +65,8 @@ v1.5.0
 
 2. App API (backend in `scripts/ollama-web-chat.py`)
 
-- `GET /api/update/check`
+- `POST /api/update/check` (trigger check)
+- `GET /api/update/check` (read cached status)
 - `POST /api/update/apply`
 - `GET /api/update/status`
 
@@ -80,7 +81,7 @@ v1.5.0
 
 ## API Contract
 
-### GET `/api/update/check`
+### POST `/api/update/check`
 
 Returns current and latest release info.
 
@@ -104,6 +105,10 @@ Returns current and latest release info.
   }
 }
 ```
+
+### GET `/api/update/check`
+
+Returns the last persisted update state without triggering a new check.
 
 ### POST `/api/update/apply`
 

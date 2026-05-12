@@ -205,7 +205,7 @@ curl -sS http://127.0.0.1:8088/api/update/status | jq .
 2. Check for updates:
 
 ```bash
-curl -sS http://127.0.0.1:8088/api/update/check | jq .
+curl -sS -X POST http://127.0.0.1:8088/api/update/check | jq .
 ```
 
 3. Test apply in git mode:
@@ -225,9 +225,11 @@ curl -sS -X POST http://127.0.0.1:8088/api/update/apply \
 ./scripts/librarian-stop-macos.sh
 OLLAMA_WEB_UPDATE_APPLY_MODE=script ./scripts/librarian-start-macos.sh
 
+target="$(curl -sS -X POST http://127.0.0.1:8088/api/update/check | jq -r '.apply_target // "main"')"
+
 curl -sS -X POST http://127.0.0.1:8088/api/update/apply \
   -H 'Content-Type: application/json' \
-  -d '{"target_version":"main"}' | jq .
+  -d "{\"target_version\":\"$target\"}" | jq .
 ```
 
 5. Poll update status until complete:

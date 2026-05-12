@@ -102,7 +102,7 @@ curl -sS http://127.0.0.1:8088/api/update/status | jq .
 1. Trigger update check:
 
 ```bash
-curl -sS http://127.0.0.1:8088/api/update/check | jq .
+curl -sS -X POST http://127.0.0.1:8088/api/update/check | jq .
 ```
 
 1. Apply in default git mode:
@@ -130,9 +130,11 @@ done
 ./scripts/librarian-stop-macos.sh
 OLLAMA_WEB_UPDATE_APPLY_MODE=script ./scripts/librarian-start-macos.sh
 
+target="$(curl -sS -X POST http://127.0.0.1:8088/api/update/check | jq -r '.apply_target // "main"')"
+
 curl -sS -X POST http://127.0.0.1:8088/api/update/apply \
   -H 'Content-Type: application/json' \
-  -d '{"target_version":"main"}' | jq .
+  -d "{\"target_version\":\"$target\"}" | jq .
 ```
 
 1. Optional negative test (git mode rejects targets that differ from `OLLAMA_WEB_UPDATE_BRANCH`):
