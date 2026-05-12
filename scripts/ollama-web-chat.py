@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import json
+import logging
 import mimetypes
 import os
 import sqlite3
@@ -119,8 +120,12 @@ UPDATE_GITHUB_TOKEN = os.environ.get("OLLAMA_WEB_UPDATE_GITHUB_TOKEN", "")
 UPDATE_GIT_BRANCH = os.environ.get("OLLAMA_WEB_UPDATE_BRANCH", "main")
 UPDATE_APPLY_MODE = os.environ.get(
     "OLLAMA_WEB_UPDATE_APPLY_MODE", "git").strip().lower()
+UPDATE_APPLY_MODE_RESOLVED = (
+  UPDATE_APPLY_MODE if UPDATE_APPLY_MODE in {"git", "script"} else "git"
+)
 UPDATE_SCRIPT_MACOS = REPO_ROOT / "scripts" / "librarian-update-macos.sh"
 UPDATE_SCRIPT_WINDOWS = REPO_ROOT / "scripts" / "librarian-update-windows.ps1"
+LOGGER = logging.getLogger("ollama_web_chat")
 
 PDF_INDEX_STATE = {
     "running": False,
@@ -143,6 +148,7 @@ UPDATE_STATE = {
     "current_version": None,
     "latest_version": None,
     "source": None,
+    "apply_mode": UPDATE_APPLY_MODE_RESOLVED,
     "branch": UPDATE_GIT_BRANCH,
     "apply_target": UPDATE_GIT_BRANCH,
     "local_sha": None,
@@ -160,8 +166,9 @@ def _persist_update_state_unlocked():
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(UPDATE_STATE, f, ensure_ascii=True)
         os.replace(tmp_path, UPDATE_STATE_PATH)
-    except Exception:
-        pass
+    except Exception as exc:
+        LOGGER.exception("Failed to persist update state")
+        UPDATE_STATE["last_error"] = f"Failed to persist update state: {exc}"
 
 
 def _set_update_state(**changes):
@@ -181,8 +188,10 @@ def _load_update_state():
             for key in list(UPDATE_STATE.keys()):
                 if key in data:
                     UPDATE_STATE[key] = data[key]
-    except Exception:
-        pass
+    except Exception as exc:
+        LOGGER.exception("Failed to load persisted update state")
+        with UPDATE_LOCK:
+            UPDATE_STATE["last_error"] = f"Failed to load persisted update state: {exc}"
 
 
 _load_update_state()
@@ -194,6 +203,10 @@ def read_current_version() -> str:
         return text or "v0.0.0"
     except Exception:
         return "v0.0.0"
+
+
+def _resolved_update_apply_mode() -> str:
+    return UPDATE_APPLY_MODE_RESOLVED
 
 
 def _parse_semver(v: str) -> tuple[int, int, int] | None:
@@ -311,6 +324,7 @@ def _run_update_script(target_version: str, timeout: int = 300) -> tuple[str, st
 
 
 def check_for_git_updates() -> dict:
+    mode = _resolved_update_apply_mode()
     local_out, _ = _run_git(["rev-parse", "HEAD"], timeout=20)
     remote_out, _ = _run_git(
         ["ls-remote", "origin", f"refs/heads/{UPDATE_GIT_BRANCH}"],
@@ -337,6 +351,7 @@ def check_for_git_updates() -> dict:
         ),
         latest_version=remote_sha[:8],
         source="git",
+        apply_mode=mode,
         branch=UPDATE_GIT_BRANCH,
         apply_target=UPDATE_GIT_BRANCH,
         local_sha=local_sha,
@@ -350,6 +365,7 @@ def check_for_git_updates() -> dict:
 
 
 def check_for_updates() -> dict:
+    mode = _resolved_update_apply_mode()
     current = read_current_version()
     _set_update_state(
         state="checking",
@@ -372,8 +388,9 @@ def check_for_updates() -> dict:
             ),
             latest_version=latest,
             source="release",
+            apply_mode=mode,
             branch=UPDATE_GIT_BRANCH,
-            apply_target=latest,
+            apply_target=(UPDATE_GIT_BRANCH if mode == "git" else latest),
             local_sha=None,
             remote_sha=None,
             update_available=available,
@@ -420,8 +437,7 @@ def check_for_updates() -> dict:
 
 def _apply_update_worker(job_id: str, target_version: str):
     started_at = int(time.time())
-    mode = UPDATE_APPLY_MODE if UPDATE_APPLY_MODE in {
-        "git", "script"} else "git"
+    mode = _resolved_update_apply_mode()
     _set_update_state(
         running=True,
         job_id=job_id,
@@ -508,6 +524,14 @@ def _git_current_branch() -> str:
 
 
 def start_update_apply(target_version: str) -> dict:
+    now = int(time.time())
+    mode = _resolved_update_apply_mode()
+    requested_target = str(target_version or "").strip()
+    resolved_target = UPDATE_GIT_BRANCH if mode == "git" else (
+        requested_target or UPDATE_GIT_BRANCH
+    )
+    job_id = f"update-{now}-{uuid.uuid4().hex[:8]}"
+
     with UPDATE_LOCK:
         if UPDATE_STATE.get("running"):
             return {
@@ -516,59 +540,60 @@ def start_update_apply(target_version: str) -> dict:
                 "error": "Update job already running",
                 "state": dict(UPDATE_STATE),
             }
-
-    requested_target = str(target_version or "").strip()
-    resolved_target = requested_target or UPDATE_GIT_BRANCH
-    mode = UPDATE_APPLY_MODE if UPDATE_APPLY_MODE in {
-        "git", "script"} else "git"
-    if mode == "git" and resolved_target != UPDATE_GIT_BRANCH:
-        return {
-            "ok": False,
-            "started": False,
-            "error": f"git apply mode only supports target '{UPDATE_GIT_BRANCH}'",
-            "state": get_update_status(),
-        }
+        UPDATE_STATE.update({
+            "running": True,
+            "job_id": job_id,
+            "target_version": resolved_target,
+            "state": "applying",
+            "step": "preflight",
+            "progress_pct": 2,
+            "message": f"Running update preflight for {resolved_target} ({mode} mode)",
+            "started_at": now,
+            "finished_at": None,
+            "last_error": None,
+            "apply_mode": mode,
+        })
+        _persist_update_state_unlocked()
 
     try:
         if mode == "git":
             current_branch = _git_current_branch()
             if current_branch != UPDATE_GIT_BRANCH:
-                return {
-                    "ok": False,
-                    "started": False,
-                    "error": f"Cannot apply update while on branch '{current_branch}'",
-                    "state": get_update_status(),
-                }
+                raise RuntimeError(
+                    f"Cannot apply update while on branch '{current_branch}'"
+                )
 
             clean, dirty_sample = _git_worktree_is_clean()
             if not clean:
-                return {
-                    "ok": False,
-                    "started": False,
-                    "error": f"Working tree is dirty. Commit/stash changes first ({dirty_sample})",
-                    "state": get_update_status(),
-                }
+                raise RuntimeError(
+                    f"Working tree is dirty. Commit/stash changes first ({dirty_sample})"
+                )
 
             _run_git(["ls-remote", "origin",
                      f"refs/heads/{UPDATE_GIT_BRANCH}"], timeout=20)
         else:
             if os.name == "nt":
                 if not UPDATE_SCRIPT_WINDOWS.is_file():
-                    return {
-                        "ok": False,
-                        "started": False,
-                        "error": f"Updater script not found: {UPDATE_SCRIPT_WINDOWS}",
-                        "state": get_update_status(),
-                    }
+                    raise RuntimeError(
+                        f"Updater script not found: {UPDATE_SCRIPT_WINDOWS}"
+                    )
             else:
                 if not UPDATE_SCRIPT_MACOS.is_file():
-                    return {
-                        "ok": False,
-                        "started": False,
-                        "error": f"Updater script not found: {UPDATE_SCRIPT_MACOS}",
-                        "state": get_update_status(),
-                    }
+                    raise RuntimeError(
+                        f"Updater script not found: {UPDATE_SCRIPT_MACOS}"
+                    )
     except Exception as exc:
+        finished_at = int(time.time())
+        _set_update_state(
+            running=False,
+            state="failed",
+            step="preflight_failed",
+            progress_pct=0,
+            message="Update preflight failed",
+            finished_at=finished_at,
+            last_error=str(exc),
+            apply_mode=mode,
+        )
         return {
             "ok": False,
             "started": False,
@@ -576,25 +601,44 @@ def start_update_apply(target_version: str) -> dict:
             "state": get_update_status(),
         }
 
-    job_id = f"update-{int(time.time())}-{uuid.uuid4().hex[:8]}"
     _set_update_state(
         running=True,
         job_id=job_id,
         target_version=resolved_target,
         state="applying",
         step="queued",
-        progress_pct=1,
+        progress_pct=5,
         message=f"Update queued for {resolved_target} ({mode} mode)",
-        started_at=int(time.time()),
+        started_at=now,
         finished_at=None,
         last_error=None,
+        apply_mode=mode,
     )
-    t = threading.Thread(
-        target=_apply_update_worker,
-        args=(job_id, resolved_target),
-        daemon=True,
-    )
-    t.start()
+    try:
+        t = threading.Thread(
+            target=_apply_update_worker,
+            args=(job_id, resolved_target),
+            daemon=True,
+        )
+        t.start()
+    except Exception as exc:
+        finished_at = int(time.time())
+        _set_update_state(
+            running=False,
+            state="failed",
+            step="apply_start_failed",
+            progress_pct=0,
+            message="Failed to launch update worker",
+            finished_at=finished_at,
+            last_error=str(exc),
+            apply_mode=mode,
+        )
+        return {
+            "ok": False,
+            "started": False,
+            "error": f"Failed to launch update worker: {exc}",
+            "state": get_update_status(),
+        }
     status = get_update_status()
     return {
         "ok": True,
