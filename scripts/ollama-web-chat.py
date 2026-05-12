@@ -600,7 +600,7 @@ def start_update_apply(target_version: str) -> dict:
         return {
             "ok": False,
             "started": False,
-        "error": f"update apply only supports target '{UPDATE_GIT_BRANCH}'",
+            "error": f"update apply only supports target '{UPDATE_GIT_BRANCH}'",
             "error_code": "invalid_target",
             "state": get_update_status(),
         }
@@ -658,7 +658,7 @@ def start_update_apply(target_version: str) -> dict:
 
         _ensure_origin_matches_configured_repo()
         _run_git(["ls-remote", "origin",
-           f"refs/heads/{resolved_target}"], timeout=20)
+                  f"refs/heads/{resolved_target}"], timeout=20)
     except Exception as exc:
         finished_at = int(time.time())
         _set_update_state(
@@ -4635,8 +4635,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if route_path == "/api/update/check":
             return self._send(
-            200,
-            json.dumps(get_update_status(), ensure_ascii=True),
+                200,
+                json.dumps(get_update_status(), ensure_ascii=True),
                 "application/json; charset=utf-8",
             )
 
