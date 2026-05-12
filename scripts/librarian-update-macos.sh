@@ -40,6 +40,22 @@ if [[ ! "$BRANCH" =~ ^[A-Za-z0-9._/-]{1,128}$ ]]; then
   exit 2
 fi
 
+CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+if [[ "$CURRENT_BRANCH" != "$BRANCH" ]]; then
+  echo "refusing update: current branch is '$CURRENT_BRANCH' (expected '$BRANCH')" >&2
+  exit 3
+fi
+
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "refusing update: working tree is dirty" >&2
+  exit 4
+fi
+
+if ! git ls-remote --exit-code origin "refs/heads/$BRANCH" >/dev/null 2>&1; then
+  echo "refusing update: origin branch not found: $BRANCH" >&2
+  exit 5
+fi
+
 echo "update-script: fetch origin/$BRANCH"
 git fetch origin -- "$BRANCH"
 

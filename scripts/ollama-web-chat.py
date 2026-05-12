@@ -274,28 +274,28 @@ def fetch_latest_release() -> dict:
 
 
 def get_update_status() -> dict:
-  current = read_current_version()
-  with UPDATE_LOCK:
-    state = dict(UPDATE_STATE)
+    current = read_current_version()
+    with UPDATE_LOCK:
+        state = dict(UPDATE_STATE)
 
-  origin_url = ""
-  origin_matches = None
-  try:
-    origin_url = _get_origin_remote_url()
-    origin_matches = _origin_matches_configured_repo(origin_url)
-  except Exception:
     origin_url = ""
     origin_matches = None
+    try:
+        origin_url = _get_origin_remote_url()
+        origin_matches = _origin_matches_configured_repo(origin_url)
+    except Exception:
+        origin_url = ""
+        origin_matches = None
 
-  state["current_version"] = current
-  state["origin_remote"] = origin_url
-  state["origin_matches_repo"] = origin_matches
+    state["current_version"] = current
+    state["origin_remote"] = origin_url
+    state["origin_matches_repo"] = origin_matches
 
-  return {
-    "ok": True,
-    "repo": f"{UPDATE_REPO_OWNER}/{UPDATE_REPO_NAME}",
-    **state,
-  }
+    return {
+        "ok": True,
+        "repo": f"{UPDATE_REPO_OWNER}/{UPDATE_REPO_NAME}",
+        **state,
+    }
 
 
 def _run_git(args: list[str], timeout: int = 60) -> tuple[str, str]:
@@ -585,9 +585,7 @@ def start_update_apply(target_version: str) -> dict:
     now = int(time.time())
     mode = _resolved_update_apply_mode()
     requested_target = str(target_version or "").strip()
-    resolved_target = UPDATE_GIT_BRANCH if mode == "git" else (
-        requested_target or UPDATE_GIT_BRANCH
-    )
+    resolved_target = UPDATE_GIT_BRANCH
 
     if requested_target and not _is_valid_branch_target(requested_target):
         return {
@@ -598,11 +596,11 @@ def start_update_apply(target_version: str) -> dict:
             "state": get_update_status(),
         }
 
-    if mode == "git" and requested_target and requested_target != UPDATE_GIT_BRANCH:
+    if requested_target and requested_target != UPDATE_GIT_BRANCH:
         return {
             "ok": False,
             "started": False,
-            "error": f"git apply mode only supports target '{UPDATE_GIT_BRANCH}'",
+        "error": f"update apply only supports target '{UPDATE_GIT_BRANCH}'",
             "error_code": "invalid_target",
             "state": get_update_status(),
         }
@@ -660,7 +658,7 @@ def start_update_apply(target_version: str) -> dict:
 
         _ensure_origin_matches_configured_repo()
         _run_git(["ls-remote", "origin",
-                 f"refs/heads/{UPDATE_GIT_BRANCH}"], timeout=20)
+           f"refs/heads/{resolved_target}"], timeout=20)
     except Exception as exc:
         finished_at = int(time.time())
         _set_update_state(
@@ -3679,7 +3677,7 @@ HTML = """<!doctype html>
       const original = checkUpdatesEl.textContent;
       checkUpdatesEl.textContent = 'Checking...';
       try {
-        const res = await fetch('/api/update/check');
+        const res = await fetch('/api/update/check', { method: 'POST' });
         const data = await res.json();
         if (!res.ok || data.ok === false) {
           const detail = (data && (data.error || data.last_error)) || `HTTP ${res.status}`;
@@ -4636,11 +4634,9 @@ class Handler(BaseHTTPRequestHandler):
             )
 
         if route_path == "/api/update/check":
-            payload = check_for_updates()
-            code = 200 if payload.get("ok") else 502
             return self._send(
-                code,
-                json.dumps(payload, ensure_ascii=True),
+            200,
+            json.dumps(get_update_status(), ensure_ascii=True),
                 "application/json; charset=utf-8",
             )
 
@@ -4809,6 +4805,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(
                 code,
                 json.dumps(result, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        if route_path == "/api/update/check":
+            payload = check_for_updates()
+            code = 200 if payload.get("ok") else 502
+            return self._send(
+                code,
+                json.dumps(payload, ensure_ascii=True),
                 "application/json; charset=utf-8",
             )
 
