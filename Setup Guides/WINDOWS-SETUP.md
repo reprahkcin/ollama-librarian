@@ -12,7 +12,7 @@ Set up a standalone local LLM system on Windows using this repo:
 Default access model:
 
 - This standard setup is local-only on one machine (`127.0.0.1`).
-- LAN access is an advanced exception and is intentionally not enabled by default.
+- Non-loopback/LAN binding is intentionally unsupported.
 
 ## What This Runs
 

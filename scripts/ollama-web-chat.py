@@ -5,6 +5,7 @@ import logging
 import mimetypes
 import os
 import re
+import secrets
 import sqlite3
 import subprocess
 import threading
@@ -21,12 +22,6 @@ HOST = os.environ.get("OLLAMA_WEB_HOST", "127.0.0.1")
 PORT = int(os.environ.get("OLLAMA_WEB_PORT", "8088"))
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 API_KEY = os.environ.get("OLLAMA_WEB_API_KEY", "")
-ALLOW_INSECURE_BIND = os.environ.get("OLLAMA_WEB_ALLOW_INSECURE_BIND", "").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
 MAX_BODY_BYTES = max(1024, int(os.environ.get(
     "OLLAMA_WEB_MAX_BODY_BYTES", "1048576")))
 MAX_UPLOAD_BYTES = max(1024, int(os.environ.get(
@@ -1117,8 +1112,8 @@ HTML = """<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Ollama Librarian</title>
   <link rel="stylesheet" href="/assets/katex/katex.min.css" />
-  <script defer src="/assets/katex/katex.min.js"></script>
-  <script defer src="/assets/katex/contrib/auto-render.min.js"></script>
+  <script %CSP_NONCE_ATTR% defer src="/assets/katex/katex.min.js"></script>
+  <script %CSP_NONCE_ATTR% defer src="/assets/katex/contrib/auto-render.min.js"></script>
   <style>
     :root {
       --bg-a: #111827;
@@ -1973,7 +1968,7 @@ HTML = """<!doctype html>
     </div>
   </div>
 
-  <script>
+  <script %CSP_NONCE_ATTR%>
     const API_KEY_REQUIRED = %API_KEY_REQUIRED%;
     const API_KEY_STORAGE_KEY = 'ollama_web_api_key_v1';
     let apiKey = localStorage.getItem(API_KEY_STORAGE_KEY) || '';
@@ -3407,7 +3402,7 @@ HTML = """<!doctype html>
 
         const text = document.createElement('div');
         text.className = 'citation-text md';
-        text.innerHTML = renderInlineMarkdown(String(entry.citation || ''));
+        text.innerHTML = renderInlineMarkdown(escapeHtml(String(entry.citation || '')));
 
         const stashBtn = document.createElement('button');
         stashBtn.className = 'stash-btn';
@@ -4137,8 +4132,8 @@ EPUB_READER_HTML = """<!doctype html>
       background: #ffffff;
     }
   </style>
-  <script src="/assets/jszip/jszip.min.js"></script>
-  <script src="/assets/epubjs/epub.min.js"></script>
+  <script %CSP_NONCE_ATTR% src="/assets/jszip/jszip.min.js"></script>
+  <script %CSP_NONCE_ATTR% src="/assets/epubjs/epub.min.js"></script>
 </head>
 <body>
   <div class="bar">
@@ -4147,7 +4142,7 @@ EPUB_READER_HTML = """<!doctype html>
     <div id="meta" class="meta">Loading EPUB...</div>
   </div>
   <div id="viewer"></div>
-  <script>
+  <script %CSP_NONCE_ATTR%>
     const API_KEY_REQUIRED = %API_KEY_REQUIRED%;
     const API_KEY_STORAGE_KEY = 'ollama_web_api_key_v1';
     let apiKey = localStorage.getItem(API_KEY_STORAGE_KEY) || '';
@@ -4266,18 +4261,28 @@ EPUB_READER_HTML = """<!doctype html>
 
 
 class Handler(BaseHTTPRequestHandler):
+    def _make_csp_nonce(self) -> str:
+        return secrets.token_urlsafe(18)
+
     def _send_security_headers(self):
+        nonce = str(getattr(self, "_csp_nonce", "") or "").strip()
+        script_src = "script-src 'self'"
+        if nonce:
+            script_src = f"{script_src} 'nonce-{nonce}'"
+
         if self.path.startswith("/epub-reader"):
             self.send_header(
                 "Content-Security-Policy",
-                "default-src 'self'; style-src 'self' 'unsafe-inline' blob:; script-src 'self' 'unsafe-inline'; "
+                "default-src 'self'; style-src 'self' 'unsafe-inline' blob:; "
+                f"{script_src}; "
                 "img-src 'self' data: blob:; font-src 'self' data: blob:; connect-src 'self' blob:; frame-src 'self' blob:; "
                 "object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
             )
         else:
             self.send_header(
                 "Content-Security-Policy",
-                "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
+                "default-src 'self'; style-src 'self' 'unsafe-inline'; "
+                f"{script_src}; "
                 "img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; "
                 "base-uri 'none'; form-action 'self'",
             )
@@ -4504,17 +4509,23 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if self.path == "/":
+            nonce = self._make_csp_nonce()
+            self._csp_nonce = nonce
             html = HTML.replace("%OLLAMA_BASE%", OLLAMA_BASE)
             html = html.replace("%API_KEY_REQUIRED%",
                                 "true" if bool(API_KEY) else "false")
             html = html.replace("%MAX_UPLOAD_BYTES%", str(MAX_UPLOAD_BYTES))
             html = html.replace("%CURRENT_VERSION%", read_current_version())
+            html = html.replace("%CSP_NONCE_ATTR%", f'nonce="{nonce}"')
             return self._send(200, html, "text/html; charset=utf-8")
 
         if route_path == "/epub-reader":
+            nonce = self._make_csp_nonce()
+            self._csp_nonce = nonce
             html = EPUB_READER_HTML.replace(
                 "%API_KEY_REQUIRED%", "true" if bool(API_KEY) else "false"
             )
+            html = html.replace("%CSP_NONCE_ATTR%", f'nonce="{nonce}"')
             return self._send(200, html, "text/html; charset=utf-8")
 
         if route_path.startswith("/assets/"):
@@ -5161,10 +5172,10 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     is_loopback = HOST in {"127.0.0.1", "localhost", "::1"}
-    if not is_loopback and not ALLOW_INSECURE_BIND and not API_KEY:
+    if not is_loopback:
         raise SystemExit(
-            "Refusing non-loopback bind without auth. Set OLLAMA_WEB_API_KEY or "
-            "OLLAMA_WEB_ALLOW_INSECURE_BIND=1 to override."
+            "Refusing non-loopback bind. Ollama Librarian only supports loopback "
+            "host bindings (127.0.0.1, localhost, or ::1)."
         )
 
     server = ThreadingHTTPServer((HOST, PORT), Handler)

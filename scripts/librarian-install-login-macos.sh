@@ -24,8 +24,6 @@ cat >"$PLIST_PATH" <<PLIST
     <dict>
       <key>OLLAMA_WEB_HOST</key>
       <string>127.0.0.1</string>
-      <key>OLLAMA_WEB_ALLOW_INSECURE_BIND</key>
-      <string>0</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>

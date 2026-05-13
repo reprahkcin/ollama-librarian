@@ -5,7 +5,7 @@ This guide is for non-technical users after initial setup is complete.
 Default access model:
 
 - The normal workflow is local-only on the same machine (`http://127.0.0.1:8088`).
-- Network/LAN access is an advanced exception and is not part of this quickstart.
+- Network/LAN access is intentionally unsupported.
 
 ## What You Do Each Day
 
