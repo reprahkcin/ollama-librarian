@@ -57,6 +57,7 @@ Standard install target:
 
 - Single-machine local use only (`127.0.0.1`).
 - Non-loopback/LAN binding is intentionally unsupported.
+- Updates are always manual: the app checks for latest versions but never auto-applies updates.
 
 ## Runtime Environment Variables
 
@@ -87,6 +88,7 @@ Updater behavior:
 - `OLLAMA_WEB_UPDATE_GITHUB_TOKEN` (default: empty)
 - `OLLAMA_WEB_UPDATE_BRANCH` (default: `main`)
 - `OLLAMA_WEB_UPDATE_APPLY_MODE` (default: `git`, options: `git` or `script`)
+- `OLLAMA_WEB_UPDATE_EVENTS_MAX` (default: `200`)
 
 ## Update Flow Smoke Test
 
@@ -121,6 +123,12 @@ while true; do
   test "$(echo "$out" | jq -r '.running')" = "false" && break
   sleep 1
 done
+```
+
+1. Optional: inspect recent update events (newest first):
+
+```bash
+curl -sS "http://127.0.0.1:8088/api/update/events?limit=20" | jq .
 ```
 
 1. Apply in script mode (macOS):
