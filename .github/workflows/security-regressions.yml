@@ -1,0 +1,30 @@
+name: Security Regressions
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  security-regressions:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile security-critical scripts
+        run: |
+          python -m py_compile \
+            scripts/ollama-web-chat.py \
+            scripts/pdf_library_rag.py \
+            tests/test_security_regressions.py
+
+      - name: Run security regression tests
+        run: python -m unittest discover -s tests -p 'test_*.py'

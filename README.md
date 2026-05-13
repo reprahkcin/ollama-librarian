@@ -56,7 +56,7 @@ For non-technical users, use:
 Standard install target:
 
 - Single-machine local use only (`127.0.0.1`).
-- LAN exposure is not part of normal setup and should be treated as an advanced, explicit opt-in exception.
+- Non-loopback/LAN binding is intentionally unsupported.
 
 ## Runtime Environment Variables
 
@@ -66,7 +66,6 @@ Core network/auth:
 - `OLLAMA_WEB_PORT` (default: `8088`)
 - `OLLAMA_BASE_URL` (default: `http://127.0.0.1:11434`)
 - `OLLAMA_WEB_API_KEY` (default: empty)
-- `OLLAMA_WEB_ALLOW_INSECURE_BIND` (default: off)
 - `OLLAMA_WEB_MAX_BODY_BYTES` (default: `1048576`)
 - `OLLAMA_WEB_MAX_UPLOAD_BYTES` (default: `536870912`)
 
@@ -165,6 +164,24 @@ Windows (PowerShell):
 - Status: `scripts/librarian-status-windows.ps1`
 - Open UI: `scripts/librarian-open-ui-windows.ps1`
 - Auto-start at login (optional): `scripts/librarian-install-login-windows.ps1`
+
+## Security Regression Tests
+
+Run the security-focused regression suite from repo root:
+
+```bash
+python3 -m unittest discover -s tests -p 'test_*.py'
+```
+
+Coverage includes:
+
+- Local-only host bind enforcement (non-loopback host rejection)
+- Same-origin protection on state-changing API routes
+- Citation rendering hardening against HTML injection
+
+CI enforcement:
+
+- GitHub Actions runs this same suite on pushes to `main` and on pull requests via `.github/workflows/security-regressions.yml`.
 
 ## Licenses and Third-Party Notices
 
