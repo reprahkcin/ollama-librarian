@@ -125,16 +125,17 @@ LOGGER = logging.getLogger("ollama_web_chat")
 
 
 def _read_update_events_max() -> int:
-  raw_value = str(os.environ.get("OLLAMA_WEB_UPDATE_EVENTS_MAX", "200")).strip()
-  try:
-    parsed = int(raw_value)
-  except Exception:
-    LOGGER.warning(
-      "Invalid OLLAMA_WEB_UPDATE_EVENTS_MAX=%r; falling back to 200",
-      raw_value,
-    )
-    parsed = 200
-  return max(20, parsed)
+    raw_value = str(os.environ.get(
+        "OLLAMA_WEB_UPDATE_EVENTS_MAX", "200")).strip()
+    try:
+        parsed = int(raw_value)
+    except Exception:
+        LOGGER.warning(
+            "Invalid OLLAMA_WEB_UPDATE_EVENTS_MAX=%r; falling back to 200",
+            raw_value,
+        )
+        parsed = 200
+    return max(20, parsed)
 
 
 UPDATE_EVENTS_MAX = _read_update_events_max()
@@ -509,7 +510,8 @@ def check_for_updates() -> dict:
     )
     try:
         release = dict(fetch_latest_release())
-        release["notes_url"] = _sanitize_release_notes_url(release.get("notes_url"))
+        release["notes_url"] = _sanitize_release_notes_url(
+            release.get("notes_url"))
         latest = str(release.get("tag") or "").strip()
         available = is_newer_version(latest, current)
         now = int(time.time())
@@ -521,7 +523,8 @@ def check_for_updates() -> dict:
                 f"Update available: {latest}" if available else "You are up to date"
             ),
             latest_version=latest,
-            release_notes_url=_sanitize_release_notes_url(release.get("notes_url")),
+            release_notes_url=_sanitize_release_notes_url(
+                release.get("notes_url")),
             source="release",
             apply_mode=mode,
             branch=UPDATE_GIT_BRANCH,
