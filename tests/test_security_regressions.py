@@ -1,5 +1,6 @@
 import importlib.util
 import os
+import re
 import tempfile
 import types
 import unittest
@@ -33,7 +34,8 @@ def load_app_module(host: str = "127.0.0.1", api_key: str = "") -> types.ModuleT
             module_name = f"ollama_web_chat_test_{os.getpid()}_{id(state_dir)}"
             spec = importlib.util.spec_from_file_location(
                 module_name, APP_PATH)
-            assert spec and spec.loader
+            if not spec or not spec.loader:
+                raise RuntimeError("Failed to create import spec for ollama-web-chat.py")
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             return module
@@ -96,9 +98,11 @@ class SecurityRegressionTests(unittest.TestCase):
 
     def test_citation_rendering_escapes_html_before_innerhtml(self):
         source = APP_PATH.read_text(encoding="utf-8")
-        self.assertIn(
-            "text.innerHTML = renderInlineMarkdown(escapeHtml(String(entry.citation || '')));",
+        self.assertRegex(
             source,
+            re.compile(
+                r"text\.innerHTML\s*=\s*renderInlineMarkdown\(\s*escapeHtml\(\s*String\(entry\.citation\s*\|\|\s*''\)\s*\)\s*\)\s*;"
+            ),
         )
 
     def test_csp_uses_nonce_for_scripts_on_main_page(self):

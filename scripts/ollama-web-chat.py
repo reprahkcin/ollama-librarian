@@ -18,7 +18,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
-HOST = os.environ.get("OLLAMA_WEB_HOST", "127.0.0.1")
+HOST = os.environ.get("OLLAMA_WEB_HOST", "127.0.0.1").strip()
 PORT = int(os.environ.get("OLLAMA_WEB_PORT", "8088"))
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 API_KEY = os.environ.get("OLLAMA_WEB_API_KEY", "")
@@ -330,7 +330,7 @@ def _ensure_origin_matches_configured_repo() -> None:
         raise RuntimeError(
             "git remote 'origin' does not match configured update repo "
             f"{UPDATE_REPO_OWNER}/{UPDATE_REPO_NAME}"
-        )
+    )
 
 
 def _run_update_script(target_version: str, timeout: int = 300) -> tuple[str, str]:
@@ -395,7 +395,7 @@ def check_for_git_updates() -> dict:
             f"Repository update available ({remote_sha[:8]})"
             if available
             else "Repository is up to date"
-        ),
+    ),
         latest_version=remote_sha[:8],
         source="git",
         apply_mode=mode,
@@ -443,7 +443,7 @@ def check_for_updates() -> dict:
             update_available=available,
             last_checked_at=now,
             last_error=None,
-        )
+    )
         out = get_update_status()
         out["release"] = release
         return out
@@ -460,7 +460,7 @@ def check_for_updates() -> dict:
             last_checked_at=now,
             source=None,
             last_error=str(exc),
-        )
+    )
         out = get_update_status()
         out["ok"] = False
         out["error"] = str(exc)
@@ -475,7 +475,7 @@ def check_for_updates() -> dict:
             last_checked_at=now,
             source=None,
             last_error=str(exc),
-        )
+    )
         out = get_update_status()
         out["ok"] = False
         out["error"] = str(exc)
@@ -542,7 +542,7 @@ def _apply_update_worker(job_id: str, target_version: str):
             target_version=target_version,
             finished_at=finished_at,
             last_error=None,
-        )
+    )
     except Exception as exc:
         finished_at = int(time.time())
         _set_update_state(
@@ -553,7 +553,7 @@ def _apply_update_worker(job_id: str, target_version: str):
             message="Update apply failed",
             finished_at=finished_at,
             last_error=str(exc),
-        )
+    )
 
 
 def _git_worktree_is_clean() -> tuple[bool, str]:
@@ -665,7 +665,7 @@ def start_update_apply(target_version: str) -> dict:
             finished_at=finished_at,
             last_error=str(exc),
             apply_mode=mode,
-        )
+    )
         return {
             "ok": False,
             "started": False,
@@ -692,7 +692,7 @@ def start_update_apply(target_version: str) -> dict:
             target=_apply_update_worker,
             args=(job_id, resolved_target),
             daemon=True,
-        )
+    )
         t.start()
     except Exception as exc:
         finished_at = int(time.time())
@@ -705,7 +705,7 @@ def start_update_apply(target_version: str) -> dict:
             finished_at=finished_at,
             last_error=str(exc),
             apply_mode=mode,
-        )
+    )
         return {
             "ok": False,
             "started": False,
@@ -969,7 +969,7 @@ def list_library_docs() -> dict:
     try:
         rows = conn.execute(
             "SELECT path, pages_indexed, chunks_indexed FROM documents ORDER BY path"
-        ).fetchall()
+    ).fetchall()
     finally:
         conn.close()
 
@@ -3848,7 +3848,7 @@ HTML = """<!doctype html>
       if (!usePdfLibrary) {
         const proceedUngrounded = confirm(
           'Send this query without PDF grounding?\\n\\nThis app is optimized for PDF-grounded answers, and ungrounded queries are usually better handled by general chat tools.'
-        );
+    );
         if (!proceedUngrounded) {
           usePdfLibraryEl.checked = true;
           metaEl.textContent = 'PDF-grounded mode re-enabled';
@@ -4330,7 +4330,7 @@ class Handler(BaseHTTPRequestHandler):
             401,
             json.dumps({"error": "Unauthorized"}, ensure_ascii=True),
             "application/json; charset=utf-8",
-        )
+    )
         return False
 
     def _expected_origin(self):
@@ -4424,7 +4424,7 @@ class Handler(BaseHTTPRequestHandler):
             "_" if (ch in invalid_windows_chars or ord(
                 ch) < 32 or ord(ch) == 127) else ch
             for ch in normalized_name
-        ).strip().strip(". ")
+    ).strip().strip(". ")
         if not cleaned or cleaned in {".", ".."}:
             return None, None, "invalid file name", 400
 
@@ -5158,7 +5158,7 @@ class Handler(BaseHTTPRequestHandler):
             data=data,
             headers={"Content-Type": "application/json"},
             method=method,
-        )
+    )
         try:
             with urlopen(req, timeout=90) as resp:
                 body = resp.read().decode("utf-8", errors="replace")
@@ -5171,12 +5171,13 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    is_loopback = HOST in {"127.0.0.1", "localhost", "::1"}
-    if not is_loopback:
-        raise SystemExit(
-            "Refusing non-loopback bind. Ollama Librarian only supports loopback "
-            "host bindings (127.0.0.1, localhost, or ::1)."
-        )
+  host_for_check = HOST.strip()
+  is_loopback = host_for_check in {"127.0.0.1", "::1"} or host_for_check.lower() == "localhost"
+  if not is_loopback:
+    raise SystemExit(
+      "Refusing non-loopback bind. Ollama Librarian only supports loopback "
+      "host bindings (127.0.0.1, localhost, or ::1)."
+    )
 
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Serving UI at http://{HOST}:{PORT} (proxying {OLLAMA_BASE})")
