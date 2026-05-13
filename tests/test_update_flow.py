@@ -10,7 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 APP_PATH = REPO_ROOT / "scripts" / "ollama-web-chat.py"
 
 
-def load_app_module(host: str = "127.0.0.1") -> types.ModuleType:
+def load_app_module(host: str = "127.0.0.1", extra_env: dict | None = None) -> types.ModuleType:
     env_keys = {
         "OLLAMA_WEB_HOST": host,
         "OLLAMA_WEB_PORT": "8088",
@@ -27,6 +27,8 @@ def load_app_module(host: str = "127.0.0.1") -> types.ModuleType:
                 "OLLAMA_WEB_PDF_SOURCE": str(state_dir / "library"),
             }
         )
+        if extra_env:
+            env_keys.update(extra_env)
 
         previous = {k: os.environ.get(k) for k in env_keys}
         os.environ.update(env_keys)
@@ -47,6 +49,10 @@ def load_app_module(host: str = "127.0.0.1") -> types.ModuleType:
 
 
 class UpdateFlowTests(unittest.TestCase):
+    def test_invalid_update_events_max_falls_back_to_default(self):
+        app = load_app_module(extra_env={"OLLAMA_WEB_UPDATE_EVENTS_MAX": "not-an-int"})
+        self.assertEqual(app.UPDATE_EVENTS_MAX, 200)
+
     def test_parse_semver(self):
         app = load_app_module()
         self.assertEqual(app._parse_semver("v1.2.3"), (1, 2, 3))
@@ -87,6 +93,19 @@ class UpdateFlowTests(unittest.TestCase):
         self.assertEqual(out.get("release_notes_url"), "https://example.com/release-notes")
         self.assertTrue(out.get("update_available"))
 
+    def test_check_for_updates_rejects_unsafe_release_notes_url(self):
+        app = load_app_module()
+        app.read_current_version = lambda: "v1.0.0"
+        app.fetch_latest_release = lambda: {
+            "tag": "v1.1.0",
+            "published_at": "2026-01-01T00:00:00Z",
+            "notes_url": "javascript:alert(1)",
+        }
+        out = app.check_for_updates()
+        self.assertTrue(out["ok"])
+        self.assertIsNone(out.get("release_notes_url"))
+        self.assertIsNone((out.get("release") or {}).get("notes_url"))
+
     def test_update_events_capture_recent_state(self):
         app = load_app_module()
         app._set_update_state(state="checking", step="fetch_latest_release", message="Checking latest")
@@ -97,6 +116,15 @@ class UpdateFlowTests(unittest.TestCase):
         self.assertEqual(payload["count"], 2)
         self.assertGreaterEqual(payload["total_count"], 2)
         self.assertEqual(payload["events"][0].get("state"), "idle")
+
+    def test_update_events_limit_uses_configured_max(self):
+        app = load_app_module(extra_env={"OLLAMA_WEB_UPDATE_EVENTS_MAX": "350"})
+        for i in range(360):
+            app._set_update_state(state="checking", step=f"step-{i}", message="Checking latest")
+
+        payload = app.get_update_events(limit=1000)
+        self.assertEqual(payload["count"], 350)
+        self.assertEqual(len(payload["events"]), 350)
 
 
 if __name__ == "__main__":

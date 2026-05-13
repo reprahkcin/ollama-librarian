@@ -121,9 +121,23 @@ UPDATE_APPLY_MODE_RESOLVED = (
 )
 UPDATE_SCRIPT_MACOS = REPO_ROOT / "scripts" / "librarian-update-macos.sh"
 UPDATE_SCRIPT_WINDOWS = REPO_ROOT / "scripts" / "librarian-update-windows.ps1"
-UPDATE_EVENTS_MAX = max(
-    20, int(os.environ.get("OLLAMA_WEB_UPDATE_EVENTS_MAX", "200")))
 LOGGER = logging.getLogger("ollama_web_chat")
+
+
+def _read_update_events_max() -> int:
+  raw_value = str(os.environ.get("OLLAMA_WEB_UPDATE_EVENTS_MAX", "200")).strip()
+  try:
+    parsed = int(raw_value)
+  except Exception:
+    LOGGER.warning(
+      "Invalid OLLAMA_WEB_UPDATE_EVENTS_MAX=%r; falling back to 200",
+      raw_value,
+    )
+    parsed = 200
+  return max(20, parsed)
+
+
+UPDATE_EVENTS_MAX = _read_update_events_max()
 
 PDF_INDEX_STATE = {
     "running": False,
@@ -307,8 +321,19 @@ def fetch_latest_release() -> dict:
     return {
         "tag": tag,
         "published_at": data.get("published_at"),
-        "notes_url": data.get("html_url"),
+        "notes_url": _sanitize_release_notes_url(data.get("html_url")),
     }
+
+
+def _sanitize_release_notes_url(raw_url: str | None) -> str | None:
+    value = str(raw_url or "").strip()
+    if not value:
+        return None
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        LOGGER.warning("Ignoring unsafe release notes URL: %r", value)
+        return None
+    return value
 
 
 def get_update_status() -> dict:
@@ -337,7 +362,11 @@ def get_update_status() -> dict:
 
 
 def get_update_events(limit: int = 50) -> dict:
-    safe_limit = max(1, min(200, int(limit)))
+    try:
+        requested_limit = int(limit)
+    except Exception:
+        requested_limit = 50
+    safe_limit = max(1, min(UPDATE_EVENTS_MAX, requested_limit))
     with UPDATE_LOCK:
         events = list(UPDATE_EVENTS)
     events.reverse()
@@ -479,7 +508,8 @@ def check_for_updates() -> dict:
         current_version=current,
     )
     try:
-        release = fetch_latest_release()
+        release = dict(fetch_latest_release())
+        release["notes_url"] = _sanitize_release_notes_url(release.get("notes_url"))
         latest = str(release.get("tag") or "").strip()
         available = is_newer_version(latest, current)
         now = int(time.time())
@@ -491,8 +521,7 @@ def check_for_updates() -> dict:
                 f"Update available: {latest}" if available else "You are up to date"
             ),
             latest_version=latest,
-            release_notes_url=str(release.get("notes_url")
-                                  or "").strip() or None,
+            release_notes_url=_sanitize_release_notes_url(release.get("notes_url")),
             source="release",
             apply_mode=mode,
             branch=UPDATE_GIT_BRANCH,
@@ -685,6 +714,7 @@ def start_update_apply(target_version: str) -> dict:
             "last_error": None,
             "apply_mode": mode,
         })
+        _append_update_event_unlocked()
         _persist_update_state_unlocked()
 
     try:
@@ -2572,6 +2602,22 @@ HTML = """<!doctype html>
       return links.join(' ');
     }
 
+    function sanitizeNotesUrl(url) {
+      const raw = String(url || '').trim();
+      if (!raw) {
+        return '';
+      }
+      try {
+        const parsed = new URL(raw, window.location.origin);
+        if ((parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.hostname) {
+          return parsed.href;
+        }
+      } catch (_) {
+        return '';
+      }
+      return '';
+    }
+
     function normalizeMathDelimiters(text) {
       // LLM output often mixes single and double-escaped delimiters (e.g. \\( ... \\)).
       // Normalize them so KaTeX can consistently detect inline/display math boundaries.
@@ -3692,7 +3738,7 @@ HTML = """<!doctype html>
     function renderUpdateUi(data) {
       const currentVersion = String((data && data.current_version) || 'unknown');
       const latestVersion = String((data && data.latest_version) || '').trim();
-      const notesUrl = String((data && data.release_notes_url) || '').trim();
+      const notesUrl = sanitizeNotesUrl((data && data.release_notes_url) || '');
       const updateAvailable = Boolean(data && data.update_available);
       const source = String((data && data.source) || 'none');
       const branch = String((data && data.branch) || 'main');
@@ -3752,7 +3798,7 @@ HTML = """<!doctype html>
           throw new Error(detail);
         }
         if (data && data.release && !data.release_notes_url) {
-          data.release_notes_url = data.release.notes_url || '';
+          data.release_notes_url = sanitizeNotesUrl(data.release.notes_url || '');
         }
         renderUpdateUi(data || {});
         metaEl.textContent = data.update_available
