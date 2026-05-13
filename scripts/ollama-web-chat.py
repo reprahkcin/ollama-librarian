@@ -123,6 +123,22 @@ UPDATE_SCRIPT_MACOS = REPO_ROOT / "scripts" / "librarian-update-macos.sh"
 UPDATE_SCRIPT_WINDOWS = REPO_ROOT / "scripts" / "librarian-update-windows.ps1"
 LOGGER = logging.getLogger("ollama_web_chat")
 
+
+def _read_update_events_max() -> int:
+  raw_value = str(os.environ.get("OLLAMA_WEB_UPDATE_EVENTS_MAX", "200")).strip()
+  try:
+    parsed = int(raw_value)
+  except Exception:
+    LOGGER.warning(
+      "Invalid OLLAMA_WEB_UPDATE_EVENTS_MAX=%r; falling back to 200",
+      raw_value,
+    )
+    parsed = 200
+  return max(20, parsed)
+
+
+UPDATE_EVENTS_MAX = _read_update_events_max()
+
 PDF_INDEX_STATE = {
     "running": False,
     "last_started_at": None,
@@ -143,6 +159,7 @@ UPDATE_STATE = {
     "last_checked_at": None,
     "current_version": None,
     "latest_version": None,
+    "release_notes_url": None,
     "source": None,
     "apply_mode": UPDATE_APPLY_MODE_RESOLVED,
     "branch": UPDATE_GIT_BRANCH,
@@ -153,6 +170,29 @@ UPDATE_STATE = {
     "target_version": None,
     "last_error": None,
 }
+UPDATE_EVENTS: list[dict] = []
+
+
+def _append_update_event_unlocked() -> None:
+    UPDATE_EVENTS.append(
+        {
+            "ts": int(time.time()),
+            "job_id": UPDATE_STATE.get("job_id"),
+            "state": UPDATE_STATE.get("state"),
+            "step": UPDATE_STATE.get("step"),
+            "progress_pct": UPDATE_STATE.get("progress_pct"),
+            "message": UPDATE_STATE.get("message"),
+            "running": bool(UPDATE_STATE.get("running")),
+            "target_version": UPDATE_STATE.get("target_version"),
+            "latest_version": UPDATE_STATE.get("latest_version"),
+            "source": UPDATE_STATE.get("source"),
+            "release_notes_url": UPDATE_STATE.get("release_notes_url"),
+            "update_available": bool(UPDATE_STATE.get("update_available")),
+            "last_error": UPDATE_STATE.get("last_error"),
+        }
+    )
+    if len(UPDATE_EVENTS) > UPDATE_EVENTS_MAX:
+        del UPDATE_EVENTS[:-UPDATE_EVENTS_MAX]
 
 
 def _persist_update_state_unlocked():
@@ -160,7 +200,8 @@ def _persist_update_state_unlocked():
         UPDATE_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = UPDATE_STATE_PATH.with_suffix(".tmp")
         with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(UPDATE_STATE, f, ensure_ascii=True)
+            json.dump({"state": UPDATE_STATE, "events": UPDATE_EVENTS},
+                      f, ensure_ascii=True)
         os.replace(tmp_path, UPDATE_STATE_PATH)
     except Exception as exc:
         LOGGER.exception("Failed to persist update state")
@@ -169,6 +210,7 @@ def _persist_update_state_unlocked():
 def _set_update_state(**changes):
     with UPDATE_LOCK:
         UPDATE_STATE.update(changes)
+        _append_update_event_unlocked()
         _persist_update_state_unlocked()
 
 
@@ -179,10 +221,24 @@ def _load_update_state():
         data = json.loads(UPDATE_STATE_PATH.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             return
+
+        loaded_state = data.get("state") if isinstance(
+            data.get("state"), dict) else data
+        loaded_events = data.get("events") if isinstance(
+            data.get("events"), list) else []
+
         with UPDATE_LOCK:
             for key in list(UPDATE_STATE.keys()):
-                if key in data:
-                    UPDATE_STATE[key] = data[key]
+                if key in loaded_state:
+                    UPDATE_STATE[key] = loaded_state[key]
+
+            UPDATE_EVENTS.clear()
+            for item in loaded_events:
+                if isinstance(item, dict):
+                    UPDATE_EVENTS.append(item)
+            if len(UPDATE_EVENTS) > UPDATE_EVENTS_MAX:
+                del UPDATE_EVENTS[:-UPDATE_EVENTS_MAX]
+
             # Recover from stale in-progress state left behind by crash/restart.
             if UPDATE_STATE.get("running"):
                 now = int(time.time())
@@ -195,6 +251,7 @@ def _load_update_state():
                     UPDATE_STATE["last_error"] = (
                         "Previous update job did not complete before restart"
                     )
+                _append_update_event_unlocked()
                 _persist_update_state_unlocked()
     except Exception as exc:
         LOGGER.exception("Failed to load persisted update state")
@@ -264,8 +321,19 @@ def fetch_latest_release() -> dict:
     return {
         "tag": tag,
         "published_at": data.get("published_at"),
-        "notes_url": data.get("html_url"),
+        "notes_url": _sanitize_release_notes_url(data.get("html_url")),
     }
+
+
+def _sanitize_release_notes_url(raw_url: str | None) -> str | None:
+    value = str(raw_url or "").strip()
+    if not value:
+        return None
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        LOGGER.warning("Ignoring unsafe release notes URL: %r", value)
+        return None
+    return value
 
 
 def get_update_status() -> dict:
@@ -290,6 +358,23 @@ def get_update_status() -> dict:
         "ok": True,
         "repo": f"{UPDATE_REPO_OWNER}/{UPDATE_REPO_NAME}",
         **state,
+    }
+
+
+def get_update_events(limit: int = 50) -> dict:
+    try:
+        requested_limit = int(limit)
+    except Exception:
+        requested_limit = 50
+    safe_limit = max(1, min(UPDATE_EVENTS_MAX, requested_limit))
+    with UPDATE_LOCK:
+        events = list(UPDATE_EVENTS)
+    events.reverse()
+    return {
+        "ok": True,
+        "count": min(safe_limit, len(events)),
+        "total_count": len(events),
+        "events": events[:safe_limit],
     }
 
 
@@ -397,6 +482,7 @@ def check_for_git_updates() -> dict:
             else "Repository is up to date"
         ),
         latest_version=remote_sha[:8],
+        release_notes_url=None,
         source="git",
         apply_mode=mode,
         branch=UPDATE_GIT_BRANCH,
@@ -422,7 +508,8 @@ def check_for_updates() -> dict:
         current_version=current,
     )
     try:
-        release = fetch_latest_release()
+        release = dict(fetch_latest_release())
+        release["notes_url"] = _sanitize_release_notes_url(release.get("notes_url"))
         latest = str(release.get("tag") or "").strip()
         available = is_newer_version(latest, current)
         now = int(time.time())
@@ -434,6 +521,7 @@ def check_for_updates() -> dict:
                 f"Update available: {latest}" if available else "You are up to date"
             ),
             latest_version=latest,
+            release_notes_url=_sanitize_release_notes_url(release.get("notes_url")),
             source="release",
             apply_mode=mode,
             branch=UPDATE_GIT_BRANCH,
@@ -458,6 +546,7 @@ def check_for_updates() -> dict:
             progress_pct=0,
             message="Update check failed",
             last_checked_at=now,
+            release_notes_url=None,
             source=None,
             last_error=str(exc),
         )
@@ -473,6 +562,7 @@ def check_for_updates() -> dict:
             progress_pct=0,
             message="Update check failed",
             last_checked_at=now,
+            release_notes_url=None,
             source=None,
             last_error=str(exc),
         )
@@ -624,6 +714,7 @@ def start_update_apply(target_version: str) -> dict:
             "last_error": None,
             "apply_mode": mode,
         })
+        _append_update_event_unlocked()
         _persist_update_state_unlocked()
 
     try:
@@ -1895,6 +1986,8 @@ HTML = """<!doctype html>
       <label>App Updates</label>
       <div id="appVersion" class="tiny">Version: %CURRENT_VERSION%</div>
       <div id="updateStatus" class="tiny">Updates: not checked</div>
+      <div class="tiny">Updates are always manual. The app never auto-applies updates.</div>
+      <a id="updateNotesLink" class="tiny" href="#" target="_blank" rel="noopener noreferrer" style="display:none">View release notes</a>
       <button id="checkUpdates" class="btn-soft" type="button">Check for Updates</button>
       <button id="applyUpdate" class="btn-soft" type="button" disabled>Update to Latest</button>
 
@@ -2012,6 +2105,7 @@ HTML = """<!doctype html>
     const pdfProgressBarEl = document.getElementById('pdfProgressBar');
     const appVersionEl = document.getElementById('appVersion');
     const updateStatusEl = document.getElementById('updateStatus');
+    const updateNotesLinkEl = document.getElementById('updateNotesLink');
     const checkUpdatesEl = document.getElementById('checkUpdates');
     const applyUpdateEl = document.getElementById('applyUpdate');
     const studyBriefEl = document.getElementById('studyBrief');
@@ -2506,6 +2600,22 @@ HTML = """<!doctype html>
         }
       }
       return links.join(' ');
+    }
+
+    function sanitizeNotesUrl(url) {
+      const raw = String(url || '').trim();
+      if (!raw) {
+        return '';
+      }
+      try {
+        const parsed = new URL(raw, window.location.origin);
+        if ((parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.hostname) {
+          return parsed.href;
+        }
+      } catch (_) {
+        return '';
+      }
+      return '';
     }
 
     function normalizeMathDelimiters(text) {
@@ -3628,6 +3738,7 @@ HTML = """<!doctype html>
     function renderUpdateUi(data) {
       const currentVersion = String((data && data.current_version) || 'unknown');
       const latestVersion = String((data && data.latest_version) || '').trim();
+      const notesUrl = sanitizeNotesUrl((data && data.release_notes_url) || '');
       const updateAvailable = Boolean(data && data.update_available);
       const source = String((data && data.source) || 'none');
       const branch = String((data && data.branch) || 'main');
@@ -3638,6 +3749,14 @@ HTML = """<!doctype html>
 
       appVersionEl.textContent = `Version: ${currentVersion}`;
       updateStatusEl.textContent = `Updates: ${state} (${source}) - ${message}${err}`;
+
+      if (notesUrl) {
+        updateNotesLinkEl.href = notesUrl;
+        updateNotesLinkEl.style.display = '';
+      } else {
+        updateNotesLinkEl.href = '#';
+        updateNotesLinkEl.style.display = 'none';
+      }
 
       if (source === 'git') {
         latestUpdateVersion = updateAvailable ? branch : '';
@@ -3677,6 +3796,9 @@ HTML = """<!doctype html>
         if (!res.ok || data.ok === false) {
           const detail = (data && (data.error || data.last_error)) || `HTTP ${res.status}`;
           throw new Error(detail);
+        }
+        if (data && data.release && !data.release_notes_url) {
+          data.release_notes_url = sanitizeNotesUrl(data.release.notes_url || '');
         }
         renderUpdateUi(data || {});
         metaEl.textContent = data.update_available
@@ -4651,6 +4773,19 @@ class Handler(BaseHTTPRequestHandler):
                 "application/json; charset=utf-8",
             )
 
+        if route_path == "/api/update/events":
+            params = parse_qs(parsed_url.query)
+            limit_raw = params.get("limit", ["50"])[0]
+            try:
+                limit = int(limit_raw)
+            except Exception:
+                limit = 50
+            return self._send(
+                200,
+                json.dumps(get_update_events(limit=limit), ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
         if route_path == "/api/pdf/file":
             params = parse_qs(parsed_url.query)
             pdf_path = params.get("path", [""])[0]
@@ -5180,9 +5315,9 @@ def main():
             "host bindings (127.0.0.1, localhost, or ::1)."
         )
 
-        server = ThreadingHTTPServer((HOST, PORT), Handler)
-        print(f"Serving UI at http://{HOST}:{PORT} (proxying {OLLAMA_BASE})")
-        server.serve_forever()
+    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    print(f"Serving UI at http://{HOST}:{PORT} (proxying {OLLAMA_BASE})")
+    server.serve_forever()
 
 
 if __name__ == "__main__":
