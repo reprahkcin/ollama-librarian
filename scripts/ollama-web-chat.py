@@ -121,7 +121,8 @@ UPDATE_APPLY_MODE_RESOLVED = (
 )
 UPDATE_SCRIPT_MACOS = REPO_ROOT / "scripts" / "librarian-update-macos.sh"
 UPDATE_SCRIPT_WINDOWS = REPO_ROOT / "scripts" / "librarian-update-windows.ps1"
-UPDATE_EVENTS_MAX = max(20, int(os.environ.get("OLLAMA_WEB_UPDATE_EVENTS_MAX", "200")))
+UPDATE_EVENTS_MAX = max(
+    20, int(os.environ.get("OLLAMA_WEB_UPDATE_EVENTS_MAX", "200")))
 LOGGER = logging.getLogger("ollama_web_chat")
 
 PDF_INDEX_STATE = {
@@ -185,60 +186,63 @@ def _persist_update_state_unlocked():
         UPDATE_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = UPDATE_STATE_PATH.with_suffix(".tmp")
         with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump({"state": UPDATE_STATE, "events": UPDATE_EVENTS}, f, ensure_ascii=True)
+            json.dump({"state": UPDATE_STATE, "events": UPDATE_EVENTS},
+                      f, ensure_ascii=True)
         os.replace(tmp_path, UPDATE_STATE_PATH)
     except Exception as exc:
         LOGGER.exception("Failed to persist update state")
 
 
 def _set_update_state(**changes):
-  with UPDATE_LOCK:
-    UPDATE_STATE.update(changes)
-    _append_update_event_unlocked()
-    _persist_update_state_unlocked()
+    with UPDATE_LOCK:
+        UPDATE_STATE.update(changes)
+        _append_update_event_unlocked()
+        _persist_update_state_unlocked()
 
 
 def _load_update_state():
-  try:
-    if not UPDATE_STATE_PATH.is_file():
-      return
-    data = json.loads(UPDATE_STATE_PATH.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-      return
+    try:
+        if not UPDATE_STATE_PATH.is_file():
+            return
+        data = json.loads(UPDATE_STATE_PATH.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return
 
-    loaded_state = data.get("state") if isinstance(data.get("state"), dict) else data
-    loaded_events = data.get("events") if isinstance(data.get("events"), list) else []
+        loaded_state = data.get("state") if isinstance(
+            data.get("state"), dict) else data
+        loaded_events = data.get("events") if isinstance(
+            data.get("events"), list) else []
 
-    with UPDATE_LOCK:
-      for key in list(UPDATE_STATE.keys()):
-        if key in loaded_state:
-          UPDATE_STATE[key] = loaded_state[key]
+        with UPDATE_LOCK:
+            for key in list(UPDATE_STATE.keys()):
+                if key in loaded_state:
+                    UPDATE_STATE[key] = loaded_state[key]
 
-      UPDATE_EVENTS.clear()
-      for item in loaded_events:
-        if isinstance(item, dict):
-          UPDATE_EVENTS.append(item)
-      if len(UPDATE_EVENTS) > UPDATE_EVENTS_MAX:
-        del UPDATE_EVENTS[:-UPDATE_EVENTS_MAX]
+            UPDATE_EVENTS.clear()
+            for item in loaded_events:
+                if isinstance(item, dict):
+                    UPDATE_EVENTS.append(item)
+            if len(UPDATE_EVENTS) > UPDATE_EVENTS_MAX:
+                del UPDATE_EVENTS[:-UPDATE_EVENTS_MAX]
 
-      # Recover from stale in-progress state left behind by crash/restart.
-      if UPDATE_STATE.get("running"):
-        now = int(time.time())
-        UPDATE_STATE["running"] = False
-        UPDATE_STATE["state"] = "failed"
-        UPDATE_STATE["step"] = "recovered_after_restart"
-        UPDATE_STATE["finished_at"] = now
-        UPDATE_STATE["message"] = "Recovered stale update job after restart"
-        if not UPDATE_STATE.get("last_error"):
-          UPDATE_STATE["last_error"] = (
-            "Previous update job did not complete before restart"
-          )
-        _append_update_event_unlocked()
-        _persist_update_state_unlocked()
-  except Exception as exc:
-    LOGGER.exception("Failed to load persisted update state")
-    with UPDATE_LOCK:
-      UPDATE_STATE["last_error"] = f"Failed to load persisted update state: {exc}"
+            # Recover from stale in-progress state left behind by crash/restart.
+            if UPDATE_STATE.get("running"):
+                now = int(time.time())
+                UPDATE_STATE["running"] = False
+                UPDATE_STATE["state"] = "failed"
+                UPDATE_STATE["step"] = "recovered_after_restart"
+                UPDATE_STATE["finished_at"] = now
+                UPDATE_STATE["message"] = "Recovered stale update job after restart"
+                if not UPDATE_STATE.get("last_error"):
+                    UPDATE_STATE["last_error"] = (
+                        "Previous update job did not complete before restart"
+                    )
+                _append_update_event_unlocked()
+                _persist_update_state_unlocked()
+    except Exception as exc:
+        LOGGER.exception("Failed to load persisted update state")
+        with UPDATE_LOCK:
+            UPDATE_STATE["last_error"] = f"Failed to load persisted update state: {exc}"
 
 
 _load_update_state()
@@ -487,7 +491,8 @@ def check_for_updates() -> dict:
                 f"Update available: {latest}" if available else "You are up to date"
             ),
             latest_version=latest,
-            release_notes_url=str(release.get("notes_url") or "").strip() or None,
+            release_notes_url=str(release.get("notes_url")
+                                  or "").strip() or None,
             source="release",
             apply_mode=mode,
             branch=UPDATE_GIT_BRANCH,
@@ -512,7 +517,7 @@ def check_for_updates() -> dict:
             progress_pct=0,
             message="Update check failed",
             last_checked_at=now,
-          release_notes_url=None,
+            release_notes_url=None,
             source=None,
             last_error=str(exc),
         )
@@ -528,7 +533,7 @@ def check_for_updates() -> dict:
             progress_pct=0,
             message="Update check failed",
             last_checked_at=now,
-          release_notes_url=None,
+            release_notes_url=None,
             source=None,
             last_error=str(exc),
         )
@@ -4723,17 +4728,17 @@ class Handler(BaseHTTPRequestHandler):
             )
 
         if route_path == "/api/update/events":
-          params = parse_qs(parsed_url.query)
-          limit_raw = params.get("limit", ["50"])[0]
-          try:
-            limit = int(limit_raw)
-          except Exception:
-            limit = 50
-          return self._send(
-            200,
-            json.dumps(get_update_events(limit=limit), ensure_ascii=True),
-            "application/json; charset=utf-8",
-          )
+            params = parse_qs(parsed_url.query)
+            limit_raw = params.get("limit", ["50"])[0]
+            try:
+                limit = int(limit_raw)
+            except Exception:
+                limit = 50
+            return self._send(
+                200,
+                json.dumps(get_update_events(limit=limit), ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
 
         if route_path == "/api/pdf/file":
             params = parse_qs(parsed_url.query)
@@ -5264,9 +5269,9 @@ def main():
             "host bindings (127.0.0.1, localhost, or ::1)."
         )
 
-        server = ThreadingHTTPServer((HOST, PORT), Handler)
-        print(f"Serving UI at http://{HOST}:{PORT} (proxying {OLLAMA_BASE})")
-        server.serve_forever()
+    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    print(f"Serving UI at http://{HOST}:{PORT} (proxying {OLLAMA_BASE})")
+    server.serve_forever()
 
 
 if __name__ == "__main__":
