@@ -10,24 +10,27 @@ Local-first document Q&A stack using Ollama, a Python web UI, and a local retrie
 - Vendored frontend math assets (offline): `scripts/assets/katex/*`
 - Setup guides:
   - `Setup Guides/MAC-SETUP.md`
+  - `Setup Guides/LINUX-SETUP.md`
   - `Setup Guides/WINDOWS-SETUP.md`
   - `Setup Guides/PYTHON-SETUP.md`
   - `Setup Guides/RESEARCHER-QUICKSTART.md`
 - Optional bootstrap scripts:
   - `scripts/bootstrap-macos.sh`
   - `scripts/bootstrap-windows.ps1`
+  - Linux setup is documented in `Setup Guides/LINUX-SETUP.md` (no bootstrap script in this repo yet).
 
 ## Quick Start
 
 Pick your platform guide and follow it end-to-end:
 
-- macOS: [Setup Guides/MAC-SETUP.md](Setup%20Guides/MAC-SETUP.md)
-- Windows: [Setup Guides/WINDOWS-SETUP.md](Setup%20Guides/WINDOWS-SETUP.md)
-- Python setup/troubleshooting: [Setup Guides/PYTHON-SETUP.md](Setup%20Guides/PYTHON-SETUP.md)
+- macOS: [Setup Guides/MAC-SETUP.md](Setup Guides/MAC-SETUP.md)
+- Linux: [Setup Guides/LINUX-SETUP.md](Setup Guides/LINUX-SETUP.md)
+- Windows: [Setup Guides/WINDOWS-SETUP.md](Setup Guides/WINDOWS-SETUP.md)
+- Python setup/troubleshooting: [Setup Guides/PYTHON-SETUP.md](Setup Guides/PYTHON-SETUP.md)
 
 For non-technical users, use:
 
-- [Setup Guides/RESEARCHER-QUICKSTART.md](Setup%20Guides/RESEARCHER-QUICKSTART.md)
+- [Setup Guides/RESEARCHER-QUICKSTART.md](Setup Guides/RESEARCHER-QUICKSTART.md)
 
 ## Supported Document Types
 
@@ -172,6 +175,12 @@ Windows (PowerShell):
 - Status: `scripts/librarian-status-windows.ps1`
 - Open UI: `scripts/librarian-open-ui-windows.ps1`
 - Auto-start at login (optional): `scripts/librarian-install-login-windows.ps1`
+
+Linux:
+
+- Start Ollama: `OLLAMA_HOST=127.0.0.1:11434 ollama serve`
+- Start app: `source .venv/bin/activate && ./scripts/ollama-web-chat.py` (set env vars as shown in `Setup Guides/LINUX-SETUP.md`)
+- Stop: `Ctrl+C` in both terminals
 
 ## Security Regression Tests
 

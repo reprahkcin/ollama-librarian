@@ -63,6 +63,47 @@ Set-Location "$HOME\GIT\ollama-librarian"
 .\scripts\librarian-status-windows.ps1
 ```
 
+## Linux Daily Use
+
+Start Ollama in Terminal #1:
+
+```bash
+OLLAMA_HOST=127.0.0.1:11434 ollama serve
+```
+
+Start the web app in Terminal #2:
+
+```bash
+cd ~/GIT/ollama-librarian
+source .venv/bin/activate
+DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/ollama-librarian"
+
+OLLAMA_WEB_HOST=127.0.0.1 \
+OLLAMA_WEB_PORT=8088 \
+OLLAMA_BASE_URL=http://127.0.0.1:11434 \
+OLLAMA_WEB_PDF_SOURCE="$HOME/Documents/LLM Library" \
+OLLAMA_WEB_PDF_INDEX_DB="$DATA_HOME/pdf-rag.sqlite" \
+OLLAMA_WEB_HISTORY_PATH="$DATA_HOME/ollama-web-chat-history.json" \
+OLLAMA_WEB_STASH_PATH="$DATA_HOME/ollama-response-stash.json" \
+./scripts/ollama-web-chat.py
+```
+
+Open in browser:
+
+```text
+http://127.0.0.1:8088
+```
+
+Stop:
+
+- Press Ctrl+C in both terminals.
+
+Status check:
+
+```bash
+curl http://127.0.0.1:11434/api/tags
+```
+
 ## Syncing New Documents
 
 1. Copy files into your library folder.
@@ -101,6 +142,10 @@ Windows:
 Set-Location "$HOME\GIT\ollama-librarian"
 .\scripts\librarian-install-login-windows.ps1
 ```
+
+Linux:
+
+- Create startup entries in your desktop environment for the two daily-use Linux start commands above.
 
 ## Resource Behavior (Simple)
 

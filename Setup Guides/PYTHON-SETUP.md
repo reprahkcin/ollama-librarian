@@ -1,4 +1,4 @@
-# Python Setup Guide (Mac + Windows)
+# Python Setup Guide (Mac + Windows + Linux)
 
 Use this guide when setting up Ollama Librarian for the first time, or when Python/venv commands fail.
 
@@ -22,6 +22,13 @@ Windows PowerShell:
 ```powershell
 py --version
 py -m pip --version
+```
+
+Linux:
+
+```bash
+python3 --version
+python3 -m pip --version
 ```
 
 If either command fails, install Python first using the steps below.
@@ -48,6 +55,23 @@ Then close and reopen PowerShell:
 py --version
 ```
 
+## Install Python (Linux)
+
+Ubuntu/Debian:
+
+```bash
+sudo apt update
+sudo apt install -y python3 python3-venv python3-pip
+python3 --version
+```
+
+Fedora:
+
+```bash
+sudo dnf install -y python3 python3-pip python3-virtualenv
+python3 --version
+```
+
 ## Create the Virtual Environment
 
 macOS:
@@ -70,6 +94,16 @@ python -m pip install --upgrade pip
 python -m pip install -r scripts\pdf-rag-requirements.txt
 ```
 
+Linux:
+
+```bash
+cd ~/GIT/ollama-librarian
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r scripts/pdf-rag-requirements.txt
+```
+
 ## Confirm It Worked
 
 macOS:
@@ -90,6 +124,15 @@ python --version
 python -m pip list | Select-String "pypdf|ebooklib"
 ```
 
+Linux:
+
+```bash
+cd ~/GIT/ollama-librarian
+source .venv/bin/activate
+python --version
+python -m pip list | grep -E "pypdf|ebooklib"
+```
+
 ## Common Fixes
 
 ### pip not found
@@ -106,6 +149,13 @@ Windows:
 ```powershell
 py -m ensurepip --upgrade
 py -m pip install --upgrade pip
+```
+
+Linux:
+
+```bash
+python3 -m ensurepip --upgrade
+python3 -m pip install --upgrade pip
 ```
 
 ### PowerShell blocks Activate.ps1
@@ -138,10 +188,17 @@ Windows:
 py -3 -m venv .venv
 ```
 
+Linux:
+
+```bash
+/usr/bin/python3 -m venv .venv
+```
+
 ## Next Step
 
 After Python setup succeeds, return to:
 
 - [MAC-SETUP.md](MAC-SETUP.md)
+- [LINUX-SETUP.md](LINUX-SETUP.md)
 - [WINDOWS-SETUP.md](WINDOWS-SETUP.md)
 - [RESEARCHER-QUICKSTART.md](RESEARCHER-QUICKSTART.md)
