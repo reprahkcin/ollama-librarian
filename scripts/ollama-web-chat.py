@@ -2480,7 +2480,7 @@ HTML = """<!doctype html>
         return null;
       };
 
-      const urlMatch = raw.match(/(?:https?:\\/\\/|\\/api\\/pdf\\/file\\?|\\/epub-reader\\?)[^\\s;,)\\]]+/i);
+      const urlMatch = raw.match(/(?:https?:\/\/|\/api\/pdf\/file\?|\/epub-reader\?)[^\s;,)\]]+/i);
       if (urlMatch) {
         return { href: urlMatch[0], title: raw, label: 'source' };
       }
@@ -2511,7 +2511,7 @@ HTML = """<!doctype html>
         }
       }
 
-      const pathMatch = raw.match(/(?:\\/[\\w .\\-()&%+]+)+\\.(?:pdf|epub)\\b/i);
+      const pathMatch = raw.match(/(?:\/[\w .\-()&%+]+)+\.(?:pdf|epub)\b/i);
       if (pathMatch) {
         const path = pathMatch[0];
         const pageMatch = raw.match(/(?:page|location|p\\.)\\s*(\\d+)/i);

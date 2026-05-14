@@ -178,9 +178,87 @@ Windows (PowerShell):
 
 Linux:
 
-- Start Ollama: `OLLAMA_HOST=127.0.0.1:11434 ollama serve`
-- Start app: `source .venv/bin/activate && ./scripts/ollama-web-chat.py` (set env vars as shown in `Setup Guides/LINUX-SETUP.md`)
-- Stop: `Ctrl+C` in both terminals
+- Start: `scripts/librarian-start-linux.sh`
+- Stop: `scripts/librarian-stop-linux.sh`
+- Status: `scripts/librarian-status-linux.sh`
+- Open UI: `scripts/librarian-open-ui-linux.sh`
+
+## Super Simple Daily Commands
+
+If setup is already complete, follow these exact steps.
+
+If you do not know what a terminal is:
+
+- macOS: press Command + Space, type Terminal, press Enter.
+- Windows: press Windows key, type PowerShell, press Enter.
+- Linux: press Ctrl + Alt + T.
+
+macOS:
+
+1. Open Terminal.
+2. Copy and paste this to start:
+
+```bash
+cd ~/GIT/ollama-librarian
+./scripts/librarian-start-macos.sh
+./scripts/librarian-open-ui-macos.sh
+```
+
+1. Copy and paste this to stop when done:
+
+```bash
+cd ~/GIT/ollama-librarian
+./scripts/librarian-stop-macos.sh
+```
+
+Windows (PowerShell):
+
+1. Open PowerShell.
+2. Copy and paste this to start:
+
+```powershell
+Set-Location "$HOME\GIT\ollama-librarian"
+.\scripts\librarian-start-windows.ps1
+.\scripts\librarian-open-ui-windows.ps1
+```
+
+1. Copy and paste this to stop when done:
+
+```powershell
+Set-Location "$HOME\GIT\ollama-librarian"
+.\scripts\librarian-stop-windows.ps1
+```
+
+Linux:
+
+1. Open Terminal.
+2. Copy and paste this to start:
+
+```bash
+cd ~/GIT/ollama-librarian
+./scripts/librarian-start-linux.sh
+./scripts/librarian-open-ui-linux.sh
+```
+
+1. Copy and paste this to stop when done:
+
+```bash
+cd ~/GIT/ollama-librarian
+./scripts/librarian-stop-linux.sh
+```
+
+What common messages mean:
+
+- `Librarian is running at http://127.0.0.1:8088`: start worked.
+- `Web app already running.`: it was already on; this is okay.
+- `Ollama already running.`: the AI engine was already on; this is okay.
+- `Missing Python venv ...`: setup is incomplete.
+- `Could not find 'ollama' in PATH`: Ollama is not installed correctly.
+- `Web UI: stopped` in status output: run the Start block again.
+
+For a non-technical guide, see:
+
+- [Setup Guides/RESEARCHER-QUICKSTART.md](Setup Guides/RESEARCHER-QUICKSTART.md)
 
 ## Security Regression Tests
 

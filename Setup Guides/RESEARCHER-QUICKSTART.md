@@ -1,23 +1,54 @@
-# Researcher Quick Start (Minimal Daily Workflow)
+# Absolute Beginner Daily Guide
 
-This guide is for non-technical users after initial setup is complete.
+Use this after setup is already finished.
 
-Default access model:
+You only do two things each day:
 
-- The normal workflow is local-only on the same machine (`http://127.0.0.1:8088`).
-- Network/LAN access is intentionally unsupported.
+1. Start the app.
+2. Stop the app when done.
 
-## What You Do Each Day
+The app opens at <http://127.0.0.1:8088>.
 
-1. Start the system
-2. Open the web page
-3. Ask questions
-4. Sync new documents when needed
-5. Stop the system when done
+## Quick Help: If You See This, Do This
 
-## macOS Daily Use
+| If you see this message | What it means | What to do now |
+| --- | --- | --- |
+| `Librarian is running at http://127.0.0.1:8088` | Everything started correctly | Open your browser to `http://127.0.0.1:8088` |
+| `Web app already running.` | The app was already on | Keep going, this is okay |
+| `Ollama already running.` | The AI engine was already on | Keep going, this is okay |
+| `Web UI: stopped` | The app website is not running | Run the **Start The App** block again |
+| `Ollama: stopped` | The AI engine is not running | Run the **Start The App** block again |
+| `Missing Python venv ...` | Setup was not completed on this computer | Ask your installer/admin to run setup again |
+| `Could not find 'ollama' in PATH` | Ollama is not installed correctly | Ask your installer/admin to reinstall Ollama |
+| `Web app did not become ready` | The app tried to start but failed | Follow **If It Does Not Open** below and share that output with support |
+| `Ollama did not become ready` | Ollama tried to start but failed | Follow **If It Does Not Open** below and share that output with support |
 
-Start and open:
+## First: Open The Command App
+
+If you do not know what a terminal is, use these steps.
+
+macOS:
+
+1. Press Command + Space.
+2. Type Terminal.
+3. Press Enter.
+
+Windows:
+
+1. Press the Windows key.
+2. Type PowerShell.
+3. Press Enter.
+
+Linux:
+
+1. Press Ctrl + Alt + T.
+2. If that does not open it, open your app menu and search for Terminal.
+
+## Start The App
+
+Pick your computer type. Copy and paste the matching block. Press Enter.
+
+macOS:
 
 ```bash
 cd ~/GIT/ollama-librarian
@@ -25,23 +56,7 @@ cd ~/GIT/ollama-librarian
 ./scripts/librarian-open-ui-macos.sh
 ```
 
-Stop:
-
-```bash
-cd ~/GIT/ollama-librarian
-./scripts/librarian-stop-macos.sh
-```
-
-Status check:
-
-```bash
-cd ~/GIT/ollama-librarian
-./scripts/librarian-status-macos.sh
-```
-
-## Windows Daily Use (PowerShell)
-
-Start and open:
+Windows (PowerShell):
 
 ```powershell
 Set-Location "$HOME\GIT\ollama-librarian"
@@ -49,74 +64,103 @@ Set-Location "$HOME\GIT\ollama-librarian"
 .\scripts\librarian-open-ui-windows.ps1
 ```
 
-Stop:
+Linux:
+
+```bash
+cd ~/GIT/ollama-librarian
+./scripts/librarian-start-linux.sh
+./scripts/librarian-open-ui-linux.sh
+```
+
+### What You Should See (This Means It Worked)
+
+- `Librarian is running at http://127.0.0.1:8088`:
+The app started correctly.
+- `Web app already running.`:
+The app was already on. This is okay.
+- `Ollama already running.`:
+The AI engine was already on. This is okay.
+
+### Common Messages (What They Mean)
+
+- `Missing Python venv ... Run Setup Guides/... first.`:
+Setup is incomplete. Ask the installer/admin to run setup again.
+- `Could not find 'ollama' in PATH`:
+Ollama is not installed correctly on this computer.
+- `Web app did not become ready. Check .../web.log`:
+The app tried to start but failed. Follow **If It Does Not Open** below and share the output with support.
+- `Ollama did not become ready. Check .../ollama.log`:
+The AI engine did not start. Follow **If It Does Not Open** below and share the output with support.
+
+## Stop The App
+
+When you are done for the day, copy and paste one block.
+
+macOS:
+
+```bash
+cd ~/GIT/ollama-librarian
+./scripts/librarian-stop-macos.sh
+```
+
+Windows (PowerShell):
 
 ```powershell
 Set-Location "$HOME\GIT\ollama-librarian"
 .\scripts\librarian-stop-windows.ps1
 ```
 
-Status check:
+Linux:
+
+```bash
+cd ~/GIT/ollama-librarian
+./scripts/librarian-stop-linux.sh
+```
+
+## If It Does Not Open
+
+Run the status command for your computer type.
+
+macOS:
+
+```bash
+cd ~/GIT/ollama-librarian
+./scripts/librarian-status-macos.sh
+```
+
+Windows (PowerShell):
 
 ```powershell
 Set-Location "$HOME\GIT\ollama-librarian"
 .\scripts\librarian-status-windows.ps1
 ```
 
-## Linux Daily Use
-
-Start Ollama in Terminal #1:
-
-```bash
-OLLAMA_HOST=127.0.0.1:11434 ollama serve
-```
-
-Start the web app in Terminal #2:
+Linux:
 
 ```bash
 cd ~/GIT/ollama-librarian
-source .venv/bin/activate
-DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/ollama-librarian"
-
-OLLAMA_WEB_HOST=127.0.0.1 \
-OLLAMA_WEB_PORT=8088 \
-OLLAMA_BASE_URL=http://127.0.0.1:11434 \
-OLLAMA_WEB_PDF_SOURCE="$HOME/Documents/LLM Library" \
-OLLAMA_WEB_PDF_INDEX_DB="$DATA_HOME/pdf-rag.sqlite" \
-OLLAMA_WEB_HISTORY_PATH="$DATA_HOME/ollama-web-chat-history.json" \
-OLLAMA_WEB_STASH_PATH="$DATA_HOME/ollama-response-stash.json" \
-./scripts/ollama-web-chat.py
+./scripts/librarian-status-linux.sh
 ```
 
-Open in browser:
+### How To Read Status Output
 
-```text
-http://127.0.0.1:8088
-```
+- `Ollama: running`:
+The AI engine is on.
+- `Ollama: stopped`:
+The AI engine is off.
+- `Web UI: running (http://127.0.0.1:8088)`:
+The app website is on and should open in your browser.
+- `Web UI: stopped`:
+The app website is off. Run the Start block again.
 
-Stop:
+## Add New Documents
 
-- Press Ctrl+C in both terminals.
-
-Status check:
-
-```bash
-curl http://127.0.0.1:11434/api/tags
-```
-
-## Syncing New Documents
-
-1. Copy files into your library folder.
-2. Open the web page.
-3. Enable Use PDF-grounded answers.
+1. Put files into your library folder.
+2. Open the app page.
+3. Turn on Use PDF-grounded answers.
 4. Click Sync New PDFs.
 
-Optional in-UI upload flow:
-
-1. Open the web page.
-2. Click Upload Documents.
-3. Select one or more supported files.
-4. The app uploads files into your configured library path; then click Sync New PDFs (or wait if auto-sync is started).
+You can also click Upload Documents.
 
 Supported file types:
 
@@ -126,29 +170,3 @@ Supported file types:
 - .html
 - .htm
 - .epub
-
-## Optional: Start Automatically at Login
-
-macOS:
-
-```bash
-cd ~/GIT/ollama-librarian
-./scripts/librarian-install-login-macos.sh
-```
-
-Windows:
-
-```powershell
-Set-Location "$HOME\GIT\ollama-librarian"
-.\scripts\librarian-install-login-windows.ps1
-```
-
-Linux:
-
-- Create startup entries in your desktop environment for the two daily-use Linux start commands above.
-
-## Resource Behavior (Simple)
-
-- When stopped, it uses no resources.
-- When running idle, CPU should be low.
-- Memory usage can stay elevated for a while after model use.

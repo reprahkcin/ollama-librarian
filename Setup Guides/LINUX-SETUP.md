@@ -129,22 +129,7 @@ Supported source file types:
 
 ```bash
 cd ~/GIT/ollama-librarian
-source .venv/bin/activate
-
-DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/ollama-librarian"
-
-OLLAMA_WEB_HOST=127.0.0.1 \
-OLLAMA_WEB_PORT=8088 \
-OLLAMA_BASE_URL=http://127.0.0.1:11434 \
-OLLAMA_WEB_PDF_SOURCE="$HOME/Documents/LLM Library" \
-OLLAMA_WEB_PDF_INDEX_DB="$DATA_HOME/pdf-rag.sqlite" \
-OLLAMA_WEB_HISTORY_PATH="$DATA_HOME/ollama-web-chat-history.json" \
-OLLAMA_WEB_STASH_PATH="$DATA_HOME/ollama-response-stash.json" \
-OLLAMA_WEB_PDF_OCR_ON_SYNC=1 \
-OLLAMA_WEB_PDF_OCR_LANG=eng \
-OLLAMA_WEB_PDF_OCR_JOBS=4 \
-OLLAMA_WEB_PDF_OCR_TIMEOUT=3600 \
-./scripts/ollama-web-chat.py
+./scripts/librarian-start-linux.sh
 ```
 
 Open:
@@ -163,7 +148,7 @@ From the UI:
 - Copying files into your library folder, or
 - Clicking Upload Documents in the sidebar
 
-3. Click Sync New PDFs
+1. Click Sync New PDFs
 
 Optional CLI sync with prune:
 
@@ -192,6 +177,14 @@ Port 8088 already in use:
 
 ```bash
 ss -ltnp | grep ':8088'
+./scripts/librarian-stop-linux.sh
+./scripts/librarian-start-linux.sh
+```
+
+If another app is using 8088, choose a different port when starting:
+
+```bash
+OLLAMA_WEB_PORT=8090 ./scripts/librarian-start-linux.sh
 ```
 
 Ollama not reachable:
@@ -200,31 +193,24 @@ Ollama not reachable:
 curl http://127.0.0.1:11434/api/tags
 ```
 
+Check app status quickly:
+
+```bash
+./scripts/librarian-status-linux.sh
+```
+
 ## Daily Use (Non-Technical)
 
 After initial setup, users only need these commands:
 
-Terminal #1 (Ollama):
-
-```bash
-OLLAMA_HOST=127.0.0.1:11434 ollama serve
-```
-
-Terminal #2 (web app):
-
 ```bash
 cd ~/GIT/ollama-librarian
-source .venv/bin/activate
-DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/ollama-librarian"
-
-OLLAMA_WEB_HOST=127.0.0.1 \
-OLLAMA_WEB_PORT=8088 \
-OLLAMA_BASE_URL=http://127.0.0.1:11434 \
-OLLAMA_WEB_PDF_SOURCE="$HOME/Documents/LLM Library" \
-OLLAMA_WEB_PDF_INDEX_DB="$DATA_HOME/pdf-rag.sqlite" \
-OLLAMA_WEB_HISTORY_PATH="$DATA_HOME/ollama-web-chat-history.json" \
-OLLAMA_WEB_STASH_PATH="$DATA_HOME/ollama-response-stash.json" \
-./scripts/ollama-web-chat.py
+./scripts/librarian-start-linux.sh
+./scripts/librarian-open-ui-linux.sh
 ```
 
-When done for the day, stop both terminals with Ctrl+C.
+When done for the day:
+
+```bash
+./scripts/librarian-stop-linux.sh
+```
