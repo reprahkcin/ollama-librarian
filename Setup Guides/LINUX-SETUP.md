@@ -148,7 +148,7 @@ From the UI:
 - Copying files into your library folder, or
 - Clicking Upload Documents in the sidebar
 
-1. Click Sync New PDFs
+3. Click Sync New PDFs
 
 Optional CLI sync with prune:
 
@@ -176,8 +176,15 @@ python scripts/pdf_library_rag.py --index-db "${XDG_DATA_HOME:-$HOME/.local/shar
 Port 8088 already in use:
 
 ```bash
+ss -ltnp | grep ':8088'
 ./scripts/librarian-stop-linux.sh
 ./scripts/librarian-start-linux.sh
+```
+
+If another app is using 8088, choose a different port when starting:
+
+```bash
+OLLAMA_WEB_PORT=8090 ./scripts/librarian-start-linux.sh
 ```
 
 Ollama not reachable:

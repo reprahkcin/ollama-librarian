@@ -27,8 +27,9 @@ echo "Stopping web app and Ollama (if running)..."
 stop_pid_file "$WEB_PID_FILE"
 stop_pid_file "$OLLAMA_PID_FILE"
 
-pkill -f "scripts/ollama-web-chat.py" >/dev/null 2>&1 || true
-pkill -f "ollama serve" >/dev/null 2>&1 || true
+if http_ok "http://127.0.0.1:8088/api/pdf/status"; then
+  echo "Note: Web UI is still running (not started by this script instance)."
+fi
 
 if http_ok "http://127.0.0.1:11434/api/tags"; then
   echo "Note: Ollama is still running (possibly managed by another user/service)."

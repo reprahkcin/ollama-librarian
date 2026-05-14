@@ -20,8 +20,8 @@ The app opens at <http://127.0.0.1:8088>.
 | `Ollama: stopped` | The AI engine is not running | Run the **Start The App** block again |
 | `Missing Python venv ...` | Setup was not completed on this computer | Ask your installer/admin to run setup again |
 | `Could not find 'ollama' in PATH` | Ollama is not installed correctly | Ask your installer/admin to reinstall Ollama |
-| `Web app did not become ready` | The app tried to start but failed | Run **Check Status** and share the output with support |
-| `Ollama did not become ready` | Ollama tried to start but failed | Run **Check Status** and share the output with support |
+| `Web app did not become ready` | The app tried to start but failed | Follow **If It Does Not Open** below and share that output with support |
+| `Ollama did not become ready` | Ollama tried to start but failed | Follow **If It Does Not Open** below and share that output with support |
 
 ## First: Open The Command App
 
@@ -88,9 +88,9 @@ Setup is incomplete. Ask the installer/admin to run setup again.
 - `Could not find 'ollama' in PATH`:
 Ollama is not installed correctly on this computer.
 - `Web app did not become ready. Check .../web.log`:
-The app tried to start but failed. Run the Status command below and share the output with support.
+The app tried to start but failed. Follow **If It Does Not Open** below and share the output with support.
 - `Ollama did not become ready. Check .../ollama.log`:
-The AI engine did not start. Run the Status command below and share the output with support.
+The AI engine did not start. Follow **If It Does Not Open** below and share the output with support.
 
 ## Stop The App
 
