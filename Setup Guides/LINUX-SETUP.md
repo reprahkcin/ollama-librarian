@@ -148,7 +148,7 @@ From the UI:
 - Copying files into your library folder, or
 - Clicking Upload Documents in the sidebar
 
-3. Click Sync New PDFs
+1. Click Sync New PDFs
 
 Optional CLI sync with prune:
 
