@@ -144,6 +144,27 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertIn("script-src 'self' 'nonce-nonce-test-value'", csp)
         self.assertNotIn("script-src 'self' 'unsafe-inline'", csp)
 
+    def test_abstract_recommendation_normalization(self):
+        app = load_app_module()
+        self.assertEqual(
+            app._normalize_recommendation("download and index", 10),
+            "download_and_index",
+        )
+        self.assertEqual(app._normalize_recommendation("skip", 90), "skip")
+        self.assertEqual(app._normalize_recommendation(
+            "", 76), "download_and_index")
+        self.assertEqual(app._normalize_recommendation("", 52), "maybe")
+        self.assertEqual(app._normalize_recommendation("", 20), "skip")
+
+    def test_abstract_json_extraction_fallback(self):
+        app = load_app_module()
+        parsed = app._extract_json_object(
+            'result:\n{"confidence": 88, "recommendation": "maybe"}\nthanks'
+        )
+        self.assertIsInstance(parsed, dict)
+        self.assertEqual(parsed.get("confidence"), 88)
+        self.assertEqual(parsed.get("recommendation"), "maybe")
+
 
 if __name__ == "__main__":
     unittest.main()

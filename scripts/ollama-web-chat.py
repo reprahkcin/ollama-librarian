@@ -26,6 +26,12 @@ MAX_BODY_BYTES = max(1024, int(os.environ.get(
     "OLLAMA_WEB_MAX_BODY_BYTES", "1048576")))
 MAX_UPLOAD_BYTES = max(1024, int(os.environ.get(
     "OLLAMA_WEB_MAX_UPLOAD_BYTES", "536870912")))
+ABSTRACT_NEED_MAX_CHARS = max(
+    64, int(os.environ.get("OLLAMA_WEB_ABSTRACT_NEED_MAX_CHARS", "3000"))
+)
+ABSTRACT_TEXT_MAX_CHARS = max(
+    256, int(os.environ.get("OLLAMA_WEB_ABSTRACT_TEXT_MAX_CHARS", "12000"))
+)
 SUPPORTED_DOC_EXTENSIONS = {".pdf", ".txt", ".md", ".html", ".htm", ".epub"}
 HISTORY_PATH = os.path.expanduser(
     os.environ.get(
@@ -261,6 +267,180 @@ def _load_update_state():
 
 
 _load_update_state()
+
+
+def _normalize_whitespace(value: object) -> str:
+    text = "" if value is None else str(value)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _clamp_confidence(value: object, default: int = 50) -> int:
+    try:
+        num = int(round(float(value)))
+    except Exception:
+        num = default
+    return max(0, min(100, num))
+
+
+def _confidence_bucket(score: int) -> str:
+    if score >= 80:
+        return "High"
+    if score >= 55:
+        return "Moderate"
+    return "Low"
+
+
+def _normalize_recommendation(value: object, score_hint: int = 50) -> str:
+    raw = _normalize_whitespace(value).lower()
+    compact = raw.replace("-", "_").replace(" ", "_")
+    if compact in {"download", "download_and_index", "index", "yes", "strong_yes"}:
+        return "download_and_index"
+    if compact in {"maybe", "unclear", "needs_review", "borderline"}:
+        return "maybe"
+    if compact in {"skip", "do_not_download", "no", "reject"}:
+        return "skip"
+
+    if score_hint >= 75:
+        return "download_and_index"
+    if score_hint >= 45:
+        return "maybe"
+    return "skip"
+
+
+def _recommendation_label(code: str) -> str:
+    if code == "download_and_index":
+        return "Download and index"
+    if code == "skip":
+        return "Skip for now"
+    return "Maybe / needs manual review"
+
+
+def _extract_json_object(text: str) -> dict:
+    raw = str(text or "").strip()
+    if not raw:
+        return {}
+    try:
+        loaded = json.loads(raw)
+        if isinstance(loaded, dict):
+            return loaded
+    except Exception:
+        pass
+
+    match = re.search(r"\{[\s\S]*\}", raw)
+    if not match:
+        return {}
+    try:
+        loaded = json.loads(match.group(0))
+        if isinstance(loaded, dict):
+            return loaded
+    except Exception:
+        return {}
+    return {}
+
+
+def _extract_reason_list(value: object, fallback_text: str = "") -> list[str]:
+    out: list[str] = []
+    if isinstance(value, list):
+        for item in value:
+            cleaned = _normalize_whitespace(item)
+            if cleaned:
+                out.append(cleaned)
+            if len(out) >= 4:
+                break
+    elif isinstance(value, str):
+        parts = [
+            _normalize_whitespace(piece)
+            for piece in re.split(r"\n+|;\s*", value)
+        ]
+        out.extend([piece for piece in parts if piece][:4])
+
+    if out:
+        return out[:4]
+
+    fallback = _normalize_whitespace(fallback_text)
+    if fallback:
+        sentence_parts = [
+            _normalize_whitespace(piece)
+            for piece in re.split(r"(?<=[.!?])\s+", fallback)
+        ]
+        return [piece for piece in sentence_parts if piece][:3]
+    return []
+
+
+def build_abstract_eval_prompt(research_need: str, abstract_text: str) -> str:
+    return (
+        "You are assisting a researcher in deciding whether to download and index a paper based on its abstract. "
+        "Return JSON only with this exact schema: "
+        "{\"confidence\": number 0-100, \"recommendation\": \"download_and_index\"|\"maybe\"|\"skip\", "
+        "\"reasons\": [string, ... up to 4], \"signals\": [string, ... up to 4], \"concerns\": [string, ... up to 4]}. "
+        "Confidence should reflect match quality between the research need and abstract. "
+        "Use concise, evidence-grounded points. Do not include markdown or extra keys.\n\n"
+        f"Research need:\n{research_need}\n\n"
+        f"Abstract:\n{abstract_text}\n"
+    )
+
+
+def evaluate_abstract_relevance(
+    model: str,
+    research_need: str,
+    abstract_text: str,
+    instructions: str = "",
+) -> dict:
+    prompt = build_abstract_eval_prompt(research_need, abstract_text)
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        "format": "json",
+        "keep_alive": "60s",
+    }
+    if instructions:
+        payload["system"] = instructions
+
+    req = Request(
+        f"{OLLAMA_BASE.rstrip('/')}/api/generate",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(req, timeout=90) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
+    except URLError as exc:
+        raise RuntimeError(
+            f"Cannot reach Ollama at {OLLAMA_BASE}: {exc}") from exc
+
+    try:
+        data = json.loads(body) if body else {}
+    except Exception as exc:
+        raise RuntimeError(
+            "Invalid response from Ollama generate endpoint") from exc
+
+    raw_response = str(data.get("response", "") or "").strip()
+    parsed = _extract_json_object(raw_response)
+
+    confidence = _clamp_confidence(parsed.get("confidence", 50))
+    recommendation = _normalize_recommendation(
+        parsed.get("recommendation", ""), confidence
+    )
+    reasons = _extract_reason_list(parsed.get("reasons", []), raw_response)
+    signals = _extract_reason_list(parsed.get("signals", []), "")
+    concerns = _extract_reason_list(parsed.get("concerns", []), "")
+
+    return {
+        "ok": True,
+        "confidence": confidence,
+        "confidence_label": _confidence_bucket(confidence),
+        "recommendation": recommendation,
+        "recommendation_label": _recommendation_label(recommendation),
+        "reasons": reasons,
+        "signals": signals,
+        "concerns": concerns,
+        "raw_response": raw_response,
+    }
 
 
 def read_current_version() -> str:
@@ -1611,6 +1791,78 @@ HTML = """<!doctype html>
       padding: 0.28rem 0.45rem;
       font-size: 0.72rem;
     }
+    .sidebar-accordion {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #0f172a;
+      margin-bottom: 0.5rem;
+      overflow: hidden;
+    }
+    .sidebar-accordion summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 0.55rem 0.65rem;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--ink);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      user-select: none;
+    }
+    .sidebar-accordion summary::-webkit-details-marker {
+      display: none;
+    }
+    .sidebar-accordion summary::after {
+      content: '+';
+      color: var(--muted);
+      font-size: 0.9rem;
+      line-height: 1;
+    }
+    .sidebar-accordion[open] summary::after {
+      content: '-';
+    }
+    .sidebar-accordion .accordion-content {
+      border-top: 1px solid var(--border);
+      padding: 0.55rem;
+      display: grid;
+      gap: 0.45rem;
+    }
+    .abstract-eval {
+      margin-top: 0;
+      border: none;
+      border-radius: 0;
+      padding: 0;
+      background: transparent;
+      display: grid;
+      gap: 0.45rem;
+    }
+    .abstract-eval .tiny {
+      font-size: 0.74rem;
+    }
+    .abstract-input {
+      min-height: 76px;
+      font-size: 0.82rem;
+      line-height: 1.35;
+    }
+    #abstractNeed {
+      height: 172px;
+      min-height: 172px;
+    }
+    .abstract-actions {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 0.4rem;
+    }
+    .abstract-result {
+      border: 1px solid #334155;
+      border-radius: 10px;
+      background: #0b1220;
+      padding: 0.45rem;
+      white-space: pre-wrap;
+      min-height: 2.2rem;
+    }
     textarea {
       min-height: 92px;
       resize: vertical;
@@ -1967,9 +2219,28 @@ HTML = """<!doctype html>
         <button id="refresh" class="btn-soft btn-mini" type="button">Refresh</button>
       </div>
 
-      <label for="instructions">Running Instructions</label>
-      <textarea id="instructions" placeholder="Example: Be concise. Use bullet points. Ask clarifying questions if uncertain."></textarea>
-      <button id="saveInstructions" class="btn-soft" type="button">Save Instructions</button>
+      <details class="sidebar-accordion" id="instructionsAccordion">
+        <summary>Running Instructions</summary>
+        <div class="accordion-content">
+          <textarea id="instructions" placeholder="Example: Be concise. Use bullet points. Ask clarifying questions if uncertain."></textarea>
+          <button id="saveInstructions" class="btn-soft" type="button">Save Instructions</button>
+        </div>
+      </details>
+
+      <details class="sidebar-accordion" id="abstractAccordion">
+        <summary>Abstract Screener</summary>
+        <div class="accordion-content abstract-eval">
+          <div class="tiny">Describe what would make a paper relevant, then paste its abstract.</div>
+          <textarea id="abstractNeed" class="abstract-input" placeholder="Example: I need papers with randomized controlled design for adults with hypertension, published after 2018."></textarea>
+          <textarea id="abstractText" class="abstract-input" placeholder="Paste abstract text here..."></textarea>
+          <div class="abstract-actions">
+            <button id="evaluateAbstract" class="btn-soft" type="button">Evaluate Abstract</button>
+            <button id="clearAbstract" class="btn-soft btn-mini" type="button">Clear</button>
+          </div>
+          <div id="abstractResult" class="tiny abstract-result">No evaluation yet.</div>
+        </div>
+      </details>
+      </div>
 
       <label>PDF Library</label>
       <label class="checkrow" for="usePdfLibrary" title="Use retrieval from your indexed PDF library instead of plain model-only responses.">
@@ -2099,6 +2370,11 @@ HTML = """<!doctype html>
     const openBibliographyEl = document.getElementById('openBibliography');
     const instructionsEl = document.getElementById('instructions');
     const saveInstructionsEl = document.getElementById('saveInstructions');
+    const abstractNeedEl = document.getElementById('abstractNeed');
+    const abstractTextEl = document.getElementById('abstractText');
+    const evaluateAbstractEl = document.getElementById('evaluateAbstract');
+    const clearAbstractEl = document.getElementById('clearAbstract');
+    const abstractResultEl = document.getElementById('abstractResult');
     const usePdfLibraryEl = document.getElementById('usePdfLibrary');
     const deepStudyEl = document.getElementById('deepStudy');
     const syncPdfLibraryEl = document.getElementById('syncPdfLibrary');
@@ -2440,6 +2716,100 @@ HTML = """<!doctype html>
       if (state === 'ok') statusDotEl.classList.add('ok');
       if (state === 'err') statusDotEl.classList.add('err');
       statusTextEl.textContent = text;
+    }
+
+    function formatAbstractEvalResult(data) {
+      const score = Number(data && data.confidence ? data.confidence : 0);
+      const confLabel = String(data && data.confidence_label ? data.confidence_label : 'Unknown');
+      const recLabel = String(data && data.recommendation_label ? data.recommendation_label : 'Maybe / needs manual review');
+      const reasons = Array.isArray(data && data.reasons) ? data.reasons : [];
+      const signals = Array.isArray(data && data.signals) ? data.signals : [];
+      const concerns = Array.isArray(data && data.concerns) ? data.concerns : [];
+
+      const lines = [
+        `Confidence: ${score}% (${confLabel})`,
+        `Recommendation: ${recLabel}`,
+      ];
+
+      if (reasons.length) {
+        lines.push('Why:');
+        for (const item of reasons) lines.push(`- ${String(item)}`);
+      }
+      if (signals.length) {
+        lines.push('Positive signals:');
+        for (const item of signals) lines.push(`- ${String(item)}`);
+      }
+      if (concerns.length) {
+        lines.push('Concerns:');
+        for (const item of concerns) lines.push(`- ${String(item)}`);
+      }
+
+      return lines.join('\\n');
+    }
+
+    async function evaluateAbstract() {
+      const researchNeed = String(abstractNeedEl.value || '').trim();
+      const abstractText = String(abstractTextEl.value || '').trim();
+      const model = String(modelEl.value || '').trim();
+      const instructions = String(instructionsEl.value || '').trim();
+
+      if (!researchNeed) {
+        abstractResultEl.textContent = 'Add your research need first.';
+        abstractNeedEl.focus();
+        return;
+      }
+      if (!abstractText) {
+        abstractResultEl.textContent = 'Paste an abstract to evaluate.';
+        abstractTextEl.focus();
+        return;
+      }
+      if (!model) {
+        abstractResultEl.textContent = 'No model available. Install a model, then refresh.';
+        return;
+      }
+
+      evaluateAbstractEl.disabled = true;
+      clearAbstractEl.disabled = true;
+      abstractResultEl.textContent = 'Evaluating abstract...';
+      metaEl.textContent = `Abstract screener: ${model}`;
+
+      try {
+        const res = await fetch('/api/abstract/evaluate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model,
+            research_need: researchNeed,
+            abstract: abstractText,
+            instructions: instructions || undefined,
+          })
+        });
+        let data = {};
+        try {
+          data = await res.json();
+        } catch (_) {
+          data = {};
+        }
+        if (!res.ok || data.ok === false) {
+          throw new Error(data.error || `HTTP ${res.status}`);
+        }
+
+        abstractResultEl.textContent = formatAbstractEvalResult(data);
+        metaEl.textContent = `Abstract screener: ${model} | ${data.confidence}% confidence`;
+      } catch (err) {
+        abstractResultEl.textContent = `Evaluation failed: ${err.message}`;
+        metaEl.textContent = 'Abstract screener failed';
+      } finally {
+        evaluateAbstractEl.disabled = false;
+        clearAbstractEl.disabled = false;
+      }
+    }
+
+    function clearAbstractInputs() {
+      abstractNeedEl.value = '';
+      abstractTextEl.value = '';
+      abstractResultEl.textContent = 'No evaluation yet.';
+      abstractNeedEl.focus();
     }
 
     function isoNow() {
@@ -4118,6 +4488,14 @@ HTML = """<!doctype html>
       if (e.target === stashModalEl) closeStashModal();
     });
     saveInstructionsEl.addEventListener('click', saveInstructions);
+    evaluateAbstractEl.addEventListener('click', evaluateAbstract);
+    clearAbstractEl.addEventListener('click', clearAbstractInputs);
+    abstractTextEl.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        evaluateAbstract();
+      }
+    });
     syncPdfLibraryEl.addEventListener('click', syncPdfLibrary);
     checkUpdatesEl.addEventListener('click', checkForUpdates);
     applyUpdateEl.addEventListener('click', applyUpdate);
@@ -4886,6 +5264,93 @@ class Handler(BaseHTTPRequestHandler):
                 )
             data = self.rfile.read(length) if length > 0 else b"{}"
             return self._proxy("POST", "/api/generate", data)
+
+        if route_path == "/api/abstract/evaluate":
+            payload = self._read_json_body()
+            if payload is None:
+                return
+
+            model = _normalize_whitespace(payload.get("model", ""))
+            research_need = str(payload.get("research_need", "") or "").strip()
+            abstract_text = str(payload.get("abstract", "") or "").strip()
+            instructions = str(payload.get("instructions", "") or "").strip()
+
+            if not model:
+                return self._send(
+                    400,
+                    json.dumps(
+                        {"ok": False, "error": "model is required"}, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+            if not research_need:
+                return self._send(
+                    400,
+                    json.dumps(
+                        {"ok": False, "error": "research_need is required"}, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+            if not abstract_text:
+                return self._send(
+                    400,
+                    json.dumps(
+                        {"ok": False, "error": "abstract is required"}, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+
+            if len(research_need) > ABSTRACT_NEED_MAX_CHARS:
+                return self._send(
+                    400,
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "error": f"research_need exceeds {ABSTRACT_NEED_MAX_CHARS} characters",
+                        },
+                        ensure_ascii=True,
+                    ),
+                    "application/json; charset=utf-8",
+                )
+            if len(abstract_text) > ABSTRACT_TEXT_MAX_CHARS:
+                return self._send(
+                    400,
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "error": f"abstract exceeds {ABSTRACT_TEXT_MAX_CHARS} characters",
+                        },
+                        ensure_ascii=True,
+                    ),
+                    "application/json; charset=utf-8",
+                )
+
+            try:
+                result = evaluate_abstract_relevance(
+                    model=model,
+                    research_need=research_need,
+                    abstract_text=abstract_text,
+                    instructions=instructions,
+                )
+            except RuntimeError as exc:
+                LOGGER.warning("Abstract evaluation failed: %s", exc)
+                return self._send(
+                    502,
+                    json.dumps({"ok": False, "error": str(exc)},
+                               ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+            except Exception:
+                LOGGER.exception("Unexpected abstract evaluation failure")
+                return self._send(
+                    500,
+                    json.dumps(
+                        {"ok": False, "error": "Unexpected evaluation error"}, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+
+            return self._send(
+                200,
+                json.dumps(result, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
 
         if route_path == "/api/history":
             payload = self._read_json_body()

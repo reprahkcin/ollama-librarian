@@ -48,6 +48,7 @@ For non-technical users, use:
 - Math rendering is fully offline via vendored KaTeX files served from `/assets`.
 - EPUB citations open in an in-app EPUB reader at section-level locations (EPUB does not have universal PDF-style page numbers).
 - You can upload supported documents directly from the sidebar with `Upload Documents`, then sync/index from the same UI.
+- The sidebar includes an `Abstract Screener` that scores an abstract against your research need and recommends whether to download/index the paper.
 
 ## Security Defaults
 
