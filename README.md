@@ -13,6 +13,7 @@ Local-first document Q&A stack using Ollama, a Python web UI, and a local retrie
   - `Setup Guides/LINUX-SETUP.md`
   - `Setup Guides/WINDOWS-SETUP.md`
   - `Setup Guides/PYTHON-SETUP.md`
+  - `Setup Guides/OPEN-MODELS-SETUP.md`
   - `Setup Guides/RESEARCHER-QUICKSTART.md`
 - Optional bootstrap scripts:
   - `scripts/bootstrap-macos.sh`
@@ -27,6 +28,7 @@ Pick your platform guide and follow it end-to-end:
 - Linux: [Setup Guides/LINUX-SETUP.md](Setup Guides/LINUX-SETUP.md)
 - Windows: [Setup Guides/WINDOWS-SETUP.md](Setup Guides/WINDOWS-SETUP.md)
 - Python setup/troubleshooting: [Setup Guides/PYTHON-SETUP.md](Setup Guides/PYTHON-SETUP.md)
+- More open/free model installs: [Setup Guides/OPEN-MODELS-SETUP.md](Setup Guides/OPEN-MODELS-SETUP.md)
 
 For non-technical users, use:
 
