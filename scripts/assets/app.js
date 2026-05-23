@@ -2010,10 +2010,10 @@ function renderUpdateUi(data) {
 
   if (notesUrl) {
     updateNotesLinkEl.href = notesUrl;
-    updateNotesLinkEl.style.display = "";
+    updateNotesLinkEl.hidden = false;
   } else {
     updateNotesLinkEl.href = "#";
-    updateNotesLinkEl.style.display = "none";
+    updateNotesLinkEl.hidden = true;
   }
 
   if (source === "git") {
