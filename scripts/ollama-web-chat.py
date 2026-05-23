@@ -8,6 +8,7 @@ import re
 import secrets
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -77,13 +78,28 @@ def resolve_default_stash_path() -> str:
     return os.path.expanduser(local_default)
 
 
+def resolve_default_pdf_rag_python() -> str:
+    candidates = []
+    if os.name == "nt":
+        candidates.append(str(REPO_ROOT / ".venv" / "Scripts" / "python.exe"))
+    candidates.append(str(REPO_ROOT / ".venv" / "bin" / "python"))
+    candidates.append(sys.executable)
+
+    for candidate in candidates:
+        expanded = os.path.expanduser(candidate)
+        if expanded and os.path.isfile(expanded):
+            return expanded
+
+    return candidates[0]
+
+
 PDF_RAG_SCRIPT = os.path.expanduser(
     os.environ.get("OLLAMA_WEB_PDF_RAG_SCRIPT", str(
         SCRIPT_DIR / "pdf_library_rag.py"))
 )
 PDF_RAG_PYTHON = os.path.expanduser(
     os.environ.get("OLLAMA_WEB_PDF_RAG_PYTHON",
-                   str(REPO_ROOT / ".venv/bin/python"))
+                   resolve_default_pdf_rag_python())
 )
 PDF_SOURCE = os.path.expanduser(
     os.environ.get("OLLAMA_WEB_PDF_SOURCE", resolve_default_pdf_source())
@@ -1379,6 +1395,398 @@ def save_instructions(instructions):
     save_state(state)
 
 
+TUTOR_LOCK = threading.Lock()
+TUTOR_SESSIONS: dict[str, dict] = {}
+TUTOR_MAX_SESSIONS = 100
+
+
+def _tutor_safe_text(value: object, fallback: str = "") -> str:
+    text = _normalize_whitespace(value)
+    return text if text else fallback
+
+
+def _ollama_generate_json(model: str, prompt: str, system: str = "", timeout: int = 120) -> dict:
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        "format": "json",
+        "keep_alive": "60s",
+    }
+    if system:
+        payload["system"] = system
+
+    req = Request(
+        f"{OLLAMA_BASE.rstrip('/')}/api/generate",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
+    except URLError as exc:
+        raise RuntimeError(
+            f"Cannot reach Ollama at {OLLAMA_BASE}: {exc}") from exc
+
+    try:
+        raw = json.loads(body) if body else {}
+    except Exception as exc:
+        raise RuntimeError(
+            "Invalid response from Ollama generate endpoint") from exc
+
+    response_text = str(raw.get("response", "") or "").strip()
+    parsed = _extract_json_object(response_text)
+    if not isinstance(parsed, dict):
+        parsed = {}
+    return parsed
+
+
+def _coerce_tutor_concepts(value: object) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    out: list[dict] = []
+    for idx, item in enumerate(value):
+        if not isinstance(item, dict):
+            continue
+        concept_id = _tutor_safe_text(item.get("concept_id"), f"c{idx + 1}")
+        title = _tutor_safe_text(item.get("title"), f"Concept {idx + 1}")
+        summary = _tutor_safe_text(item.get("summary"), "No summary provided.")
+        terms = item.get("terms", [])
+        if not isinstance(terms, list):
+            terms = []
+        cleaned_terms = []
+        for term in terms:
+            t = _tutor_safe_text(term)
+            if t and t not in cleaned_terms:
+                cleaned_terms.append(t)
+            if len(cleaned_terms) >= 10:
+                break
+
+        layer1 = _tutor_safe_text(item.get("layer_1"), summary)
+        layer2 = _tutor_safe_text(
+            item.get("layer_2"),
+            f"{summary} Key details: explain this concept with one concrete example and when to use it.",
+        )
+        layer3 = _tutor_safe_text(
+            item.get("layer_3"),
+            f"{summary} Deep dive: cover mechanics, tradeoffs, and common pitfalls.",
+        )
+
+        out.append(
+            {
+                "concept_id": concept_id,
+                "title": title,
+                "summary": summary,
+                "terms": cleaned_terms,
+                "layers": {
+                    "1": layer1,
+                    "2": layer2,
+                    "3": layer3,
+                },
+            }
+        )
+        if len(out) >= 9:
+            break
+    return out
+
+
+def _coerce_tutor_glossary(value: object) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    out: list[dict] = []
+    seen = set()
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        term = _tutor_safe_text(item.get("term"))
+        definition = _tutor_safe_text(item.get("definition"))
+        if not term or not definition:
+            continue
+        key = term.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"term": term, "definition": definition})
+        if len(out) >= 40:
+            break
+    return out
+
+
+def _fallback_tutor_plan(topic: str) -> dict:
+    topic_text = _tutor_safe_text(topic, "the topic")
+    concepts = [
+        {
+            "concept_id": "c1",
+            "title": "Foundations",
+            "summary": f"Define the scope and core vocabulary of {topic_text}.",
+            "terms": ["scope", "core idea", "context"],
+            "layers": {
+                "1": f"At a high level, {topic_text} starts with the problem it solves and why it matters.",
+                "2": f"Break {topic_text} into purpose, inputs, outputs, and one realistic example.",
+                "3": f"Analyze assumptions, boundary conditions, and failure cases in {topic_text}.",
+            },
+        },
+        {
+            "concept_id": "c2",
+            "title": "Core Components",
+            "summary": f"Identify the main parts that make {topic_text} work.",
+            "terms": ["component", "dependency", "interaction"],
+            "layers": {
+                "1": "List the key parts and what each one does.",
+                "2": "Show how parts interact through a concrete workflow.",
+                "3": "Explore tradeoffs between alternative component designs.",
+            },
+        },
+        {
+            "concept_id": "c3",
+            "title": "Practical Workflow",
+            "summary": f"Apply {topic_text} step-by-step in a practical scenario.",
+            "terms": ["workflow", "step", "validation"],
+            "layers": {
+                "1": "Walk through the shortest useful path.",
+                "2": "Add checkpoints and quality checks at each stage.",
+                "3": "Include error handling and optimization strategies.",
+            },
+        },
+        {
+            "concept_id": "c4",
+            "title": "Common Mistakes",
+            "summary": f"Review common pitfalls and misconceptions in {topic_text}.",
+            "terms": ["pitfall", "misconception", "debugging"],
+            "layers": {
+                "1": "Name frequent mistakes.",
+                "2": "Explain why they happen and how to avoid them.",
+                "3": "Compare subtle edge cases that look similar but behave differently.",
+            },
+        },
+        {
+            "concept_id": "c5",
+            "title": "Advanced Extensions",
+            "summary": f"Explore how to extend {topic_text} to more advanced use cases.",
+            "terms": ["extension", "scaling", "advanced pattern"],
+            "layers": {
+                "1": "Describe one advanced direction.",
+                "2": "Map prerequisites and implementation steps.",
+                "3": "Evaluate cost-benefit and long-term maintainability.",
+            },
+        },
+    ]
+    glossary = [
+        {"term": "Scope", "definition": "What is included in the lesson and what is out of bounds."},
+        {"term": "Dependency",
+         "definition": "A required concept or component that another concept relies on."},
+        {"term": "Tradeoff", "definition": "A design choice where improving one property may reduce another."},
+    ]
+    return {
+        "lesson_title": f"Tutor Plan: {topic_text}",
+        "overview": f"A structured learning path for {topic_text} from foundations to advanced application.",
+        "concepts": concepts,
+        "glossary": glossary,
+    }
+
+
+def _build_tutor_plan(topic: str, level: str, model: str, instructions: str = "") -> dict:
+    level_value = _tutor_safe_text(level, "intermediate").lower()
+    if level_value not in {"intro", "intermediate", "advanced"}:
+        level_value = "intermediate"
+
+    prompt = (
+        "You are a pedagogy planner. Return JSON only. "
+        "Create a concise lesson graph for the given topic with 5 to 8 ordered concepts. "
+        "Use this exact top-level schema: "
+        "{\"lesson_title\": string, \"overview\": string, \"concepts\": ["
+        "{\"concept_id\": string, \"title\": string, \"summary\": string, \"terms\": [string], "
+        "\"layer_1\": string, \"layer_2\": string, \"layer_3\": string}"
+        "], \"glossary\": [{\"term\": string, \"definition\": string}]}. "
+        "Each concept must represent one key step in learning order. Keep layer_1 brief, layer_2 medium, layer_3 deep. "
+        "No markdown, no extra keys.\n\n"
+        f"Topic: {topic}\n"
+        f"Target level: {level_value}\n"
+    )
+    parsed = _ollama_generate_json(model=model, prompt=prompt,
+                                   system=instructions, timeout=120)
+    concepts = _coerce_tutor_concepts(parsed.get("concepts", []))
+    glossary = _coerce_tutor_glossary(parsed.get("glossary", []))
+    title = _tutor_safe_text(parsed.get(
+        "lesson_title"), f"Tutor Plan: {topic}")
+    overview = _tutor_safe_text(
+        parsed.get("overview"),
+        f"Structured learning path for {topic}.",
+    )
+
+    if not concepts:
+        return _fallback_tutor_plan(topic)
+
+    if not glossary:
+        seen_terms = set()
+        auto_glossary = []
+        for concept in concepts:
+            for term in concept.get("terms", []):
+                key = term.lower()
+                if key in seen_terms:
+                    continue
+                seen_terms.add(key)
+                auto_glossary.append(
+                    {"term": term,
+                        "definition": f"Key term used in {concept.get('title', 'this concept')}."}
+                )
+                if len(auto_glossary) >= 20:
+                    break
+            if len(auto_glossary) >= 20:
+                break
+        glossary = auto_glossary
+
+    return {
+        "lesson_title": title,
+        "overview": overview,
+        "concepts": concepts,
+        "glossary": glossary,
+    }
+
+
+def _tutor_nav_prompts(session: dict) -> dict:
+    idx = int(session.get("current_index", 0))
+    concepts = session.get("concepts", [])
+    current = concepts[idx] if 0 <= idx < len(concepts) else {}
+    prev_title = concepts[idx - 1]["title"] if idx > 0 else ""
+    next_title = concepts[idx + 1]["title"] if idx + 1 < len(concepts) else ""
+    return {
+        "next": f"Move forward to {next_title}." if next_title else "Already at the final concept.",
+        "prev": f"Review previous concept: {prev_title}." if prev_title else "Already at the first concept.",
+        "zoom_in": f"Go deeper on {current.get('title', 'this concept')}",
+        "zoom_out": f"Summarize {current.get('title', 'this concept')} at a higher level",
+    }
+
+
+def _tutor_public_state(session: dict) -> dict:
+    concepts = session.get("concepts", [])
+    idx = int(session.get("current_index", 0))
+    idx = max(0, min(len(concepts) - 1, idx)) if concepts else 0
+    zoom = int(session.get("zoom_level", 2))
+    zoom = max(1, min(3, zoom))
+
+    concept = concepts[idx] if concepts else {}
+    concept_layers = concept.get(
+        "layers", {}) if isinstance(concept, dict) else {}
+    rendered = _tutor_safe_text(
+        concept_layers.get(str(zoom)), _tutor_safe_text(
+            concept.get("summary", ""))
+    )
+
+    return {
+        "ok": True,
+        "session_id": session.get("session_id"),
+        "lesson_title": session.get("lesson_title", "Tutor Session"),
+        "overview": session.get("overview", ""),
+        "topic": session.get("topic", ""),
+        "level": session.get("level", "intermediate"),
+        "model": session.get("model", ""),
+        "current_index": idx,
+        "total_concepts": len(concepts),
+        "zoom_level": zoom,
+        "current_concept": {
+            "concept_id": concept.get("concept_id", ""),
+            "title": concept.get("title", ""),
+            "summary": concept.get("summary", ""),
+            "terms": concept.get("terms", []),
+            "content": rendered,
+        },
+        "concepts": [
+            {
+                "concept_id": c.get("concept_id", ""),
+                "title": c.get("title", ""),
+                "summary": c.get("summary", ""),
+            }
+            for c in concepts
+        ],
+        "glossary": session.get("glossary", []),
+        "nav_prompts": _tutor_nav_prompts(session),
+    }
+
+
+def create_tutor_session(topic: str, level: str, model: str, instructions: str = "") -> dict:
+    topic_value = _tutor_safe_text(topic)
+    if not topic_value:
+        raise RuntimeError("topic is required")
+
+    plan = _build_tutor_plan(topic=topic_value, level=level,
+                             model=model, instructions=instructions)
+    session_id = uuid.uuid4().hex
+    session = {
+        "session_id": session_id,
+        "created_at": int(time.time()),
+        "topic": topic_value,
+        "level": _tutor_safe_text(level, "intermediate"),
+        "model": _tutor_safe_text(model),
+        "lesson_title": plan.get("lesson_title", f"Tutor Plan: {topic_value}"),
+        "overview": plan.get("overview", ""),
+        "concepts": plan.get("concepts", []),
+        "glossary": plan.get("glossary", []),
+        "current_index": 0,
+        "zoom_level": 2,
+    }
+
+    with TUTOR_LOCK:
+        TUTOR_SESSIONS[session_id] = session
+        if len(TUTOR_SESSIONS) > TUTOR_MAX_SESSIONS:
+            oldest = sorted(
+                TUTOR_SESSIONS.items(), key=lambda kv: kv[1].get("created_at", 0)
+            )
+            for sid, _ in oldest[: max(0, len(TUTOR_SESSIONS) - TUTOR_MAX_SESSIONS)]:
+                TUTOR_SESSIONS.pop(sid, None)
+
+    return _tutor_public_state(session)
+
+
+def get_tutor_session(session_id: str) -> dict:
+    sid = _tutor_safe_text(session_id)
+    if not sid:
+        raise RuntimeError("session_id is required")
+    with TUTOR_LOCK:
+        session = TUTOR_SESSIONS.get(sid)
+        if not session:
+            raise RuntimeError("Tutor session not found")
+        return _tutor_public_state(session)
+
+
+def navigate_tutor_session(session_id: str, action: str) -> dict:
+    sid = _tutor_safe_text(session_id)
+    act = _tutor_safe_text(action).lower()
+    if not sid:
+        raise RuntimeError("session_id is required")
+    if act not in {"next", "prev", "zoom_in", "zoom_out"}:
+        raise RuntimeError(
+            "action must be one of: next, prev, zoom_in, zoom_out")
+
+    with TUTOR_LOCK:
+        session = TUTOR_SESSIONS.get(sid)
+        if not session:
+            raise RuntimeError("Tutor session not found")
+
+        concepts = session.get("concepts", [])
+        if not concepts:
+            raise RuntimeError("Tutor session has no concepts")
+
+        if act == "next":
+            session["current_index"] = min(
+                len(concepts) - 1, int(session.get("current_index", 0)) + 1)
+        elif act == "prev":
+            session["current_index"] = max(
+                0, int(session.get("current_index", 0)) - 1)
+        elif act == "zoom_in":
+            session["zoom_level"] = min(
+                3, int(session.get("zoom_level", 2)) + 1)
+        elif act == "zoom_out":
+            session["zoom_level"] = max(
+                1, int(session.get("zoom_level", 2)) - 1)
+
+        return _tutor_public_state(session)
+
+
 HTML = """<!doctype html>
 <html lang="en">
 <head>
@@ -2160,6 +2568,71 @@ HTML = """<!doctype html>
       font-size: 0.74rem;
       margin-top: 0.15rem;
     }
+    .tutor-panel {
+      margin-top: 0.7rem;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: linear-gradient(180deg, #0f172a, #0b1220);
+      padding: 0.7rem;
+      display: grid;
+      gap: 0.55rem;
+    }
+    .tutor-hidden {
+      display: none;
+    }
+    .tutor-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 0.5rem;
+      align-items: baseline;
+      flex-wrap: wrap;
+    }
+    .tutor-title {
+      margin: 0;
+      font-size: 0.95rem;
+      font-weight: 700;
+    }
+    .tutor-meta {
+      color: var(--muted);
+      font-size: 0.76rem;
+    }
+    .tutor-content {
+      border: 1px solid #334155;
+      border-radius: 10px;
+      background: #0b1220;
+      padding: 0.55rem;
+      font-size: 0.86rem;
+      line-height: 1.4;
+      white-space: pre-wrap;
+    }
+    .tutor-glossary {
+      border: 1px solid #334155;
+      border-radius: 10px;
+      background: #0b1220;
+      padding: 0.5rem;
+      max-height: 9rem;
+      overflow: auto;
+      display: grid;
+      gap: 0.35rem;
+    }
+    .tutor-glossary-item {
+      font-size: 0.78rem;
+      color: var(--muted);
+      line-height: 1.35;
+    }
+    .tutor-glossary-item strong {
+      color: var(--ink);
+    }
+    .tutor-actions {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 0.4rem;
+    }
+    .tutor-actions button {
+      min-width: 0;
+      padding: 0.42rem 0.5rem;
+      font-size: 0.75rem;
+    }
     @media (max-width: 860px) {
       .shell {
         grid-template-columns: 1fr;
@@ -2218,6 +2691,19 @@ HTML = """<!doctype html>
         <select id="model"></select>
         <button id="refresh" class="btn-soft btn-mini" type="button">Refresh</button>
       </div>
+
+      <label for="appMode">Mode</label>
+      <select id="appMode">
+        <option value="chat">Chat</option>
+        <option value="tutor">Tutor</option>
+      </select>
+
+      <label for="tutorLevel">Tutor Depth</label>
+      <select id="tutorLevel">
+        <option value="intro">Intro</option>
+        <option value="intermediate" selected>Intermediate</option>
+        <option value="advanced">Advanced</option>
+      </select>
 
       <details class="sidebar-accordion" id="instructionsAccordion">
         <summary>Running Instructions</summary>
@@ -2278,6 +2764,21 @@ HTML = """<!doctype html>
       </header>
 
       <div id="messages" class="messages"></div>
+
+      <div id="tutorPanel" class="tutor-panel tutor-hidden">
+        <div class="tutor-header">
+          <h3 id="tutorConceptTitle" class="tutor-title">Tutor Concept</h3>
+          <div id="tutorConceptMeta" class="tutor-meta">Ready</div>
+        </div>
+        <div id="tutorConceptContent" class="tutor-content">Start Tutor mode with a prompt to generate a structured lesson.</div>
+        <div id="tutorGlossary" class="tutor-glossary"></div>
+        <div class="tutor-actions">
+          <button id="tutorPrev" class="btn-soft" type="button">Previous</button>
+          <button id="tutorNext" class="btn-soft" type="button">Next</button>
+          <button id="tutorZoomOut" class="btn-soft" type="button">Zoom Out</button>
+          <button id="tutorZoomIn" class="btn-soft" type="button">Zoom In</button>
+        </div>
+      </div>
 
       <div class="composer">
         <textarea id="prompt" placeholder="Ask the model something useful..."></textarea>
@@ -2360,6 +2861,8 @@ HTML = """<!doctype html>
     };
 
     const modelEl = document.getElementById('model');
+    const appModeEl = document.getElementById('appMode');
+    const tutorLevelEl = document.getElementById('tutorLevel');
     const promptEl = document.getElementById('prompt');
     const sendEl = document.getElementById('send');
     const cancelEl = document.getElementById('cancel');
@@ -2414,6 +2917,15 @@ HTML = """<!doctype html>
     const docsSelectNoneEl = document.getElementById('docsSelectNone');
     const docsCloseEl = document.getElementById('docsClose');
     const docsSearchEl = document.getElementById('docsSearch');
+    const tutorPanelEl = document.getElementById('tutorPanel');
+    const tutorConceptTitleEl = document.getElementById('tutorConceptTitle');
+    const tutorConceptMetaEl = document.getElementById('tutorConceptMeta');
+    const tutorConceptContentEl = document.getElementById('tutorConceptContent');
+    const tutorGlossaryEl = document.getElementById('tutorGlossary');
+    const tutorPrevEl = document.getElementById('tutorPrev');
+    const tutorNextEl = document.getElementById('tutorNext');
+    const tutorZoomOutEl = document.getElementById('tutorZoomOut');
+    const tutorZoomInEl = document.getElementById('tutorZoomIn');
     let lastUserPrompt = '';
     let libraryDocs = [];
     let libraryGroups = [];
@@ -2427,6 +2939,8 @@ HTML = """<!doctype html>
     let promptHistoryIndex = -1;
     let pinnedPrompts = [];
     let syncSnapshot = null;
+    let tutorSessionId = '';
+    let tutorState = null;
 
     const DOC_FILTER_STORAGE_KEY = 'ollama_web_excluded_docs_v1';
     const PROMPT_HISTORY_STORAGE_KEY = 'ollama_web_prompt_history_v1';
@@ -2716,6 +3230,97 @@ HTML = """<!doctype html>
       if (state === 'ok') statusDotEl.classList.add('ok');
       if (state === 'err') statusDotEl.classList.add('err');
       statusTextEl.textContent = text;
+    }
+
+    function isTutorMode() {
+      return String(appModeEl && appModeEl.value || 'chat') === 'tutor';
+    }
+
+    function setTutorPanelVisibility(isVisible) {
+      if (!tutorPanelEl) return;
+      tutorPanelEl.classList.toggle('tutor-hidden', !isVisible);
+    }
+
+    function renderTutorGlossary(glossary) {
+      tutorGlossaryEl.innerHTML = '';
+      const items = Array.isArray(glossary) ? glossary : [];
+      if (!items.length) {
+        const empty = document.createElement('div');
+        empty.className = 'tutor-glossary-item';
+        empty.textContent = 'No glossary terms generated yet.';
+        tutorGlossaryEl.appendChild(empty);
+        return;
+      }
+      for (const row of items.slice(0, 20)) {
+        const line = document.createElement('div');
+        line.className = 'tutor-glossary-item';
+        const term = escapeHtml(row.term || 'Term');
+        const definition = escapeHtml(row.definition || '');
+        line.innerHTML = `<strong>${term}:</strong> ${definition}`;
+        tutorGlossaryEl.appendChild(line);
+      }
+    }
+
+    function renderTutorState(state) {
+      tutorState = state || null;
+      if (!state || !state.current_concept) {
+        setTutorPanelVisibility(false);
+        return;
+      }
+
+      setTutorPanelVisibility(true);
+      const concept = state.current_concept || {};
+      const index = Number(state.current_index || 0) + 1;
+      const total = Number(state.total_concepts || 0);
+      const zoom = Number(state.zoom_level || 2);
+
+      tutorConceptTitleEl.textContent = concept.title || 'Tutor Concept';
+      tutorConceptMetaEl.textContent = `Concept ${index}/${total} | Zoom L${zoom}`;
+      tutorConceptContentEl.textContent = concept.content || concept.summary || '';
+      renderTutorGlossary(state.glossary || []);
+
+      tutorPrevEl.disabled = index <= 1;
+      tutorNextEl.disabled = index >= total;
+      tutorZoomOutEl.disabled = zoom <= 1;
+      tutorZoomInEl.disabled = zoom >= 3;
+    }
+
+    async function startTutorSession(topic, model, instructions) {
+      const level = String(tutorLevelEl && tutorLevelEl.value || 'intermediate');
+      const res = await fetch('/api/tutor/session/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ topic, model, level, instructions }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      tutorSessionId = String(data.session_id || '');
+      renderTutorState(data);
+      return data;
+    }
+
+    async function navigateTutor(action) {
+      if (!tutorSessionId) {
+        metaEl.textContent = 'Start a Tutor session first';
+        return;
+      }
+      const res = await fetch('/api/tutor/session/navigate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: tutorSessionId, action }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      renderTutorState(data);
+      const nav = data.nav_prompts || {};
+      if (action === 'next' && nav.next) metaEl.textContent = nav.next;
+      if (action === 'prev' && nav.prev) metaEl.textContent = nav.prev;
+      if (action === 'zoom_in' && nav.zoom_in) metaEl.textContent = nav.zoom_in;
+      if (action === 'zoom_out' && nav.zoom_out) metaEl.textContent = nav.zoom_out;
     }
 
     function formatAbstractEvalResult(data) {
@@ -4364,7 +4969,12 @@ HTML = """<!doctype html>
       activeRequestController = requestController;
       try {
         let answer = '';
-        if (usePdfLibrary) {
+        if (isTutorMode()) {
+          const data = await startTutorSession(prompt, model, instructions);
+          const concept = data.current_concept || {};
+          answer = `${data.lesson_title || 'Tutor Plan'}\n\n${data.overview || ''}\n\nCurrent concept: ${concept.title || ''}\n\n${concept.content || concept.summary || ''}`;
+          await addMessageAndStore('assistant', answer);
+        } else if (usePdfLibrary) {
           const filters = buildDocFiltersForRequest();
           if (libraryDocs.length) {
             const selectionError = buildDocSelectionError(filters);
@@ -4413,7 +5023,14 @@ HTML = """<!doctype html>
         }
 
         const elapsedMs = Math.round(performance.now() - start);
-        metaEl.textContent = `Model: ${model}${usePdfLibrary ? ' + PDF' : ''} | ${elapsedMs} ms`;
+        if (isTutorMode()) {
+          const idx = Number((tutorState && tutorState.current_index) || 0) + 1;
+          const total = Number((tutorState && tutorState.total_concepts) || 0);
+          const zoom = Number((tutorState && tutorState.zoom_level) || 2);
+          metaEl.textContent = `Tutor | ${model} | Concept ${idx}/${total} | L${zoom} | ${elapsedMs} ms`;
+        } else {
+          metaEl.textContent = `Model: ${model}${usePdfLibrary ? ' + PDF' : ''} | ${elapsedMs} ms`;
+        }
       } catch (err) {
         if (err && err.name === 'AbortError') {
           // Keep the canceled query in the input so users can quickly adjust and resend.
@@ -4524,6 +5141,44 @@ HTML = """<!doctype html>
       }
       metaEl.textContent = 'Ungrounded mode enabled';
     });
+    appModeEl.addEventListener('change', () => {
+      const tutor = isTutorMode();
+      if (tutor) {
+        setTutorPanelVisibility(Boolean(tutorState));
+        metaEl.textContent = 'Tutor mode enabled';
+      } else {
+        setTutorPanelVisibility(false);
+        metaEl.textContent = 'Chat mode enabled';
+      }
+    });
+    tutorPrevEl.addEventListener('click', async () => {
+      try {
+        await navigateTutor('prev');
+      } catch (err) {
+        addMessage('system', `Tutor navigation failed: ${err.message}`);
+      }
+    });
+    tutorNextEl.addEventListener('click', async () => {
+      try {
+        await navigateTutor('next');
+      } catch (err) {
+        addMessage('system', `Tutor navigation failed: ${err.message}`);
+      }
+    });
+    tutorZoomOutEl.addEventListener('click', async () => {
+      try {
+        await navigateTutor('zoom_out');
+      } catch (err) {
+        addMessage('system', `Tutor navigation failed: ${err.message}`);
+      }
+    });
+    tutorZoomInEl.addEventListener('click', async () => {
+      try {
+        await navigateTutor('zoom_in');
+      } catch (err) {
+        addMessage('system', `Tutor navigation failed: ${err.message}`);
+      }
+    });
     studyBriefEl.addEventListener('click', createStudyBrief);
     makeBibliographyEl.addEventListener(
         'click', generateBibliographyFromLatestSources);
@@ -4575,6 +5230,7 @@ HTML = """<!doctype html>
     pinnedPrompts = loadPinnedPrompts();
     promptHistoryIndex = promptHistory.length;
     renderPromptHistoryDropdown();
+    setTutorPanelVisibility(false);
     loadHistory();
     loadInstructions();
     loadModels();
@@ -5167,6 +5823,29 @@ class Handler(BaseHTTPRequestHandler):
                 "application/json; charset=utf-8",
             )
 
+        if route_path == "/api/tutor/session":
+            params = parse_qs(parsed_url.query)
+            session_id = str(params.get("id", [""])[0] or "").strip()
+            if not session_id:
+                return self._send(
+                    400,
+                    json.dumps({"error": "id is required"}, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+            try:
+                payload = get_tutor_session(session_id)
+                return self._send(
+                    200,
+                    json.dumps(payload, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+            except Exception as exc:
+                return self._send(
+                    404,
+                    json.dumps({"error": str(exc)}, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+
         if route_path == "/api/pdf/file":
             params = parse_qs(parsed_url.query)
             pdf_path = params.get("path", [""])[0]
@@ -5533,6 +6212,86 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 return self._send(
                     502,
+                    json.dumps({"error": str(exc)}, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+
+        if route_path == "/api/tutor/session/start":
+            payload = self._read_json_body()
+            if payload is None:
+                return
+
+            topic = payload.get("topic", "")
+            model = payload.get("model", "")
+            level = payload.get("level", "intermediate")
+            instructions = payload.get("instructions", "")
+
+            if not isinstance(topic, str) or not topic.strip():
+                return self._send(
+                    400,
+                    json.dumps({"error": "topic is required"},
+                               ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+            if not isinstance(model, str) or not model.strip():
+                return self._send(
+                    400,
+                    json.dumps({"error": "model is required"},
+                               ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+
+            try:
+                result = create_tutor_session(
+                    topic=topic.strip(),
+                    level=str(level),
+                    model=model.strip(),
+                    instructions=str(instructions or ""),
+                )
+                return self._send(
+                    200,
+                    json.dumps(result, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+            except Exception as exc:
+                return self._send(
+                    502,
+                    json.dumps({"error": str(exc)}, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+
+        if route_path == "/api/tutor/session/navigate":
+            payload = self._read_json_body()
+            if payload is None:
+                return
+
+            session_id = str(payload.get("session_id", "") or "").strip()
+            action = str(payload.get("action", "") or "").strip()
+            if not session_id:
+                return self._send(
+                    400,
+                    json.dumps({"error": "session_id is required"},
+                               ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+            if not action:
+                return self._send(
+                    400,
+                    json.dumps({"error": "action is required"},
+                               ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+
+            try:
+                result = navigate_tutor_session(session_id, action)
+                return self._send(
+                    200,
+                    json.dumps(result, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+            except Exception as exc:
+                return self._send(
+                    400,
                     json.dumps({"error": str(exc)}, ensure_ascii=True),
                     "application/json; charset=utf-8",
                 )
