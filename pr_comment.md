@@ -1,7 +1,7 @@
 # Code Review Notes — PR #9
 
 Branch: fixes -> main
-URL: https://github.com/reprahkcin/ollama-librarian/pull/9
+URL: <https://github.com/reprahkcin/ollama-librarian/pull/9>
 
 This document is a running review log. Earlier findings below were addressed during follow-up commits, unless explicitly marked open.
 
