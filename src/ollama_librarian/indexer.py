@@ -1304,7 +1304,8 @@ def _fetch_ollama_model_names(base_url: str, timeout: int = 10) -> list[str]:
         detail = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
     except URLError as exc:
-        raise RuntimeError(f"Cannot reach Ollama at {base_url}: {exc}") from exc
+        raise RuntimeError(
+            f"Cannot reach Ollama at {base_url}: {exc}") from exc
 
     data = json.loads(payload) if payload else {}
     models = data.get("models", []) if isinstance(data, dict) else []
@@ -1322,7 +1323,8 @@ def _model_available(required_model: str, available_models: list[str]) -> bool:
     required = normalize_text(required_model)
     if not required:
         return False
-    avail_set = {normalize_text(x) for x in available_models if normalize_text(x)}
+    avail_set = {normalize_text(x)
+                 for x in available_models if normalize_text(x)}
     if required in avail_set:
         return True
 
@@ -1340,7 +1342,8 @@ def _doctor_check_ollama_and_models(base_url: str, required_models: list[str], t
     except Exception as exc:
         return [
             _doctor_result("ollama_reachable", False, str(exc)),
-            _doctor_result("required_models", False, "Model checks skipped because Ollama is unreachable"),
+            _doctor_result("required_models", False,
+                           "Model checks skipped because Ollama is unreachable"),
         ]
 
     checks = [

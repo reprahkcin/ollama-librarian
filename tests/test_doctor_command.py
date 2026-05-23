@@ -17,7 +17,8 @@ def load_rag_module() -> types.ModuleType:
     module_name = f"pdf_library_rag_doctor_test_{os.getpid()}"
     spec = importlib.util.spec_from_file_location(module_name, RAG_PATH)
     if not spec or not spec.loader:
-        raise RuntimeError("Failed to create import spec for pdf_library_rag.py")
+        raise RuntimeError(
+            "Failed to create import spec for pdf_library_rag.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -37,7 +38,8 @@ class DoctorCommandTests(unittest.TestCase):
         self.assertTrue(
             self.rag._model_available("qwen2.5:14b", ["qwen2.5:latest"])
         )
-        self.assertFalse(self.rag._model_available("mistral:7b", ["qwen2.5:latest"]))
+        self.assertFalse(self.rag._model_available(
+            "mistral:7b", ["qwen2.5:latest"]))
 
     def test_doctor_command_returns_success_when_all_checks_pass(self):
         with tempfile.TemporaryDirectory(prefix="doctor-test-") as td:
