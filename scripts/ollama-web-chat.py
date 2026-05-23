@@ -10,7 +10,8 @@ _original_name = __name__
 _original_file = __file__
 globals()["__name__"] = "ollama_librarian.web"
 globals()["__file__"] = str(WEB_MODULE_PATH)
-exec(compile(WEB_MODULE_PATH.read_text(encoding="utf-8"), str(WEB_MODULE_PATH), "exec"), globals(), globals())
+exec(compile(WEB_MODULE_PATH.read_text(encoding="utf-8"),
+     str(WEB_MODULE_PATH), "exec"), globals(), globals())
 globals()["__name__"] = _original_name
 globals()["__file__"] = _original_file
 
