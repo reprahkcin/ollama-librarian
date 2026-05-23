@@ -20,7 +20,9 @@ const nativeFetch = window.fetch.bind(window);
 window.fetch = (input, init = undefined) => {
   const reqInit = init ? Object.assign({}, init) : {};
   const inheritedHeaders =
-    !reqInit.headers && typeof Request !== "undefined" && input instanceof Request
+    !reqInit.headers &&
+    typeof Request !== "undefined" &&
+    input instanceof Request
       ? input.headers
       : undefined;
   const headers = new Headers(reqInit.headers || inheritedHeaders || {});
