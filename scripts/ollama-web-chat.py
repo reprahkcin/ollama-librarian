@@ -104,18 +104,23 @@ class WebConfig:
                 )
             )
         )
-        update_apply_mode = str(env.get("OLLAMA_WEB_UPDATE_APPLY_MODE", "git")).strip().lower()
+        update_apply_mode = str(
+            env.get("OLLAMA_WEB_UPDATE_APPLY_MODE", "git")).strip().lower()
         update_apply_mode_resolved = (
-            update_apply_mode if update_apply_mode in {"git", "script"} else "git"
+            update_apply_mode if update_apply_mode in {
+                "git", "script"} else "git"
         )
 
         return cls(
             host=str(env.get("OLLAMA_WEB_HOST", "127.0.0.1")).strip(),
             port=_env_int(env, "OLLAMA_WEB_PORT", 8088),
-            ollama_base=str(env.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")),
+            ollama_base=str(env.get("OLLAMA_BASE_URL",
+                            "http://127.0.0.1:11434")),
             api_key=str(env.get("OLLAMA_WEB_API_KEY", "")),
-            max_body_bytes=_env_int(env, "OLLAMA_WEB_MAX_BODY_BYTES", 1048576, min_value=1024),
-            max_upload_bytes=_env_int(env, "OLLAMA_WEB_MAX_UPLOAD_BYTES", 536870912, min_value=1024),
+            max_body_bytes=_env_int(
+                env, "OLLAMA_WEB_MAX_BODY_BYTES", 1048576, min_value=1024),
+            max_upload_bytes=_env_int(
+                env, "OLLAMA_WEB_MAX_UPLOAD_BYTES", 536870912, min_value=1024),
             abstract_need_max_chars=_env_int(
                 env, "OLLAMA_WEB_ABSTRACT_NEED_MAX_CHARS", 3000, min_value=64
             ),
@@ -125,32 +130,44 @@ class WebConfig:
             default_state_dir=default_state_dir,
             history_path=history_path,
             pdf_rag_script=os.path.expanduser(
-                str(env.get("OLLAMA_WEB_PDF_RAG_SCRIPT", str(SCRIPT_DIR / "pdf_library_rag.py")))
+                str(env.get("OLLAMA_WEB_PDF_RAG_SCRIPT",
+                    str(SCRIPT_DIR / "pdf_library_rag.py")))
             ),
             pdf_rag_python=os.path.expanduser(
-                str(env.get("OLLAMA_WEB_PDF_RAG_PYTHON", str(REPO_ROOT / ".venv/bin/python")))
+                str(env.get("OLLAMA_WEB_PDF_RAG_PYTHON",
+                    str(REPO_ROOT / ".venv/bin/python")))
             ),
             pdf_source=os.path.expanduser(
                 str(env.get("OLLAMA_WEB_PDF_SOURCE", resolve_default_pdf_source()))
             ),
             pdf_index_db=os.path.expanduser(
-                str(env.get("OLLAMA_WEB_PDF_INDEX_DB", str(default_state_dir / "pdf-rag.sqlite")))
+                str(env.get("OLLAMA_WEB_PDF_INDEX_DB", str(
+                    default_state_dir / "pdf-rag.sqlite")))
             ),
-            pdf_embed_model=str(env.get("OLLAMA_WEB_PDF_EMBED_MODEL", "nomic-embed-text")),
+            pdf_embed_model=str(
+                env.get("OLLAMA_WEB_PDF_EMBED_MODEL", "nomic-embed-text")),
             pdf_top_k=_env_int(env, "OLLAMA_WEB_PDF_TOP_K", 6),
-            pdf_ocr_on_sync=_env_bool_true_unless_false(env, "OLLAMA_WEB_PDF_OCR_ON_SYNC", "1"),
+            pdf_ocr_on_sync=_env_bool_true_unless_false(
+                env, "OLLAMA_WEB_PDF_OCR_ON_SYNC", "1"),
             pdf_ocr_lang=str(env.get("OLLAMA_WEB_PDF_OCR_LANG", "eng")),
-            pdf_ocr_jobs=_env_int(env, "OLLAMA_WEB_PDF_OCR_JOBS", 2, min_value=1),
-            pdf_ocr_timeout=_env_int(env, "OLLAMA_WEB_PDF_OCR_TIMEOUT", 1800, min_value=60),
+            pdf_ocr_jobs=_env_int(
+                env, "OLLAMA_WEB_PDF_OCR_JOBS", 2, min_value=1),
+            pdf_ocr_timeout=_env_int(
+                env, "OLLAMA_WEB_PDF_OCR_TIMEOUT", 1800, min_value=60),
             stash_path=stash_path,
-            update_state_path=Path(os.path.dirname(history_path) or str(REPO_ROOT)) / "update-state.json",
-            update_repo_owner=str(env.get("OLLAMA_WEB_UPDATE_REPO_OWNER", "reprahkcin")),
-            update_repo_name=str(env.get("OLLAMA_WEB_UPDATE_REPO_NAME", "ollama-librarian")),
-            update_github_token=str(env.get("OLLAMA_WEB_UPDATE_GITHUB_TOKEN", "")),
+            update_state_path=Path(os.path.dirname(
+                history_path) or str(REPO_ROOT)) / "update-state.json",
+            update_repo_owner=str(
+                env.get("OLLAMA_WEB_UPDATE_REPO_OWNER", "reprahkcin")),
+            update_repo_name=str(
+                env.get("OLLAMA_WEB_UPDATE_REPO_NAME", "ollama-librarian")),
+            update_github_token=str(
+                env.get("OLLAMA_WEB_UPDATE_GITHUB_TOKEN", "")),
             update_git_branch=str(env.get("OLLAMA_WEB_UPDATE_BRANCH", "main")),
             update_apply_mode=update_apply_mode,
             update_apply_mode_resolved=update_apply_mode_resolved,
-            update_events_max=_read_update_events_max(env.get("OLLAMA_WEB_UPDATE_EVENTS_MAX", "200")),
+            update_events_max=_read_update_events_max(
+                env.get("OLLAMA_WEB_UPDATE_EVENTS_MAX", "200")),
         )
 
 

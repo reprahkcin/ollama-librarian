@@ -332,10 +332,13 @@ class RagCliConfig:
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "RagCliConfig":
         return cls(
-            ollama_base=str(env.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")),
-            embed_model=str(env.get("OLLAMA_WEB_PDF_EMBED_MODEL", "nomic-embed-text")),
+            ollama_base=str(env.get("OLLAMA_BASE_URL",
+                            "http://127.0.0.1:11434")),
+            embed_model=str(
+                env.get("OLLAMA_WEB_PDF_EMBED_MODEL", "nomic-embed-text")),
             index_db=os.path.expanduser(
-                str(env.get("OLLAMA_WEB_PDF_INDEX_DB", resolve_default_index_db_path()))
+                str(env.get("OLLAMA_WEB_PDF_INDEX_DB",
+                    resolve_default_index_db_path()))
             ),
             source_dir=os.path.expanduser(
                 str(env.get("OLLAMA_WEB_PDF_SOURCE", resolve_default_pdf_source()))
@@ -344,7 +347,8 @@ class RagCliConfig:
             ask_top_k=max(1, _env_int(env, "OLLAMA_WEB_PDF_TOP_K", 6)),
             ocr_lang=str(env.get("OLLAMA_WEB_PDF_OCR_LANG", "eng")),
             ocr_jobs=max(1, _env_int(env, "OLLAMA_WEB_PDF_OCR_JOBS", 2)),
-            ocr_timeout=max(60, _env_int(env, "OLLAMA_WEB_PDF_OCR_TIMEOUT", 1800)),
+            ocr_timeout=max(60, _env_int(
+                env, "OLLAMA_WEB_PDF_OCR_TIMEOUT", 1800)),
         )
 
 
