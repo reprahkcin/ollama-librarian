@@ -9,6 +9,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 APP_PATH = REPO_ROOT / "scripts" / "ollama-web-chat.py"
+INDEX_TEMPLATE_PATH = REPO_ROOT / "scripts" / "templates" / "index.html"
 
 
 def load_app_module(host: str = "127.0.0.1", api_key: str = "") -> types.ModuleType:
@@ -98,7 +99,7 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertTrue(allowed)
 
     def test_citation_rendering_escapes_html_before_innerhtml(self):
-        source = APP_PATH.read_text(encoding="utf-8")
+        source = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
         self.assertRegex(
             source,
             re.compile(
