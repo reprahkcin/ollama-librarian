@@ -9,8 +9,8 @@ $WebPidFile = Join-Path $RunDir 'web.pid'
 
 function Stop-FromPidFile($Path) {
   if (Test-Path $Path) {
-    $pid = Get-Content $Path | Select-Object -First 1
-    if ($pid) { Stop-Process -Id $pid -Force }
+    $procId = (Get-Content $Path | Select-Object -First 1).ToString().Trim()
+    if ($procId -match '^[0-9]+$') { Stop-Process -Id ([int]$procId) -Force }
     Remove-Item $Path -Force
   }
 }
