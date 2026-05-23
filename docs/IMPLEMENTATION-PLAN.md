@@ -118,7 +118,7 @@ Suggested commit messages:
 
 ### Phase 2 - Cross-platform default paths
 
-Status: TODO
+Status: DONE
 
 Scope:
 
@@ -306,17 +306,17 @@ Suggested commit message:
 
 Update this table as we complete each phase.
 
-| Phase | Branch | Commit SHA | Summary                                                        | Tests run                                                                                            | Result  |
-| ----- | ------ | ---------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ------- |
-| 0     | main   |            | Added route harness and baseline GET/POST route contract tests | python -m unittest tests/test_routes.py tests/test_security_regressions.py tests/test_update_flow.py | pass    |
+| Phase | Branch | Commit SHA | Summary                                                                             | Tests run                                                                                                                                                   | Result  |
+| ----- | ------ | ---------- | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| 0     | main   |            | Added route harness and baseline GET/POST route contract tests                      | python -m unittest tests/test_routes.py tests/test_security_regressions.py tests/test_update_flow.py                                                        | pass    |
 | 1     | main   |            | Added route contract coverage plus deterministic RAG and abstract helper unit tests | python -m unittest tests/test_abstract_helpers.py tests/test_rag_units.py tests/test_routes.py tests/test_security_regressions.py tests/test_update_flow.py | pass    |
-| 2     |        |            |                                                                |                                                                                                      | pending |
-| 3     |        |            |                                                                |                                                                                                      | pending |
-| 4     |        |            |                                                                |                                                                                                      | pending |
-| 5     |        |            |                                                                |                                                                                                      | pending |
-| 6     |        |            |                                                                |                                                                                                      | pending |
-| 7     |        |            |                                                                |                                                                                                      | pending |
-| 8     |        |            |                                                                |                                                                                                      | pending |
+| 2     | main   |            | Added cross-platform default state/source paths in web+indexer scripts with path-default tests | python -m unittest tests/test_path_defaults.py tests/test_abstract_helpers.py tests/test_rag_units.py tests/test_routes.py tests/test_security_regressions.py tests/test_update_flow.py | pass |
+| 3     |        |            |                                                                                     |                                                                                                                                                             | pending |
+| 4     |        |            |                                                                                     |                                                                                                                                                             | pending |
+| 5     |        |            |                                                                                     |                                                                                                                                                             | pending |
+| 6     |        |            |                                                                                     |                                                                                                                                                             | pending |
+| 7     |        |            |                                                                                     |                                                                                                                                                             | pending |
+| 8     |        |            |                                                                                     |                                                                                                                                                             | pending |
 
 ## Regroup Rules
 

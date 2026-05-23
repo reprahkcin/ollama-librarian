@@ -4,6 +4,7 @@ import json
 import logging
 import mimetypes
 import os
+import platform
 import re
 import secrets
 import sqlite3
@@ -33,48 +34,59 @@ ABSTRACT_TEXT_MAX_CHARS = max(
     256, int(os.environ.get("OLLAMA_WEB_ABSTRACT_TEXT_MAX_CHARS", "12000"))
 )
 SUPPORTED_DOC_EXTENSIONS = {".pdf", ".txt", ".md", ".html", ".htm", ".epub"}
-HISTORY_PATH = os.path.expanduser(
-    os.environ.get(
-        "OLLAMA_WEB_HISTORY_PATH",
-        "~/Library/Application Support/home-network-setup/ollama-web-chat-history.json",
-    )
-)
-HISTORY_LOCK = threading.Lock()
-PDF_LOCK = threading.Lock()
-STASH_LOCK = threading.Lock()
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 ASSET_ROOT = SCRIPT_DIR / "assets"
 
 
+def resolve_default_state_dir() -> Path:
+    system = platform.system().lower()
+    if system == "darwin":
+        return Path.home() / "Library" / "Application Support" / "ollama-librarian"
+    if system == "windows":
+        appdata = str(os.environ.get("APPDATA", "")).strip()
+        if appdata:
+            return Path(os.path.expanduser(appdata)) / "ollama-librarian"
+        return Path.home() / "AppData" / "Roaming" / "ollama-librarian"
+
+    xdg_data_home = str(os.environ.get("XDG_DATA_HOME", "")).strip()
+    if xdg_data_home:
+        return Path(os.path.expanduser(xdg_data_home)) / "ollama-librarian"
+    return Path.home() / ".local" / "share" / "ollama-librarian"
+
+
 def resolve_default_pdf_source() -> str:
+    default_candidate = str(Path.home() / "Documents" / "LLM Library")
     candidates = [
-        "/Volumes/shared/LLM Library",
+        default_candidate,
+        str(Path.home() / "pdf_library"),
     ]
+
+    if platform.system().lower() == "darwin":
+        candidates.append("/Volumes/shared/LLM Library")
+
     for candidate in candidates:
         expanded = os.path.expanduser(candidate)
         if os.path.exists(expanded):
             return expanded
-    return os.path.expanduser(candidates[0])
+    return os.path.expanduser(default_candidate)
 
 
 def resolve_default_stash_path() -> str:
-    local_default = "~/Library/Application Support/home-network-setup/ollama-response-stash.json"
-    candidates = [
-        local_default,
-        "/Volumes/shared/LLM Library/ollama-response-stash.json",
-        "/Volumes/shared/ollama-response-stash.json",
-    ]
+    return os.path.expanduser(str(resolve_default_state_dir() / "ollama-response-stash.json"))
 
-    # Prefer an already-existing stash file to preserve continuity.
-    for candidate in candidates:
-        expanded = os.path.expanduser(candidate)
-        if os.path.isfile(expanded):
-            return expanded
 
-    # Otherwise default to local-first to avoid NAS mount dependency.
-    return os.path.expanduser(local_default)
+DEFAULT_STATE_DIR = resolve_default_state_dir()
+HISTORY_PATH = os.path.expanduser(
+    os.environ.get(
+        "OLLAMA_WEB_HISTORY_PATH",
+        str(DEFAULT_STATE_DIR / "ollama-web-chat-history.json"),
+    )
+)
+HISTORY_LOCK = threading.Lock()
+PDF_LOCK = threading.Lock()
+STASH_LOCK = threading.Lock()
 
 
 PDF_RAG_SCRIPT = os.path.expanduser(
@@ -91,7 +103,7 @@ PDF_SOURCE = os.path.expanduser(
 PDF_INDEX_DB = os.path.expanduser(
     os.environ.get(
         "OLLAMA_WEB_PDF_INDEX_DB",
-        "~/Library/Application Support/home-network-setup/pdf-rag.sqlite",
+    str(DEFAULT_STATE_DIR / "pdf-rag.sqlite"),
     )
 )
 PDF_EMBED_MODEL = os.environ.get(

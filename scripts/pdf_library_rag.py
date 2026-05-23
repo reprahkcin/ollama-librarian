@@ -6,6 +6,7 @@ from html.parser import HTMLParser
 import json
 import math
 import os
+import platform
 import re
 import shutil
 import sqlite3
@@ -269,16 +270,41 @@ class HTMLTextExtractor(HTMLParser):
         return unescape("".join(self.parts))
 
 
+def resolve_default_state_dir() -> Path:
+    system = platform.system().lower()
+    if system == "darwin":
+        return Path.home() / "Library" / "Application Support" / "ollama-librarian"
+    if system == "windows":
+        appdata = str(os.environ.get("APPDATA", "")).strip()
+        if appdata:
+            return Path(os.path.expanduser(appdata)) / "ollama-librarian"
+        return Path.home() / "AppData" / "Roaming" / "ollama-librarian"
+
+    xdg_data_home = str(os.environ.get("XDG_DATA_HOME", "")).strip()
+    if xdg_data_home:
+        return Path(os.path.expanduser(xdg_data_home)) / "ollama-librarian"
+    return Path.home() / ".local" / "share" / "ollama-librarian"
+
+
+def resolve_default_index_db_path() -> str:
+    return str(resolve_default_state_dir() / "pdf-rag.sqlite")
+
+
 def resolve_default_pdf_source() -> str:
+    default_candidate = str(Path.home() / "Documents" / "LLM Library")
     candidates = [
-        "/Volumes/shared/LLM Library",
-        "/Volumes/shared/Doomsday School",
+        default_candidate,
+        str(Path.home() / "pdf_library"),
     ]
+
+    if platform.system().lower() == "darwin":
+        candidates.append("/Volumes/shared/LLM Library")
+
     for candidate in candidates:
         expanded = os.path.expanduser(candidate)
         if os.path.exists(expanded):
             return expanded
-    return os.path.expanduser(candidates[0])
+    return os.path.expanduser(default_candidate)
 
 
 def is_pdf_path(path: Path) -> bool:
@@ -1190,7 +1216,7 @@ def build_parser():
     )
     parser.add_argument(
         "--index-db",
-        default="~/Library/Application Support/home-network-setup/pdf-rag.sqlite",
+        default=resolve_default_index_db_path(),
         help="Local sqlite index path",
     )
 
