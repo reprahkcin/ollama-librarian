@@ -3,6 +3,7 @@
 This file is the single source of truth for the suggested fixes in docs/Fixes Needed.md.
 
 Purpose:
+
 - Keep scope stable while we implement.
 - Break work into small, reviewable units.
 - Commit after each unit with a descriptive message.
@@ -30,6 +31,7 @@ Commit message format:
 ```
 
 Suggested types:
+
 - refactor
 - test
 - feat
@@ -43,21 +45,25 @@ Suggested types:
 Status: TODO
 
 Scope:
+
 - Add a lightweight endpoint test harness.
 - Capture current API response shape assumptions for critical routes.
 - Document a pre-refactor smoke test command list.
 
 Deliverables:
+
 - tests/helpers/server_harness.py (or equivalent)
 - tests/test_routes.py skeleton with first route checks
 - docs note for local smoke test sequence (if needed)
 
 Acceptance checks:
+
 - New harness can start server on random port.
 - At least one GET and one POST route check passes.
 - Existing tests still pass.
 
 Suggested commit message:
+
 - test: add route harness and baseline endpoint contract checks
 
 ### Phase 1 - High-value tests first
@@ -65,6 +71,7 @@ Suggested commit message:
 Status: TODO
 
 Scope:
+
 - Add route coverage for:
   - /api/tags
   - /api/history (GET/POST/DELETE)
@@ -85,23 +92,26 @@ Scope:
   - looks_like_author_name
   - strip_html_to_text
 - Expand abstract helper tests in ollama-web-chat.py for:
-  - _extract_json_object
-  - _clamp_confidence
-  - _confidence_bucket
-  - _normalize_recommendation
-  - _recommendation_label
-  - _extract_reason_list
+  - \_extract_json_object
+  - \_clamp_confidence
+  - \_confidence_bucket
+  - \_normalize_recommendation
+  - \_recommendation_label
+  - \_extract_reason_list
 
 Deliverables:
+
 - tests/test_routes.py
 - tests/test_rag_units.py
 - tests/test_abstract_helpers.py (or extend existing security test file)
 
 Acceptance checks:
+
 - New tests pass locally.
 - Existing security and update tests pass.
 
 Suggested commit messages:
+
 - test: add HTTP route contract tests for key API endpoints
 - test: add deterministic RAG helper unit tests
 - test: harden abstract output normalization coverage
@@ -111,6 +121,7 @@ Suggested commit messages:
 Status: TODO
 
 Scope:
+
 - Replace hard-coded macOS-only defaults in:
   - scripts/ollama-web-chat.py
   - scripts/pdf_library_rag.py
@@ -124,16 +135,19 @@ Scope:
 - Update resolve_default_pdf_source fallback behavior.
 
 Target defaults:
+
 - macOS: ~/Library/Application Support/ollama-librarian/
 - Windows: %APPDATA%/ollama-librarian/
 - Linux: $XDG_DATA_HOME/ollama-librarian/ or ~/.local/share/ollama-librarian/
 
 Acceptance checks:
+
 - Defaults are platform-derived with env override support.
 - Existing explicit env overrides still win.
 - Tests cover helper behavior.
 
 Suggested commit message:
+
 - refactor: make state and library defaults cross-platform
 
 ### Phase 3 - Extract HTML templates from server script
@@ -141,6 +155,7 @@ Suggested commit message:
 Status: TODO
 
 Scope:
+
 - Move embedded HTML and EPUB HTML into template files:
   - scripts/templates/index.html
   - scripts/templates/epub-reader.html
@@ -154,12 +169,14 @@ Scope:
 - Restrict do_GET changes to root and epub-reader rendering.
 
 Acceptance checks:
+
 - Root page loads.
 - EPUB reader page loads.
 - Placeholder replacement still works.
 - CSP nonce flow still works at this phase.
 
 Suggested commit message:
+
 - refactor: externalize web templates from server script
 
 ### Phase 4 - Extract inline CSS and JS, tighten CSP
@@ -167,6 +184,7 @@ Suggested commit message:
 Status: TODO
 
 Scope:
+
 - Move inline style/script blocks into:
   - scripts/assets/app.css
   - scripts/assets/app.js
@@ -177,11 +195,13 @@ Scope:
 - Tighten CSP script-src policy to disallow unsafe-inline.
 
 Acceptance checks:
+
 - No inline script blocks remain in templates.
 - Main UI and EPUB UI function correctly.
 - Security tests updated and passing.
 
 Suggested commit message:
+
 - refactor: serve app CSS and JS as static assets and tighten CSP
 
 ### Phase 5 - Route-table refactor
@@ -189,6 +209,7 @@ Suggested commit message:
 Status: TODO
 
 Scope:
+
 - Replace long if/elif route chains in Handler methods with route dispatch table.
 - Keep auth and same-origin checks at dispatcher boundary.
 - Group handler methods by domain:
@@ -201,10 +222,12 @@ Scope:
   - history/instructions
 
 Acceptance checks:
+
 - Route tests remain green with no response-shape regressions.
 - 404 behavior unchanged for unknown routes.
 
 Suggested commit message:
+
 - refactor: replace route chains with method-path dispatch table
 
 ### Phase 6 - Centralize configuration
@@ -212,16 +235,19 @@ Suggested commit message:
 Status: TODO
 
 Scope:
+
 - Introduce Config dataclass for server and indexer settings.
 - Load env vars once at startup.
 - Replace scattered module-level reads with config object usage.
 - Keep environment variable names backward compatible.
 
 Acceptance checks:
+
 - Existing startup scripts still work.
 - Tests can instantiate config with controlled values.
 
 Suggested commit message:
+
 - refactor: centralize environment settings into config dataclasses
 
 ### Phase 7 - Package into installable project
@@ -229,6 +255,7 @@ Suggested commit message:
 Status: TODO
 
 Scope:
+
 - Add pyproject.toml.
 - Add src/ollama_librarian package.
 - Move scripts into package modules.
@@ -240,11 +267,13 @@ Scope:
 - Preserve compatibility for existing shell scripts during migration.
 
 Acceptance checks:
+
 - Package installs in local venv.
 - Entry points run.
 - Existing launcher scripts continue to work (or are updated in same phase).
 
 Suggested commit message:
+
 - feat: package project with entry points and module-based indexer launch
 
 ### Phase 8 - Doctor/diagnose command
@@ -252,6 +281,7 @@ Suggested commit message:
 Status: TODO
 
 Scope:
+
 - Add doctor command to validate runtime prerequisites:
   - Python version >= 3.10
   - pypdf and ebooklib import checks
@@ -263,38 +293,42 @@ Scope:
 - Return clear pass/fail per check.
 
 Acceptance checks:
+
 - Command runs non-interactively.
 - Output is readable and actionable.
 - Exit code reflects overall status.
 
 Suggested commit message:
+
 - feat: add doctor command for environment and dependency diagnostics
 
 ## Execution Log
 
 Update this table as we complete each phase.
 
-| Phase | Branch | Commit SHA | Summary | Tests run | Result |
-|---|---|---|---|---|---|
-| 0 | | | | | pending |
-| 1 | | | | | pending |
-| 2 | | | | | pending |
-| 3 | | | | | pending |
-| 4 | | | | | pending |
-| 5 | | | | | pending |
-| 6 | | | | | pending |
-| 7 | | | | | pending |
-| 8 | | | | | pending |
+| Phase | Branch | Commit SHA | Summary | Tests run | Result  |
+| ----- | ------ | ---------- | ------- | --------- | ------- |
+| 0     |        |            |         |           | pending |
+| 1     |        |            |         |           | pending |
+| 2     |        |            |         |           | pending |
+| 3     |        |            |         |           | pending |
+| 4     |        |            |         |           | pending |
+| 5     |        |            |         |           | pending |
+| 6     |        |            |         |           | pending |
+| 7     |        |            |         |           | pending |
+| 8     |        |            |         |           | pending |
 
 ## Regroup Rules
 
 Stop and regroup if any of these occur:
+
 - Security headers or auth behavior changes unexpectedly.
 - More than 10 endpoint assertions fail in a single phase.
 - Launch scripts fail on a supported platform after packaging changes.
 - Any phase expands beyond 2 focused commits.
 
 When regrouping:
+
 - Update this file first.
 - Record decision in Execution Log summary.
 - Re-scope next phase before writing code.
