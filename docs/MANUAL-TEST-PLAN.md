@@ -300,3 +300,122 @@ Testing cycle is complete when:
 - macOS, Windows, Linux each have a full evidence block
 - no untriaged FAIL items remain
 - any accepted residual issues are explicitly documented with severity and follow-up owner
+
+## 11) Exact Reproduction Flow (Match Prior Agent Run)
+
+Use this section when handing off to a new agent on a different machine and you want a near-identical execution path.
+
+### A. Fixed Inputs
+
+- App URL: `http://127.0.0.1:8088`
+- Ollama URL: `http://127.0.0.1:11434`
+- Preferred model in UI: `qwen2.5:14b`
+- Quick chat prompt: `Reply with exactly OK.`
+- Temporary upload file path:
+  - macOS/Linux: `/tmp/ollama-librarian-smoke-upload.txt`
+  - Windows: `$env:TEMP\\ollama-librarian-smoke-upload.txt`
+
+### B. Exact macOS Command Sequence
+
+Run in repo root:
+
+1. `./scripts/librarian-start-macos.sh`
+2. `./scripts/librarian-status-macos.sh`
+3. `curl -sS -i http://127.0.0.1:8088/api/tags`
+4. `curl -sS -i http://127.0.0.1:8088/api/pdf/status`
+
+Expected minimum signals:
+
+- status script includes `Ollama: running` and `Web UI: running`
+- both API calls return `HTTP/1.0 200 OK` or `HTTP/1.1 200 OK`
+- `/api/tags` JSON contains `models`
+- `/api/pdf/status` JSON contains `ok`
+
+### C. Exact UI Action Sequence
+
+1. Open `http://127.0.0.1:8088/`.
+2. Verify sidebar shows online model state (for example `Online (N models)`).
+3. Click `Refresh` next to model selector.
+4. Ensure `Use PDF-grounded answers` is unchecked.
+5. Send prompt `Reply with exactly OK.`.
+6. If confirmation appears (`Send this query without PDF grounding?`), click confirm/OK.
+7. Verify assistant returns `OK`.
+8. Click `Upload Documents`.
+9. Upload one disposable text file from the temp path.
+10. Verify footer/status indicates upload success (for example `Uploaded 1 file; indexing started`).
+11. Click `Sync New PDFs`.
+12. Verify PDF status line transitions to running (contains `PDF index: running`).
+13. Click `View Stash`, verify modal opens, then close it.
+14. Click `View Bibliography`, verify modal opens (empty state acceptable), then close it.
+15. Click `Check for Updates`.
+16. Verify update area reports up-to-date state and release notes link appears.
+17. Click `Clear Conversation` and verify chat resets (`Shared history cleared`).
+
+### D. Exact Restart Verification
+
+1. `./scripts/librarian-stop-macos.sh`
+2. `./scripts/librarian-start-macos.sh`
+3. `./scripts/librarian-status-macos.sh`
+4. `curl -sS -i http://127.0.0.1:8088/api/tags`
+5. `curl -sS -i http://127.0.0.1:8088/api/pdf/status`
+
+Expected minimum signals:
+
+- stop/start scripts succeed without manual cleanup
+- status script reports both services running
+- both API calls still return 200
+
+### E. Disposable Upload File Commands
+
+macOS/Linux:
+
+1. `cat > /tmp/ollama-librarian-smoke-upload.txt <<'EOF'`
+2. `Ollama Librarian smoke upload file.`
+3. `This is a disposable test document for manual QA.`
+4. `EOF`
+5. cleanup: `rm -f /tmp/ollama-librarian-smoke-upload.txt`
+
+Windows PowerShell:
+
+1. `@"`
+2. `Ollama Librarian smoke upload file.`
+3. `This is a disposable test document for manual QA.`
+4. `"@ | Set-Content -Path "$env:TEMP\\ollama-librarian-smoke-upload.txt"`
+5. cleanup: `Remove-Item "$env:TEMP\\ollama-librarian-smoke-upload.txt" -ErrorAction SilentlyContinue`
+
+### F. Cross-Machine Handoff Payload (Required)
+
+When handing to the next agent, include this exact payload:
+
+```text
+Platform: <macOS|Windows|Linux>
+App URL used: http://127.0.0.1:8088
+Ollama URL used: http://127.0.0.1:11434
+Commands executed (in order):
+1) ...
+2) ...
+3) ...
+UI actions executed (in order):
+1) ...
+2) ...
+3) ...
+Observed confirmations:
+- Startup/status:
+- API 200 checks:
+- Chat response text:
+- Upload/sync status text:
+- Update status text:
+- Clear conversation text:
+Deviations from expected flow:
+-
+Blocking issues:
+-
+Next immediate action for receiving agent:
+-
+```
+
+### G. Known Non-Blocking Variability
+
+- Model selector keyboard navigation may be inconsistent in some automation harnesses; mouse selection is acceptable.
+- Index progress metrics can jump or look non-linear depending on existing library/index state.
+- Ungrounded confirm dialog can appear for send actions when PDF grounding is off; accepting it is part of the expected flow.

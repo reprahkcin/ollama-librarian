@@ -261,6 +261,18 @@ For a non-technical guide, see:
 
 - [Setup Guides/RESEARCHER-QUICKSTART.md](Setup Guides/RESEARCHER-QUICKSTART.md)
 
+## Manual QA Handoff (Agent to Agent)
+
+For reproducible cross-machine manual testing, use:
+
+- [docs/MANUAL-TEST-PLAN.md](docs/MANUAL-TEST-PLAN.md)
+
+Start with the exact replay instructions in:
+
+- [docs/MANUAL-TEST-PLAN.md#11-exact-reproduction-flow-match-prior-agent-run](docs/MANUAL-TEST-PLAN.md#11-exact-reproduction-flow-match-prior-agent-run)
+
+When handing off to another agent, include the required payload format from Section 11.F to preserve command order, UI action order, and observed confirmations.
+
 ## Security Regression Tests
 
 Run the security-focused regression suite from repo root:
