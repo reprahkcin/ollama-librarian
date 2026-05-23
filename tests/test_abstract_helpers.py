@@ -31,9 +31,11 @@ def load_app_module() -> types.ModuleType:
         os.environ.update(env_keys)
         try:
             module_name = f"ollama_web_chat_abstract_test_{os.getpid()}_{id(state_dir)}"
-            spec = importlib.util.spec_from_file_location(module_name, APP_PATH)
+            spec = importlib.util.spec_from_file_location(
+                module_name, APP_PATH)
             if not spec or not spec.loader:
-                raise RuntimeError("Failed to create import spec for ollama-web-chat.py")
+                raise RuntimeError(
+                    "Failed to create import spec for ollama-web-chat.py")
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             return module
@@ -51,7 +53,8 @@ class AbstractHelperTests(unittest.TestCase):
         cls.app = load_app_module()
 
     def test_extract_json_object_handles_plain_and_wrapped_json(self):
-        plain = self.app._extract_json_object('{"confidence": 88, "recommendation": "maybe"}')
+        plain = self.app._extract_json_object(
+            '{"confidence": 88, "recommendation": "maybe"}')
         self.assertEqual(plain.get("confidence"), 88)
 
         wrapped = self.app._extract_json_object(
@@ -78,8 +81,10 @@ class AbstractHelperTests(unittest.TestCase):
             self.app._normalize_recommendation("download-and-index", 10),
             "download_and_index",
         )
-        self.assertEqual(self.app._normalize_recommendation("reject", 90), "skip")
-        self.assertEqual(self.app._normalize_recommendation("", 80), "download_and_index")
+        self.assertEqual(
+            self.app._normalize_recommendation("reject", 90), "skip")
+        self.assertEqual(self.app._normalize_recommendation(
+            "", 80), "download_and_index")
         self.assertEqual(self.app._normalize_recommendation("", 50), "maybe")
         self.assertEqual(self.app._normalize_recommendation("", 10), "skip")
 
@@ -88,21 +93,27 @@ class AbstractHelperTests(unittest.TestCase):
             self.app._recommendation_label("download_and_index"),
             "Download and index",
         )
-        self.assertEqual(self.app._recommendation_label("skip"), "Skip for now")
+        self.assertEqual(self.app._recommendation_label(
+            "skip"), "Skip for now")
         self.assertEqual(
             self.app._recommendation_label("unknown"),
             "Maybe / needs manual review",
         )
 
     def test_extract_reason_list_from_list_string_and_fallback(self):
-        from_list = self.app._extract_reason_list(["  strong signal  ", "second", "", "third", "fourth", "fifth"])
-        self.assertEqual(from_list, ["strong signal", "second", "third", "fourth"])
+        from_list = self.app._extract_reason_list(
+            ["  strong signal  ", "second", "", "third", "fourth", "fifth"])
+        self.assertEqual(
+            from_list, ["strong signal", "second", "third", "fourth"])
 
-        from_string = self.app._extract_reason_list("one; two\nthree; four; five")
+        from_string = self.app._extract_reason_list(
+            "one; two\nthree; four; five")
         self.assertEqual(from_string, ["one", "two", "three", "four"])
 
-        fallback = self.app._extract_reason_list([], fallback_text="First sentence. Second sentence! Third sentence? Fourth sentence.")
-        self.assertEqual(fallback, ["First sentence.", "Second sentence!", "Third sentence?"])
+        fallback = self.app._extract_reason_list(
+            [], fallback_text="First sentence. Second sentence! Third sentence? Fourth sentence.")
+        self.assertEqual(
+            fallback, ["First sentence.", "Second sentence!", "Third sentence?"])
 
 
 if __name__ == "__main__":

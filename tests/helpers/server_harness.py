@@ -14,7 +14,8 @@ APP_PATH = REPO_ROOT / "scripts" / "ollama-web-chat.py"
 def _load_app_module(module_name: str) -> types.ModuleType:
     spec = importlib.util.spec_from_file_location(module_name, APP_PATH)
     if not spec or not spec.loader:
-        raise RuntimeError("Failed to create import spec for ollama-web-chat.py")
+        raise RuntimeError(
+            "Failed to create import spec for ollama-web-chat.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

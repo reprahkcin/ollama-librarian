@@ -103,7 +103,7 @@ PDF_SOURCE = os.path.expanduser(
 PDF_INDEX_DB = os.path.expanduser(
     os.environ.get(
         "OLLAMA_WEB_PDF_INDEX_DB",
-    str(DEFAULT_STATE_DIR / "pdf-rag.sqlite"),
+        str(DEFAULT_STATE_DIR / "pdf-rag.sqlite"),
     )
 )
 PDF_EMBED_MODEL = os.environ.get(

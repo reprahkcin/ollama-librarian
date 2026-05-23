@@ -49,19 +49,22 @@ class RouteBaselineTests(unittest.TestCase):
                 self.assertEqual(path, "/api/tags")
                 return handler._send(
                     200,
-                    json.dumps({"models": [{"name": "stub-model"}]}, ensure_ascii=True),
+                    json.dumps(
+                        {"models": [{"name": "stub-model"}]}, ensure_ascii=True),
                     "application/json; charset=utf-8",
                 )
 
             app.Handler._proxy = fake_proxy
             try:
-                status, payload, _ = _request_json("GET", f"{base_url}/api/tags")
+                status, payload, _ = _request_json(
+                    "GET", f"{base_url}/api/tags")
             finally:
                 app.Handler._proxy = original_proxy
 
         self.assertEqual(status, 200)
         self.assertIsInstance(payload, dict)
-        self.assertEqual(payload.get("models", [])[0].get("name"), "stub-model")
+        self.assertEqual(payload.get("models", [])[
+                         0].get("name"), "stub-model")
 
     def test_get_history_returns_messages_payload(self):
         with running_server() as (_, base_url):
@@ -104,18 +107,21 @@ class RouteBaselineTests(unittest.TestCase):
             )
             self.assertEqual(status, 200)
 
-            status, payload, _ = _request_json("DELETE", f"{base_url}/api/history")
+            status, payload, _ = _request_json(
+                "DELETE", f"{base_url}/api/history")
             self.assertEqual(status, 200)
             self.assertEqual(payload, {"ok": True})
 
-            status, history, _ = _request_json("GET", f"{base_url}/api/history")
+            status, history, _ = _request_json(
+                "GET", f"{base_url}/api/history")
 
         self.assertEqual(status, 200)
         self.assertEqual(history.get("messages"), [])
 
     def test_get_and_post_instructions_round_trip(self):
         with running_server() as (_, base_url):
-            status, payload, _ = _request_json("GET", f"{base_url}/api/instructions")
+            status, payload, _ = _request_json(
+                "GET", f"{base_url}/api/instructions")
             self.assertEqual(status, 200)
             self.assertIsInstance(payload, dict)
             self.assertIn("instructions", payload)
@@ -128,14 +134,17 @@ class RouteBaselineTests(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertEqual(payload, {"ok": True})
 
-            status, payload, _ = _request_json("GET", f"{base_url}/api/instructions")
+            status, payload, _ = _request_json(
+                "GET", f"{base_url}/api/instructions")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload.get("instructions"), "Use concise academic style.")
+        self.assertEqual(payload.get("instructions"),
+                         "Use concise academic style.")
 
     def test_get_library_docs_returns_expected_shape(self):
         with running_server() as (_, base_url):
-            status, payload, _ = _request_json("GET", f"{base_url}/api/library/docs")
+            status, payload, _ = _request_json(
+                "GET", f"{base_url}/api/library/docs")
 
         self.assertEqual(status, 200)
         self.assertIsInstance(payload, dict)
@@ -145,7 +154,8 @@ class RouteBaselineTests(unittest.TestCase):
 
     def test_stash_get_post_delete_flow(self):
         with running_server() as (_, base_url):
-            status, payload, _ = _request_json("GET", f"{base_url}/api/stash?limit=200")
+            status, payload, _ = _request_json(
+                "GET", f"{base_url}/api/stash?limit=200")
             self.assertEqual(status, 200)
             self.assertTrue(payload.get("ok"))
             self.assertIsInstance(payload.get("entries"), list)
@@ -158,13 +168,15 @@ class RouteBaselineTests(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertTrue(payload.get("ok"))
 
-            status, payload, _ = _request_json("GET", f"{base_url}/api/stash?limit=200")
+            status, payload, _ = _request_json(
+                "GET", f"{base_url}/api/stash?limit=200")
             self.assertEqual(status, 200)
             self.assertGreaterEqual(payload.get("count", 0), 1)
             stash_id = payload["entries"][0].get("stash_id")
             self.assertIsInstance(stash_id, int)
 
-            status, payload, _ = _request_json("DELETE", f"{base_url}/api/stash?id={stash_id}")
+            status, payload, _ = _request_json(
+                "DELETE", f"{base_url}/api/stash?id={stash_id}")
 
         self.assertEqual(status, 200)
         self.assertTrue(payload.get("ok"))
@@ -184,24 +196,28 @@ class RouteBaselineTests(unittest.TestCase):
             )
             self.assertEqual(status, 200)
 
-            status, payload, _ = _request_json("GET", f"{base_url}/api/bibliography?limit=200")
+            status, payload, _ = _request_json(
+                "GET", f"{base_url}/api/bibliography?limit=200")
             self.assertEqual(status, 200)
             self.assertTrue(payload.get("ok"))
             self.assertEqual(payload.get("entry_type"), "bibliography")
             self.assertEqual(payload.get("count"), 1)
 
-            status, payload, _ = _request_json("DELETE", f"{base_url}/api/bibliography?all=1")
+            status, payload, _ = _request_json(
+                "DELETE", f"{base_url}/api/bibliography?all=1")
             self.assertEqual(status, 200)
             self.assertTrue(payload.get("ok"))
 
-            status, payload, _ = _request_json("GET", f"{base_url}/api/bibliography?limit=200")
+            status, payload, _ = _request_json(
+                "GET", f"{base_url}/api/bibliography?limit=200")
 
         self.assertEqual(status, 200)
         self.assertEqual(payload.get("count"), 0)
 
     def test_get_pdf_status_returns_shape(self):
         with running_server() as (_, base_url):
-            status, payload, _ = _request_json("GET", f"{base_url}/api/pdf/status")
+            status, payload, _ = _request_json(
+                "GET", f"{base_url}/api/pdf/status")
 
         self.assertEqual(status, 200)
         self.assertIsInstance(payload, dict)
@@ -210,7 +226,8 @@ class RouteBaselineTests(unittest.TestCase):
 
     def test_get_update_status_returns_shape(self):
         with running_server() as (_, base_url):
-            status, payload, _ = _request_json("GET", f"{base_url}/api/update/status")
+            status, payload, _ = _request_json(
+                "GET", f"{base_url}/api/update/status")
 
         self.assertEqual(status, 200)
         self.assertIsInstance(payload, dict)
@@ -255,7 +272,8 @@ class RouteBaselineTests(unittest.TestCase):
 
     def test_api_routes_require_key_when_configured(self):
         with running_server(api_key="secret-key") as (_, base_url):
-            status, payload, _ = _request_json("GET", f"{base_url}/api/history")
+            status, payload, _ = _request_json(
+                "GET", f"{base_url}/api/history")
             self.assertEqual(status, 401)
             self.assertEqual(payload.get("error"), "Unauthorized")
 

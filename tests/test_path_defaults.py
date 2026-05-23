@@ -33,9 +33,11 @@ def load_web_module() -> types.ModuleType:
         os.environ.update(env_keys)
         try:
             module_name = f"ollama_web_chat_path_test_{os.getpid()}_{id(state_dir)}"
-            spec = importlib.util.spec_from_file_location(module_name, APP_PATH)
+            spec = importlib.util.spec_from_file_location(
+                module_name, APP_PATH)
             if not spec or not spec.loader:
-                raise RuntimeError("Failed to create import spec for ollama-web-chat.py")
+                raise RuntimeError(
+                    "Failed to create import spec for ollama-web-chat.py")
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             return module
@@ -51,7 +53,8 @@ def load_rag_module() -> types.ModuleType:
     module_name = f"pdf_library_rag_path_test_{os.getpid()}"
     spec = importlib.util.spec_from_file_location(module_name, RAG_PATH)
     if not spec or not spec.loader:
-        raise RuntimeError("Failed to create import spec for pdf_library_rag.py")
+        raise RuntimeError(
+            "Failed to create import spec for pdf_library_rag.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -66,7 +69,8 @@ class PathDefaultTests(unittest.TestCase):
     def test_web_defaults_do_not_reference_home_network_setup(self):
         self.assertNotIn("home-network-setup", self.web.HISTORY_PATH)
         self.assertNotIn("home-network-setup", self.web.PDF_INDEX_DB)
-        self.assertNotIn("home-network-setup", self.web.resolve_default_stash_path())
+        self.assertNotIn("home-network-setup",
+                         self.web.resolve_default_stash_path())
 
     def test_rag_index_db_default_uses_ollama_librarian_state_dir(self):
         parser = self.rag.build_parser()
@@ -77,7 +81,8 @@ class PathDefaultTests(unittest.TestCase):
     def test_state_dir_resolves_per_platform(self):
         with patch("platform.system", return_value="Darwin"):
             mac_path = str(self.web.resolve_default_state_dir())
-            self.assertTrue(mac_path.endswith("Library/Application Support/ollama-librarian"))
+            self.assertTrue(mac_path.endswith(
+                "Library/Application Support/ollama-librarian"))
 
         with patch("platform.system", return_value="Linux"), patch.dict(
             os.environ, {"XDG_DATA_HOME": "/tmp/xdg-home"}, clear=False
@@ -89,7 +94,8 @@ class PathDefaultTests(unittest.TestCase):
             os.environ, {"APPDATA": "C:/Users/test/AppData/Roaming"}, clear=False
         ):
             windows_path = str(self.web.resolve_default_state_dir())
-            self.assertEqual(windows_path, "C:/Users/test/AppData/Roaming/ollama-librarian")
+            self.assertEqual(
+                windows_path, "C:/Users/test/AppData/Roaming/ollama-librarian")
 
     def test_pdf_source_fallback_prefers_documents_path(self):
         with patch("os.path.exists", return_value=False):
