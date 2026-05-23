@@ -1390,7 +1390,6 @@ def save_instructions(instructions):
     save_state(state)
 
 
-
 def _load_template(name: str) -> str:
     template_path = SCRIPT_DIR / "templates" / name
     with open(template_path, "r", encoding="utf-8") as f:
