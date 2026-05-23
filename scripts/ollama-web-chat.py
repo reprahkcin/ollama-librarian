@@ -1638,7 +1638,8 @@ class Handler(BaseHTTPRequestHandler):
     # GET route handlers
     def _handle_get_root(self):
         html = HTML.replace("%OLLAMA_BASE%", OLLAMA_BASE)
-        html = html.replace("%API_KEY_REQUIRED%", "true" if bool(API_KEY) else "false")
+        html = html.replace("%API_KEY_REQUIRED%",
+                            "true" if bool(API_KEY) else "false")
         html = html.replace("%MAX_UPLOAD_BYTES%", str(MAX_UPLOAD_BYTES))
         html = html.replace("%CURRENT_VERSION%", read_current_version())
         return self._send(200, html, "text/html; charset=utf-8")
@@ -1707,13 +1708,15 @@ class Handler(BaseHTTPRequestHandler):
         params = parse_qs(parsed_url.query)
         limit_raw = params.get("limit", ["200"])[0]
         raw_entry_type = params.get("entry_type", [""])[0]
-        entry_type = _normalize_entry_type(raw_entry_type) if str(raw_entry_type).strip() else None
+        entry_type = _normalize_entry_type(raw_entry_type) if str(
+            raw_entry_type).strip() else None
         try:
             limit = int(limit_raw)
         except Exception:
             limit = 200
         try:
-            payload = list_stash_entries(limit=max(0, limit), entry_type=entry_type)
+            payload = list_stash_entries(
+                limit=max(0, limit), entry_type=entry_type)
             return self._send(
                 200,
                 json.dumps(payload, ensure_ascii=True),
@@ -1734,7 +1737,8 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             limit = 200
         try:
-            payload = list_stash_entries(limit=max(0, limit), entry_type="bibliography")
+            payload = list_stash_entries(
+                limit=max(0, limit), entry_type="bibliography")
             return self._send(
                 200,
                 json.dumps(payload, ensure_ascii=True),
@@ -1845,19 +1849,22 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return self._send(
                 400,
-                json.dumps({"error": "Invalid Content-Length"}, ensure_ascii=True),
+                json.dumps({"error": "Invalid Content-Length"},
+                           ensure_ascii=True),
                 "application/json; charset=utf-8",
             )
         if length < 0:
             return self._send(
                 400,
-                json.dumps({"error": "Invalid Content-Length"}, ensure_ascii=True),
+                json.dumps({"error": "Invalid Content-Length"},
+                           ensure_ascii=True),
                 "application/json; charset=utf-8",
             )
         if length > MAX_BODY_BYTES:
             return self._send(
                 413,
-                json.dumps({"error": "Request body too large"}, ensure_ascii=True),
+                json.dumps({"error": "Request body too large"},
+                           ensure_ascii=True),
                 "application/json; charset=utf-8",
             )
         data = self.rfile.read(length) if length > 0 else b"{}"
@@ -1876,19 +1883,22 @@ class Handler(BaseHTTPRequestHandler):
         if not model:
             return self._send(
                 400,
-                json.dumps({"ok": False, "error": "model is required"}, ensure_ascii=True),
+                json.dumps(
+                    {"ok": False, "error": "model is required"}, ensure_ascii=True),
                 "application/json; charset=utf-8",
             )
         if not research_need:
             return self._send(
                 400,
-                json.dumps({"ok": False, "error": "research_need is required"}, ensure_ascii=True),
+                json.dumps(
+                    {"ok": False, "error": "research_need is required"}, ensure_ascii=True),
                 "application/json; charset=utf-8",
             )
         if not abstract_text:
             return self._send(
                 400,
-                json.dumps({"ok": False, "error": "abstract is required"}, ensure_ascii=True),
+                json.dumps(
+                    {"ok": False, "error": "abstract is required"}, ensure_ascii=True),
                 "application/json; charset=utf-8",
             )
 
@@ -1928,14 +1938,16 @@ class Handler(BaseHTTPRequestHandler):
             LOGGER.warning("Abstract evaluation failed: %s", exc)
             return self._send(
                 502,
-                json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=True),
+                json.dumps({"ok": False, "error": str(exc)},
+                           ensure_ascii=True),
                 "application/json; charset=utf-8",
             )
         except Exception:
             LOGGER.exception("Unexpected abstract evaluation failure")
             return self._send(
                 500,
-                json.dumps({"ok": False, "error": "Unexpected evaluation error"}, ensure_ascii=True),
+                json.dumps(
+                    {"ok": False, "error": "Unexpected evaluation error"}, ensure_ascii=True),
                 "application/json; charset=utf-8",
             )
 
@@ -2056,8 +2068,10 @@ class Handler(BaseHTTPRequestHandler):
                 str(model),
                 top_k,
                 deepen=deepen,
-                include_paths=[str(x) for x in include_paths if isinstance(x, str)],
-                exclude_paths=[str(x) for x in exclude_paths if isinstance(x, str)],
+                include_paths=[str(x)
+                               for x in include_paths if isinstance(x, str)],
+                exclude_paths=[str(x)
+                               for x in exclude_paths if isinstance(x, str)],
             )
             return self._send(
                 200,
@@ -2109,8 +2123,10 @@ class Handler(BaseHTTPRequestHandler):
                 str(model),
                 top_k,
                 deepen=True,
-                include_paths=[str(x) for x in include_paths if isinstance(x, str)],
-                exclude_paths=[str(x) for x in exclude_paths if isinstance(x, str)],
+                include_paths=[str(x)
+                               for x in include_paths if isinstance(x, str)],
+                exclude_paths=[str(x)
+                               for x in exclude_paths if isinstance(x, str)],
             )
             result["brief_for"] = query.strip()
             return self._send(
@@ -2128,7 +2144,8 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_post_library_upload(self, parsed_url):
         params = parse_qs(parsed_url.query)
         raw_name = params.get("name", [""])[0]
-        root, target_path, error, code = self._resolve_upload_target_path(raw_name)
+        root, target_path, error, code = self._resolve_upload_target_path(
+            raw_name)
         if error:
             return self._send(
                 code,
@@ -2142,25 +2159,29 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return self._send(
                 400,
-                json.dumps({"error": "Invalid Content-Length"}, ensure_ascii=True),
+                json.dumps({"error": "Invalid Content-Length"},
+                           ensure_ascii=True),
                 "application/json; charset=utf-8",
             )
 
         if length <= 0:
             return self._send(
                 400,
-                json.dumps({"error": "Request body is required"}, ensure_ascii=True),
+                json.dumps({"error": "Request body is required"},
+                           ensure_ascii=True),
                 "application/json; charset=utf-8",
             )
 
         if length > MAX_UPLOAD_BYTES:
             return self._send(
                 413,
-                json.dumps({"error": "Upload exceeds maximum size"}, ensure_ascii=True),
+                json.dumps({"error": "Upload exceeds maximum size"},
+                           ensure_ascii=True),
                 "application/json; charset=utf-8",
             )
 
-        tmp_path = root / f".upload-{int(time.time() * 1000)}-{os.getpid()}-{uuid.uuid4().hex}.part"
+        tmp_path = root / \
+            f".upload-{int(time.time() * 1000)}-{os.getpid()}-{uuid.uuid4().hex}.part"
         written = 0
         try:
             with open(tmp_path, "wb") as out_f:
@@ -2196,14 +2217,16 @@ class Handler(BaseHTTPRequestHandler):
                 pass
             return self._send(
                 500,
-                json.dumps({"error": f"Failed to save upload: {exc}"}, ensure_ascii=True),
+                json.dumps(
+                    {"error": f"Failed to save upload: {exc}"}, ensure_ascii=True),
                 "application/json; charset=utf-8",
             )
 
         rel_path = os.path.relpath(str(target_path), str(root))
         return self._send(
             200,
-            json.dumps({"ok": True, "rel_path": rel_path, "bytes": written}, ensure_ascii=True),
+            json.dumps({"ok": True, "rel_path": rel_path,
+                       "bytes": written}, ensure_ascii=True),
             "application/json; charset=utf-8",
         )
 
@@ -2253,7 +2276,8 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_delete_stash(self, parsed_url):
         params = parse_qs(parsed_url.query)
         raw_entry_type = params.get("entry_type", [""])[0]
-        entry_type = _normalize_entry_type(raw_entry_type) if str(raw_entry_type).strip() else None
+        entry_type = _normalize_entry_type(raw_entry_type) if str(
+            raw_entry_type).strip() else None
         if params.get("all", [""])[0] == "1":
             try:
                 result = clear_stash_entries(entry_type=entry_type)
@@ -2273,7 +2297,8 @@ class Handler(BaseHTTPRequestHandler):
         if stash_id_raw is None:
             return self._send(
                 400,
-                json.dumps({"error": "id is required (or set all=1)"}, ensure_ascii=True),
+                json.dumps(
+                    {"error": "id is required (or set all=1)"}, ensure_ascii=True),
                 "application/json; charset=utf-8",
             )
         try:
@@ -2310,7 +2335,8 @@ class Handler(BaseHTTPRequestHandler):
 
         return self._send(
             400,
-            json.dumps({"error": "set all=1 to clear bibliography stash"}, ensure_ascii=True),
+            json.dumps(
+                {"error": "set all=1 to clear bibliography stash"}, ensure_ascii=True),
             "application/json; charset=utf-8",
         )
 
