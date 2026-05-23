@@ -64,6 +64,7 @@ class DoctorCommandTests(unittest.TestCase):
 
             original_fetch = self.rag._fetch_ollama_model_names
             original_port = self.rag._doctor_check_port_available
+            original_deps = self.rag._doctor_check_dependency_imports
             self.rag._fetch_ollama_model_names = lambda *_args, **_kwargs: [
                 "nomic-embed-text",
                 "qwen2.5:14b",
@@ -73,6 +74,10 @@ class DoctorCommandTests(unittest.TestCase):
                     "web_port_available", True, f"Port {port} on {host} is available"
                 )
             )
+            self.rag._doctor_check_dependency_imports = lambda: [
+                self.rag._doctor_result("import_pypdf", True, "pypdf import ok"),
+                self.rag._doctor_result("import_ebooklib", True, "ebooklib import ok"),
+            ]
             try:
                 buf = io.StringIO()
                 with redirect_stdout(buf):
@@ -83,6 +88,7 @@ class DoctorCommandTests(unittest.TestCase):
             finally:
                 self.rag._fetch_ollama_model_names = original_fetch
                 self.rag._doctor_check_port_available = original_port
+                self.rag._doctor_check_dependency_imports = original_deps
 
     def test_doctor_command_returns_failure_when_checks_fail(self):
         args = SimpleNamespace(
