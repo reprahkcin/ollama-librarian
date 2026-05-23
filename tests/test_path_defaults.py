@@ -11,7 +11,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 APP_PATH = REPO_ROOT / "scripts" / "ollama-web-chat.py"
 RAG_PATH = REPO_ROOT / "scripts" / "pdf_library_rag.py"
 SCRIPT_INDEX_TEMPLATE = REPO_ROOT / "scripts" / "templates" / "index.html"
-PACKAGE_INDEX_TEMPLATE = REPO_ROOT / "src" / "ollama_librarian" / "templates" / "index.html"
+PACKAGE_INDEX_TEMPLATE = REPO_ROOT / "src" / \
+    "ollama_librarian" / "templates" / "index.html"
 
 
 def load_web_module() -> types.ModuleType:
