@@ -10,6 +10,8 @@ from unittest.mock import patch
 REPO_ROOT = Path(__file__).resolve().parents[1]
 APP_PATH = REPO_ROOT / "scripts" / "ollama-web-chat.py"
 RAG_PATH = REPO_ROOT / "scripts" / "pdf_library_rag.py"
+SCRIPT_INDEX_TEMPLATE = REPO_ROOT / "scripts" / "templates" / "index.html"
+PACKAGE_INDEX_TEMPLATE = REPO_ROOT / "src" / "ollama_librarian" / "templates" / "index.html"
 
 
 def load_web_module() -> types.ModuleType:
@@ -175,6 +177,14 @@ class PathDefaultTests(unittest.TestCase):
         self.assertEqual(index_args.source, "/tmp/library")
         self.assertEqual(index_args.ocr_jobs, 3)
         self.assertEqual(index_args.ocr_timeout, 1200)
+
+    def test_script_and_package_index_templates_stay_in_sync(self):
+        self.assertTrue(SCRIPT_INDEX_TEMPLATE.exists())
+        self.assertTrue(PACKAGE_INDEX_TEMPLATE.exists())
+        self.assertEqual(
+            SCRIPT_INDEX_TEMPLATE.read_text(encoding="utf-8"),
+            PACKAGE_INDEX_TEMPLATE.read_text(encoding="utf-8"),
+        )
 
 
 if __name__ == "__main__":
