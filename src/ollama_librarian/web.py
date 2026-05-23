@@ -253,6 +253,7 @@ UPDATE_APPLY_MODE_RESOLVED = CONFIG.update_apply_mode_resolved
 UPDATE_SCRIPT_MACOS = REPO_ROOT / "scripts" / "librarian-update-macos.sh"
 UPDATE_SCRIPT_WINDOWS = REPO_ROOT / "scripts" / "librarian-update-windows.ps1"
 UPDATE_EVENTS_MAX = CONFIG.update_events_max
+ASSET_CACHE_BUSTER = str(int(time.time()))
 
 PDF_INDEX_STATE = {
     "running": False,
@@ -1750,12 +1751,14 @@ class Handler(BaseHTTPRequestHandler):
                             "true" if bool(API_KEY) else "false")
         html = html.replace("%MAX_UPLOAD_BYTES%", str(MAX_UPLOAD_BYTES))
         html = html.replace("%CURRENT_VERSION%", read_current_version())
+        html = html.replace("%ASSET_CACHE_BUSTER%", ASSET_CACHE_BUSTER)
         return self._send(200, html, "text/html; charset=utf-8")
 
     def _handle_get_epub_reader(self):
         html = EPUB_READER_HTML.replace(
             "%API_KEY_REQUIRED%", "true" if bool(API_KEY) else "false"
         )
+        html = html.replace("%ASSET_CACHE_BUSTER%", ASSET_CACHE_BUSTER)
         return self._send(200, html, "text/html; charset=utf-8")
 
     def _handle_get_assets(self, route_path):
