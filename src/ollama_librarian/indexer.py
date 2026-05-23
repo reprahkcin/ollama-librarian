@@ -10,6 +10,7 @@ import os
 import platform
 import re
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -328,6 +329,8 @@ class RagCliConfig:
     ocr_lang: str
     ocr_jobs: int
     ocr_timeout: int
+    web_host: str = "127.0.0.1"
+    web_port: int = 8088
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "RagCliConfig":
@@ -349,6 +352,8 @@ class RagCliConfig:
             ocr_jobs=max(1, _env_int(env, "OLLAMA_WEB_PDF_OCR_JOBS", 2)),
             ocr_timeout=max(60, _env_int(
                 env, "OLLAMA_WEB_PDF_OCR_TIMEOUT", 1800)),
+            web_host=str(env.get("OLLAMA_WEB_HOST", "127.0.0.1")).strip(),
+            web_port=max(1, _env_int(env, "OLLAMA_WEB_PORT", 8088)),
         )
 
 
@@ -1248,6 +1253,246 @@ def verify_command(args) -> int:
     return 0
 
 
+def _doctor_result(check: str, ok: bool, message: str) -> dict:
+    return {
+        "check": check,
+        "ok": bool(ok),
+        "message": str(message),
+    }
+
+
+def _doctor_check_python_version(min_major: int = 3, min_minor: int = 10) -> dict:
+    current = (sys.version_info.major, sys.version_info.minor)
+    required = (min_major, min_minor)
+    ok = current >= required
+    if ok:
+        return _doctor_result(
+            "python_version",
+            True,
+            f"Python {current[0]}.{current[1]} meets >= {required[0]}.{required[1]}",
+        )
+    return _doctor_result(
+        "python_version",
+        False,
+        f"Python {current[0]}.{current[1]} is below required {required[0]}.{required[1]}",
+    )
+
+
+def _doctor_check_dependency_imports() -> list[dict]:
+    checks = []
+    checks.append(_doctor_result("import_pypdf", True, "pypdf import ok"))
+    ebook_ok = epub is not None and ITEM_DOCUMENT is not None
+    checks.append(
+        _doctor_result(
+            "import_ebooklib",
+            ebook_ok,
+            "ebooklib import ok" if ebook_ok else "ebooklib import failed",
+        )
+    )
+    return checks
+
+
+def _fetch_ollama_model_names(base_url: str, timeout: int = 10) -> list[str]:
+    req = Request(
+        f"{base_url.rstrip('/')}/api/tags",
+        method="GET",
+    )
+    try:
+        with urlopen(req, timeout=max(1, int(timeout))) as resp:
+            payload = resp.read().decode("utf-8", errors="replace")
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"Cannot reach Ollama at {base_url}: {exc}") from exc
+
+    data = json.loads(payload) if payload else {}
+    models = data.get("models", []) if isinstance(data, dict) else []
+    out: list[str] = []
+    for item in models:
+        if not isinstance(item, dict):
+            continue
+        raw_name = str(item.get("name") or item.get("model") or "").strip()
+        if raw_name:
+            out.append(raw_name)
+    return sorted(set(out))
+
+
+def _model_available(required_model: str, available_models: list[str]) -> bool:
+    required = normalize_text(required_model)
+    if not required:
+        return False
+    avail_set = {normalize_text(x) for x in available_models if normalize_text(x)}
+    if required in avail_set:
+        return True
+
+    required_base = required.split(":", 1)[0]
+    for model in avail_set:
+        base = model.split(":", 1)[0]
+        if base == required_base:
+            return True
+    return False
+
+
+def _doctor_check_ollama_and_models(base_url: str, required_models: list[str], timeout: int = 10) -> list[dict]:
+    try:
+        models = _fetch_ollama_model_names(base_url, timeout=timeout)
+    except Exception as exc:
+        return [
+            _doctor_result("ollama_reachable", False, str(exc)),
+            _doctor_result("required_models", False, "Model checks skipped because Ollama is unreachable"),
+        ]
+
+    checks = [
+        _doctor_result(
+            "ollama_reachable",
+            True,
+            f"Ollama reachable; discovered {len(models)} model(s)",
+        )
+    ]
+
+    missing = [m for m in required_models if not _model_available(m, models)]
+    if missing:
+        checks.append(
+            _doctor_result(
+                "required_models",
+                False,
+                f"Missing required models: {', '.join(missing)}",
+            )
+        )
+    else:
+        checks.append(
+            _doctor_result(
+                "required_models",
+                True,
+                "All required models are available",
+            )
+        )
+    return checks
+
+
+def _doctor_check_index_db_writable(index_db: str) -> dict:
+    path = Path(index_db).expanduser()
+    parent = path.parent
+    if not parent.exists():
+        return _doctor_result(
+            "index_db_writable",
+            False,
+            f"Index DB parent directory does not exist: {parent}",
+        )
+    if not parent.is_dir():
+        return _doctor_result(
+            "index_db_writable",
+            False,
+            f"Index DB parent is not a directory: {parent}",
+        )
+    try:
+        with tempfile.NamedTemporaryFile(dir=str(parent), prefix="doctor-write-", delete=True):
+            pass
+    except Exception as exc:
+        return _doctor_result(
+            "index_db_writable",
+            False,
+            f"Index DB parent is not writable: {exc}",
+        )
+    return _doctor_result(
+        "index_db_writable",
+        True,
+        f"Index DB parent writable: {parent}",
+    )
+
+
+def _doctor_check_source_dir(source: str) -> dict:
+    path = Path(source).expanduser()
+    if not path.exists():
+        return _doctor_result(
+            "source_dir_access",
+            False,
+            f"Source directory does not exist: {path}",
+        )
+    if not path.is_dir():
+        return _doctor_result(
+            "source_dir_access",
+            False,
+            f"Source path is not a directory: {path}",
+        )
+    if not os.access(path, os.R_OK | os.X_OK):
+        return _doctor_result(
+            "source_dir_access",
+            False,
+            f"Source directory is not readable: {path}",
+        )
+    return _doctor_result(
+        "source_dir_access",
+        True,
+        f"Source directory accessible: {path}",
+    )
+
+
+def _doctor_check_port_available(host: str, port: int) -> dict:
+    candidate_host = normalize_text(host) or "127.0.0.1"
+    family = socket.AF_INET6 if ":" in candidate_host else socket.AF_INET
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((candidate_host, int(port)))
+    except Exception as exc:
+        return _doctor_result(
+            "web_port_available",
+            False,
+            f"Port {port} on {candidate_host} is not available: {exc}",
+        )
+    finally:
+        sock.close()
+    return _doctor_result(
+        "web_port_available",
+        True,
+        f"Port {port} on {candidate_host} is available",
+    )
+
+
+def doctor_command(args) -> int:
+    required_models: list[str] = []
+    for model in [args.embed_model, args.answer_model] + list(getattr(args, "required_model", []) or []):
+        normalized = normalize_text(model)
+        if normalized and normalized not in required_models:
+            required_models.append(normalized)
+
+    checks: list[dict] = []
+    checks.append(_doctor_check_python_version())
+    checks.extend(_doctor_check_dependency_imports())
+    checks.extend(_doctor_check_ollama_and_models(
+        args.ollama_base, required_models, timeout=args.timeout))
+    checks.append(_doctor_check_index_db_writable(args.index_db))
+    checks.append(_doctor_check_source_dir(args.source))
+    checks.append(_doctor_check_port_available(args.web_host, args.web_port))
+
+    failed_checks = [item for item in checks if not item.get("ok")]
+    payload = {
+        "ok": len(failed_checks) == 0,
+        "checks": checks,
+        "summary": {
+            "total": len(checks),
+            "passed": len(checks) - len(failed_checks),
+            "failed": len(failed_checks),
+        },
+    }
+
+    if getattr(args, "json_output", False):
+        print(json.dumps(payload, ensure_ascii=True))
+    else:
+        print("Doctor checks:")
+        for item in checks:
+            marker = "PASS" if item.get("ok") else "FAIL"
+            print(f"[{marker}] {item.get('check')}: {item.get('message')}")
+        summary = payload["summary"]
+        print(
+            f"Summary: passed={summary['passed']} failed={summary['failed']} total={summary['total']}"
+        )
+
+    return 0 if payload["ok"] else 2
+
+
 def build_parser(config: RagCliConfig | None = None):
     resolved = config or RAG_CONFIG
     parser = argparse.ArgumentParser(
@@ -1372,6 +1617,46 @@ def build_parser(config: RagCliConfig | None = None):
     p_meta.add_argument("--json-output", action="store_true",
                         help="Print JSON metadata sync payload")
 
+    p_doctor = sub.add_parser(
+        "doctor",
+        help="Run non-interactive environment and dependency diagnostics",
+    )
+    p_doctor.add_argument(
+        "--source",
+        default=resolved.source_dir,
+        help="Directory containing document library (.pdf, .txt, .md, .html, .htm, .epub)",
+    )
+    p_doctor.add_argument(
+        "--answer-model",
+        default="qwen2.5:14b",
+        help="Answer model that should be available in Ollama",
+    )
+    p_doctor.add_argument(
+        "--required-model",
+        action="append",
+        default=[],
+        help="Additional required model name (repeatable)",
+    )
+    p_doctor.add_argument(
+        "--web-host",
+        default=resolved.web_host,
+        help="Configured web bind host to validate",
+    )
+    p_doctor.add_argument(
+        "--web-port",
+        type=int,
+        default=resolved.web_port,
+        help="Configured web bind port to validate",
+    )
+    p_doctor.add_argument(
+        "--timeout",
+        type=int,
+        default=10,
+        help="Network timeout in seconds for Ollama checks",
+    )
+    p_doctor.add_argument("--json-output", action="store_true",
+                          help="Print JSON doctor payload")
+
     return parser
 
 
@@ -1391,6 +1676,8 @@ def main() -> int:
         return verify_command(args)
     if args.cmd == "metadata-sync":
         return metadata_sync_command(args)
+    if args.cmd == "doctor":
+        return doctor_command(args)
 
     parser.print_help()
     return 1
