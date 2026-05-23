@@ -232,7 +232,7 @@ Suggested commit message:
 
 ### Phase 6 - Centralize configuration
 
-Status: TODO
+Status: DONE
 
 Scope:
 
@@ -314,7 +314,7 @@ Update this table as we complete each phase.
 | 3     | main   |            | Extracted embedded HTML/EPUB templates to scripts/templates and loaded at startup with placeholder substitution preserved       | python -m unittest -q tests/test_path_defaults.py tests/test_abstract_helpers.py tests/test_rag_units.py && python -m unittest -q tests/test_routes.py tests/test_security_regressions.py tests/test_update_flow.py | pass    |
 | 4     | main   |            | Extracted inline CSS/JS to assets, switched templates to external script/style loading, and tightened CSP for self-only scripts | python -m unittest -q tests/test_path_defaults.py tests/test_abstract_helpers.py tests/test_rag_units.py && python -m unittest -q tests/test_routes.py tests/test_security_regressions.py tests/test_update_flow.py | pass    |
 | 5     | fixes  |            | Replaced large do_GET/do_POST/do_DELETE route chains with method-path dispatch maps and extracted per-route handler methods     | python -m unittest -q tests/test_path_defaults.py tests/test_abstract_helpers.py tests/test_rag_units.py tests/test_routes.py tests/test_security_regressions.py tests/test_update_flow.py                          | pass    |
-| 6     |        |            |                                                                                                                                 |                                                                                                                                                                                                                     | pending |
+| 6     | fixes  |            | Introduced config dataclasses for web and indexer settings, loaded env values once at startup, and preserved existing env variable names through compatibility constants | python -m unittest -q tests/test_path_defaults.py tests/test_abstract_helpers.py tests/test_rag_units.py && python -m unittest -q tests/test_routes.py tests/test_security_regressions.py tests/test_update_flow.py | pass    |
 | 7     |        |            |                                                                                                                                 |                                                                                                                                                                                                                     | pending |
 | 8     |        |            |                                                                                                                                 |                                                                                                                                                                                                                     | pending |
 

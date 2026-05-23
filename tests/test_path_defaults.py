@@ -105,6 +105,77 @@ class PathDefaultTests(unittest.TestCase):
         self.assertTrue(web_default.endswith("Documents/LLM Library"))
         self.assertTrue(rag_default.endswith("Documents/LLM Library"))
 
+    def test_web_config_from_env_supports_controlled_values(self):
+        env = {
+            "OLLAMA_WEB_HOST": "127.0.0.1",
+            "OLLAMA_WEB_PORT": "9001",
+            "OLLAMA_WEB_HISTORY_PATH": "/tmp/custom-history.json",
+            "OLLAMA_WEB_PDF_TOP_K": "11",
+            "OLLAMA_WEB_UPDATE_APPLY_MODE": "invalid",
+            "OLLAMA_WEB_UPDATE_EVENTS_MAX": "not-an-int",
+        }
+
+        cfg = self.web.WebConfig.from_env(env)
+
+        self.assertEqual(cfg.host, "127.0.0.1")
+        self.assertEqual(cfg.port, 9001)
+        self.assertEqual(cfg.history_path, "/tmp/custom-history.json")
+        self.assertEqual(cfg.update_state_path,
+                         Path("/tmp") / "update-state.json")
+        self.assertEqual(cfg.pdf_top_k, 11)
+        self.assertEqual(cfg.update_apply_mode, "invalid")
+        self.assertEqual(cfg.update_apply_mode_resolved, "git")
+        self.assertEqual(cfg.update_events_max, 200)
+
+    def test_rag_config_from_env_supports_controlled_values(self):
+        env = {
+            "OLLAMA_BASE_URL": "http://localhost:11435",
+            "OLLAMA_WEB_PDF_EMBED_MODEL": "all-minilm",
+            "OLLAMA_WEB_PDF_INDEX_DB": "~/state/rag.sqlite",
+            "OLLAMA_WEB_PDF_SOURCE": "~/docs/library",
+            "OLLAMA_WEB_PDF_TOP_K": "9",
+            "OLLAMA_WEB_PDF_OCR_LANG": "eng+spa",
+            "OLLAMA_WEB_PDF_OCR_JOBS": "4",
+            "OLLAMA_WEB_PDF_OCR_TIMEOUT": "2400",
+        }
+
+        cfg = self.rag.RagCliConfig.from_env(env)
+
+        self.assertEqual(cfg.ollama_base, "http://localhost:11435")
+        self.assertEqual(cfg.embed_model, "all-minilm")
+        self.assertTrue(cfg.index_db.endswith("state/rag.sqlite"))
+        self.assertTrue(cfg.source_dir.endswith("docs/library"))
+        self.assertEqual(cfg.search_top_k, 9)
+        self.assertEqual(cfg.ask_top_k, 9)
+        self.assertEqual(cfg.ocr_lang, "eng+spa")
+        self.assertEqual(cfg.ocr_jobs, 4)
+        self.assertEqual(cfg.ocr_timeout, 2400)
+
+    def test_rag_parser_uses_injected_config_defaults(self):
+        cfg = self.rag.RagCliConfig(
+            ollama_base="http://127.0.0.1:7777",
+            embed_model="embed-test",
+            index_db="/tmp/test-rag.sqlite",
+            source_dir="/tmp/library",
+            search_top_k=8,
+            ask_top_k=8,
+            ocr_lang="eng",
+            ocr_jobs=3,
+            ocr_timeout=1200,
+        )
+
+        parser = self.rag.build_parser(config=cfg)
+        search_args = parser.parse_args(["search", "--query", "test"])
+        index_args = parser.parse_args(["index"])
+
+        self.assertEqual(search_args.ollama_base, "http://127.0.0.1:7777")
+        self.assertEqual(search_args.embed_model, "embed-test")
+        self.assertEqual(search_args.index_db, "/tmp/test-rag.sqlite")
+        self.assertEqual(search_args.top_k, 8)
+        self.assertEqual(index_args.source, "/tmp/library")
+        self.assertEqual(index_args.ocr_jobs, 3)
+        self.assertEqual(index_args.ocr_timeout, 1200)
+
 
 if __name__ == "__main__":
     unittest.main()

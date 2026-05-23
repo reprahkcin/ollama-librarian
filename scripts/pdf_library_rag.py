@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+from dataclasses import dataclass
 from html import unescape
 from html.parser import HTMLParser
 import json
@@ -15,6 +16,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import Mapping
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -305,6 +307,48 @@ def resolve_default_pdf_source() -> str:
         if os.path.exists(expanded):
             return expanded
     return os.path.expanduser(default_candidate)
+
+
+def _env_int(env: Mapping[str, str], key: str, default: int) -> int:
+    raw = str(env.get(key, str(default))).strip()
+    try:
+        return int(raw)
+    except Exception:
+        return default
+
+
+@dataclass(frozen=True)
+class RagCliConfig:
+    ollama_base: str
+    embed_model: str
+    index_db: str
+    source_dir: str
+    search_top_k: int
+    ask_top_k: int
+    ocr_lang: str
+    ocr_jobs: int
+    ocr_timeout: int
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str]) -> "RagCliConfig":
+        return cls(
+            ollama_base=str(env.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")),
+            embed_model=str(env.get("OLLAMA_WEB_PDF_EMBED_MODEL", "nomic-embed-text")),
+            index_db=os.path.expanduser(
+                str(env.get("OLLAMA_WEB_PDF_INDEX_DB", resolve_default_index_db_path()))
+            ),
+            source_dir=os.path.expanduser(
+                str(env.get("OLLAMA_WEB_PDF_SOURCE", resolve_default_pdf_source()))
+            ),
+            search_top_k=max(1, _env_int(env, "OLLAMA_WEB_PDF_TOP_K", 6)),
+            ask_top_k=max(1, _env_int(env, "OLLAMA_WEB_PDF_TOP_K", 6)),
+            ocr_lang=str(env.get("OLLAMA_WEB_PDF_OCR_LANG", "eng")),
+            ocr_jobs=max(1, _env_int(env, "OLLAMA_WEB_PDF_OCR_JOBS", 2)),
+            ocr_timeout=max(60, _env_int(env, "OLLAMA_WEB_PDF_OCR_TIMEOUT", 1800)),
+        )
+
+
+RAG_CONFIG = RagCliConfig.from_env(os.environ)
 
 
 def is_pdf_path(path: Path) -> bool:
@@ -1200,23 +1244,24 @@ def verify_command(args) -> int:
     return 0
 
 
-def build_parser():
+def build_parser(config: RagCliConfig | None = None):
+    resolved = config or RAG_CONFIG
     parser = argparse.ArgumentParser(
         description="Index documents from NAS/local storage into a retrieval DB and query with Ollama.",
     )
     parser.add_argument(
         "--ollama-base",
-        default="http://127.0.0.1:11434",
+        default=resolved.ollama_base,
         help="Ollama base URL",
     )
     parser.add_argument(
         "--embed-model",
-        default="nomic-embed-text",
+        default=resolved.embed_model,
         help="Embedding model name available in Ollama",
     )
     parser.add_argument(
         "--index-db",
-        default=resolve_default_index_db_path(),
+        default=resolved.index_db,
         help="Local sqlite index path",
     )
 
@@ -1226,7 +1271,7 @@ def build_parser():
         "index", help="Index supported documents under a source directory")
     p_index.add_argument(
         "--source",
-        default=resolve_default_pdf_source(),
+        default=resolved.source_dir,
         help="Directory containing document library (.pdf, .txt, .md, .html, .htm, .epub)",
     )
     p_index.add_argument("--chunk-size", type=int, default=1200)
@@ -1242,19 +1287,19 @@ def build_parser():
     )
     p_index.add_argument(
         "--ocr-lang",
-        default="eng",
+        default=resolved.ocr_lang,
         help="OCR language for ocrmypdf (e.g. eng, eng+spa)",
     )
     p_index.add_argument(
         "--ocr-jobs",
         type=int,
-        default=2,
+        default=resolved.ocr_jobs,
         help="Parallel OCR worker count",
     )
     p_index.add_argument(
         "--ocr-timeout",
         type=int,
-        default=1800,
+        default=resolved.ocr_timeout,
         help="Max seconds per OCR invocation",
     )
     p_index.add_argument("--json-summary", action="store_true",
@@ -1262,12 +1307,12 @@ def build_parser():
 
     p_search = sub.add_parser("search", help="Retrieve top matching chunks")
     p_search.add_argument("--query", required=True)
-    p_search.add_argument("--top-k", type=int, default=6)
+    p_search.add_argument("--top-k", type=int, default=resolved.search_top_k)
 
     p_ask = sub.add_parser(
         "ask", help="Answer question with retrieved document context")
     p_ask.add_argument("--query", required=True)
-    p_ask.add_argument("--top-k", type=int, default=6)
+    p_ask.add_argument("--top-k", type=int, default=resolved.ask_top_k)
     p_ask.add_argument("--answer-model", default="qwen2.5:14b")
     p_ask.add_argument(
         "--include-path",
@@ -1317,7 +1362,7 @@ def build_parser():
     )
     p_meta.add_argument(
         "--source",
-        default=resolve_default_pdf_source(),
+        default=resolved.source_dir,
         help="Directory containing document library (.pdf, .txt, .md, .html, .htm, .epub)",
     )
     p_meta.add_argument("--json-output", action="store_true",
