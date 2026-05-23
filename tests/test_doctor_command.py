@@ -75,8 +75,10 @@ class DoctorCommandTests(unittest.TestCase):
                 )
             )
             self.rag._doctor_check_dependency_imports = lambda: [
-                self.rag._doctor_result("import_pypdf", True, "pypdf import ok"),
-                self.rag._doctor_result("import_ebooklib", True, "ebooklib import ok"),
+                self.rag._doctor_result(
+                    "import_pypdf", True, "pypdf import ok"),
+                self.rag._doctor_result(
+                    "import_ebooklib", True, "ebooklib import ok"),
             ]
             try:
                 buf = io.StringIO()

@@ -531,7 +531,8 @@ def chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
 
 def extract_pdf_pages(pdf_path: Path) -> list[tuple[int, str]]:
     if PdfReader is None:
-        raise RuntimeError("PDF parsing dependency is missing. Install 'pypdf'.")
+        raise RuntimeError(
+            "PDF parsing dependency is missing. Install 'pypdf'.")
     reader = PdfReader(str(pdf_path))
     pages = []
     for i, page in enumerate(reader.pages, start=1):

@@ -1,147 +1,291 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Ollama Librarian</title>
-  <link rel="stylesheet" href="/assets/katex/katex.min.css" />
-  <link rel="stylesheet" href="/assets/app.css" />
-  <script defer src="/assets/katex/katex.min.js"></script>
-  <script defer src="/assets/katex/contrib/auto-render.min.js"></script>
-  <meta name="ollama-api-key-required" content="%API_KEY_REQUIRED%" />
-  <meta name="ollama-max-upload-bytes" content="%MAX_UPLOAD_BYTES%" />
-  <script defer src="/assets/app.js"></script>
-</head>
-<body>
-  <main class="shell">
-    <aside class="panel sidebar">
-      <h1 class="title">Ollama Librarian</h1>
-      <div class="meta">Endpoint: %OLLAMA_BASE%</div>
-      <div id="status" class="status">
-        <span id="statusDot" class="dot"></span>
-        <span id="statusText">Checking service...</span>
-      </div>
-
-      <label for="model">Model</label>
-      <div class="model-row">
-        <select id="model"></select>
-        <button id="refresh" class="btn-soft btn-mini" type="button">Refresh</button>
-      </div>
-
-      <details class="sidebar-accordion" id="instructionsAccordion">
-        <summary>Running Instructions</summary>
-        <div class="accordion-content">
-          <textarea id="instructions" placeholder="Example: Be concise. Use bullet points. Ask clarifying questions if uncertain."></textarea>
-          <button id="saveInstructions" class="btn-soft" type="button">Save Instructions</button>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ollama Librarian</title>
+    <link rel="stylesheet" href="/assets/katex/katex.min.css" />
+    <link rel="stylesheet" href="/assets/app.css" />
+    <script defer src="/assets/katex/katex.min.js"></script>
+    <script defer src="/assets/katex/contrib/auto-render.min.js"></script>
+    <meta name="ollama-api-key-required" content="%API_KEY_REQUIRED%" />
+    <meta name="ollama-max-upload-bytes" content="%MAX_UPLOAD_BYTES%" />
+    <script defer src="/assets/app.js"></script>
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="panel sidebar">
+        <h1 class="title">Ollama Librarian</h1>
+        <div class="meta">Endpoint: %OLLAMA_BASE%</div>
+        <div id="status" class="status">
+          <span id="statusDot" class="dot"></span>
+          <span id="statusText">Checking service...</span>
         </div>
-      </details>
 
-      <details class="sidebar-accordion" id="abstractAccordion">
-        <summary>Abstract Screener</summary>
-        <div class="accordion-content abstract-eval">
-          <div class="tiny">Describe what would make a paper relevant, then paste its abstract.</div>
-          <textarea id="abstractNeed" class="abstract-input" placeholder="Example: I need papers with randomized controlled design for adults with hypertension, published after 2018."></textarea>
-          <textarea id="abstractText" class="abstract-input" placeholder="Paste abstract text here..."></textarea>
-          <div class="abstract-actions">
-            <button id="evaluateAbstract" class="btn-soft" type="button">Evaluate Abstract</button>
-            <button id="clearAbstract" class="btn-soft btn-mini" type="button">Clear</button>
+        <label for="model">Model</label>
+        <div class="model-row">
+          <select id="model"></select>
+          <button id="refresh" class="btn-soft btn-mini" type="button">
+            Refresh
+          </button>
+        </div>
+
+        <details class="sidebar-accordion" id="instructionsAccordion">
+          <summary>Running Instructions</summary>
+          <div class="accordion-content">
+            <textarea
+              id="instructions"
+              placeholder="Example: Be concise. Use bullet points. Ask clarifying questions if uncertain."
+            ></textarea>
+            <button id="saveInstructions" class="btn-soft" type="button">
+              Save Instructions
+            </button>
           </div>
-          <div id="abstractResult" class="tiny abstract-result">No evaluation yet.</div>
+        </details>
+
+        <details class="sidebar-accordion" id="abstractAccordion">
+          <summary>Abstract Screener</summary>
+          <div class="accordion-content abstract-eval">
+            <div class="tiny">
+              Describe what would make a paper relevant, then paste its
+              abstract.
+            </div>
+            <textarea
+              id="abstractNeed"
+              class="abstract-input"
+              placeholder="Example: I need papers with randomized controlled design for adults with hypertension, published after 2018."
+            ></textarea>
+            <textarea
+              id="abstractText"
+              class="abstract-input"
+              placeholder="Paste abstract text here..."
+            ></textarea>
+            <div class="abstract-actions">
+              <button id="evaluateAbstract" class="btn-soft" type="button">
+                Evaluate Abstract
+              </button>
+              <button
+                id="clearAbstract"
+                class="btn-soft btn-mini"
+                type="button"
+              >
+                Clear
+              </button>
+            </div>
+            <div id="abstractResult" class="tiny abstract-result">
+              No evaluation yet.
+            </div>
+          </div>
+        </details>
+
+        <label>PDF Library</label>
+        <label
+          class="checkrow"
+          for="usePdfLibrary"
+          title="Use retrieval from your indexed PDF library instead of plain model-only responses."
+        >
+          <input
+            id="usePdfLibrary"
+            type="checkbox"
+            checked
+            title="Use retrieval from your indexed PDF library instead of plain model-only responses."
+          />
+          Use PDF-grounded answers
+        </label>
+        <label
+          class="checkrow"
+          for="deepStudy"
+          title="Expands retrieval depth and context for more thorough, citation-heavy answers. Slower but usually more complete."
+        >
+          <input
+            id="deepStudy"
+            type="checkbox"
+            title="Expands retrieval depth and context for more thorough, citation-heavy answers. Slower but usually more complete."
+          />
+          Deep Study Mode
+        </label>
+        <button
+          id="syncPdfLibrary"
+          class="btn-soft"
+          type="button"
+          title="Indexes new or changed PDFs. OCR fallback is used for scanned/text-only images when available."
+        >
+          Sync New PDFs
+        </button>
+        <button
+          id="uploadLibraryDocs"
+          class="btn-soft"
+          type="button"
+          title="Upload supported documents into the configured library (.pdf, .txt, .md, .html, .htm, .epub)."
+        >
+          Upload Documents
+        </button>
+        <input
+          id="libraryUploadInput"
+          type="file"
+          accept=".pdf,.txt,.md,.html,.htm,.epub"
+          multiple
+          style="display: none"
+        />
+        <div id="pdfStatus" class="tiny">PDF index: checking...</div>
+        <div id="pdfProgress" class="pdf-progress hidden">
+          <div id="pdfProgressBar" class="pdf-progress-bar"></div>
         </div>
-      </details>
 
-      <label>PDF Library</label>
-      <label class="checkrow" for="usePdfLibrary" title="Use retrieval from your indexed PDF library instead of plain model-only responses.">
-        <input id="usePdfLibrary" type="checkbox" checked title="Use retrieval from your indexed PDF library instead of plain model-only responses." />
-        Use PDF-grounded answers
-      </label>
-      <label class="checkrow" for="deepStudy" title="Expands retrieval depth and context for more thorough, citation-heavy answers. Slower but usually more complete.">
-        <input id="deepStudy" type="checkbox" title="Expands retrieval depth and context for more thorough, citation-heavy answers. Slower but usually more complete." />
-        Deep Study Mode
-      </label>
-      <button id="syncPdfLibrary" class="btn-soft" type="button" title="Indexes new or changed PDFs. OCR fallback is used for scanned/text-only images when available.">Sync New PDFs</button>
-      <button id="uploadLibraryDocs" class="btn-soft" type="button" title="Upload supported documents into the configured library (.pdf, .txt, .md, .html, .htm, .epub).">Upload Documents</button>
-      <input id="libraryUploadInput" type="file" accept=".pdf,.txt,.md,.html,.htm,.epub" multiple style="display:none" />
-      <div id="pdfStatus" class="tiny">PDF index: checking...</div>
-      <div id="pdfProgress" class="pdf-progress hidden"><div id="pdfProgressBar" class="pdf-progress-bar"></div></div>
-
-      <label>App Updates</label>
-      <div id="appVersion" class="tiny">Version: %CURRENT_VERSION%</div>
-      <div id="updateStatus" class="tiny">Updates: not checked</div>
-      <div class="tiny">Updates are always manual. The app never auto-applies updates.</div>
-      <a id="updateNotesLink" class="tiny" href="#" target="_blank" rel="noopener noreferrer" style="display:none">View release notes</a>
-      <button id="checkUpdates" class="btn-soft" type="button">Check for Updates</button>
-      <button id="applyUpdate" class="btn-soft" type="button" disabled>Update to Latest</button>
-
-      <button id="openLibraryDocs" class="btn-soft" type="button">Library Docs</button>
-      <button id="openStash" class="btn-soft" type="button">View Stash</button>
-      <button id="openBibliography" class="btn-soft" type="button">View Bibliography</button>
-      <button id="clear" class="btn-soft" type="button">Clear Conversation</button>
-    </aside>
-
-    <section class="panel chat">
-      <header class="chat-head">
-        <h2>Chat</h2>
-        <div class="hint">Press Enter to send, Shift+Enter for newline</div>
-      </header>
-
-      <div id="messages" class="messages"></div>
-
-      <div class="composer">
-        <textarea id="prompt" placeholder="Ask the model something useful..."></textarea>
-        <div class="prompt-history-row">
-          <select id="promptHistorySelect" title="Select a previous prompt">
-            <option value="">Previous prompts...</option>
-          </select>
-          <button id="promptUseSelected" class="btn-soft" type="button" title="Ask using the selected prompt">Ask</button>
-          <button id="promptPinSelected" class="btn-soft" type="button" title="Pin or unpin the selected prompt">Pin</button>
-          <button id="promptClearHistory" class="btn-soft" type="button" title="Clear unpinned prompt history">Clear</button>
+        <label>App Updates</label>
+        <div id="appVersion" class="tiny">Version: %CURRENT_VERSION%</div>
+        <div id="updateStatus" class="tiny">Updates: not checked</div>
+        <div class="tiny">
+          Updates are always manual. The app never auto-applies updates.
         </div>
-        <div class="composer-row">
-          <button id="send" class="btn-primary" type="button">Send</button>
-          <button id="cancel" class="btn-soft" type="button" disabled>Cancel</button>
-          <button id="studyBrief" class="btn-soft" type="button" title="Creates a structured brief from your PDF library with citations and suggested reading order.">Study Brief</button>
-          <button id="makeBibliography" class="btn-soft" type="button" title="Generates an APA bibliography from the latest PDF-grounded answer and opens bibliography stash.">Generate Bibliography</button>
-          <div id="meta" class="subtle">Ready</div>
+        <a
+          id="updateNotesLink"
+          class="tiny"
+          href="#"
+          target="_blank"
+          rel="noopener noreferrer"
+          style="display: none"
+          >View release notes</a
+        >
+        <button id="checkUpdates" class="btn-soft" type="button">
+          Check for Updates
+        </button>
+        <button id="applyUpdate" class="btn-soft" type="button" disabled>
+          Update to Latest
+        </button>
+
+        <button id="openLibraryDocs" class="btn-soft" type="button">
+          Library Docs
+        </button>
+        <button id="openStash" class="btn-soft" type="button">
+          View Stash
+        </button>
+        <button id="openBibliography" class="btn-soft" type="button">
+          View Bibliography
+        </button>
+        <button id="clear" class="btn-soft" type="button">
+          Clear Conversation
+        </button>
+      </aside>
+
+      <section class="panel chat">
+        <header class="chat-head">
+          <h2>Chat</h2>
+          <div class="hint">Press Enter to send, Shift+Enter for newline</div>
+        </header>
+
+        <div id="messages" class="messages"></div>
+
+        <div class="composer">
+          <textarea
+            id="prompt"
+            placeholder="Ask the model something useful..."
+          ></textarea>
+          <div class="prompt-history-row">
+            <select id="promptHistorySelect" title="Select a previous prompt">
+              <option value="">Previous prompts...</option>
+            </select>
+            <button
+              id="promptUseSelected"
+              class="btn-soft"
+              type="button"
+              title="Ask using the selected prompt"
+            >
+              Ask
+            </button>
+            <button
+              id="promptPinSelected"
+              class="btn-soft"
+              type="button"
+              title="Pin or unpin the selected prompt"
+            >
+              Pin
+            </button>
+            <button
+              id="promptClearHistory"
+              class="btn-soft"
+              type="button"
+              title="Clear unpinned prompt history"
+            >
+              Clear
+            </button>
+          </div>
+          <div class="composer-row">
+            <button id="send" class="btn-primary" type="button">Send</button>
+            <button id="cancel" class="btn-soft" type="button" disabled>
+              Cancel
+            </button>
+            <button
+              id="studyBrief"
+              class="btn-soft"
+              type="button"
+              title="Creates a structured brief from your PDF library with citations and suggested reading order."
+            >
+              Study Brief
+            </button>
+            <button
+              id="makeBibliography"
+              class="btn-soft"
+              type="button"
+              title="Generates an APA bibliography from the latest PDF-grounded answer and opens bibliography stash."
+            >
+              Generate Bibliography
+            </button>
+            <div id="meta" class="subtle">Ready</div>
+          </div>
         </div>
+      </section>
+    </main>
+
+    <div id="stashModal" class="stash-modal stash-hidden">
+      <div class="stash-card">
+        <div class="stash-head">
+          <h3 id="stashTitle">Stashed Snippets</h3>
+          <div class="stash-actions">
+            <button id="stashReload" class="btn-soft" type="button">
+              Reload
+            </button>
+            <button id="stashClearAll" class="btn-soft" type="button">
+              Clear All
+            </button>
+            <button id="stashClose" class="btn-soft" type="button">
+              Close
+            </button>
+          </div>
+        </div>
+        <div id="stashMeta" class="stash-meta">Loading...</div>
+        <div id="stashList" class="stash-list"></div>
       </div>
-    </section>
-  </main>
-
-  <div id="stashModal" class="stash-modal stash-hidden">
-    <div class="stash-card">
-      <div class="stash-head">
-        <h3 id="stashTitle">Stashed Snippets</h3>
-        <div class="stash-actions">
-          <button id="stashReload" class="btn-soft" type="button">Reload</button>
-          <button id="stashClearAll" class="btn-soft" type="button">Clear All</button>
-          <button id="stashClose" class="btn-soft" type="button">Close</button>
-        </div>
-      </div>
-      <div id="stashMeta" class="stash-meta">Loading...</div>
-      <div id="stashList" class="stash-list"></div>
     </div>
-  </div>
 
-  <div id="docsModal" class="docs-modal docs-hidden">
-    <div class="docs-card">
-      <div class="docs-head">
-        <h3>Library Documents</h3>
-        <div class="docs-actions">
-          <button id="docsReload" class="btn-soft" type="button">Reload</button>
-          <button id="docsSelectAll" class="btn-soft" type="button">All</button>
-          <button id="docsSelectNone" class="btn-soft" type="button">None</button>
-          <button id="docsClose" class="btn-soft" type="button">Close</button>
+    <div id="docsModal" class="docs-modal docs-hidden">
+      <div class="docs-card">
+        <div class="docs-head">
+          <h3>Library Documents</h3>
+          <div class="docs-actions">
+            <button id="docsReload" class="btn-soft" type="button">
+              Reload
+            </button>
+            <button id="docsSelectAll" class="btn-soft" type="button">
+              All
+            </button>
+            <button id="docsSelectNone" class="btn-soft" type="button">
+              None
+            </button>
+            <button id="docsClose" class="btn-soft" type="button">Close</button>
+          </div>
         </div>
+        <div class="docs-filter">
+          <input
+            id="docsSearch"
+            type="text"
+            placeholder="Filter by filename or folder..."
+          />
+        </div>
+        <div id="docsMeta" class="docs-meta">Loading...</div>
+        <div id="docsGroups" class="docs-groups"></div>
+        <div id="docsList" class="docs-list"></div>
       </div>
-      <div class="docs-filter">
-        <input id="docsSearch" type="text" placeholder="Filter by filename or folder..." />
-      </div>
-      <div id="docsMeta" class="docs-meta">Loading...</div>
-      <div id="docsGroups" class="docs-groups"></div>
-      <div id="docsList" class="docs-list"></div>
     </div>
-  </div>
-
-</body>
+  </body>
 </html>
