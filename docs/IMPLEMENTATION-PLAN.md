@@ -181,7 +181,7 @@ Suggested commit message:
 
 ### Phase 4 - Extract inline CSS and JS, tighten CSP
 
-Status: TODO
+Status: DONE
 
 Scope:
 
@@ -312,7 +312,7 @@ Update this table as we complete each phase.
 | 1     | main   |            | Added route contract coverage plus deterministic RAG and abstract helper unit tests                                       | python -m unittest tests/test_abstract_helpers.py tests/test_rag_units.py tests/test_routes.py tests/test_security_regressions.py tests/test_update_flow.py                                                         | pass    |
 | 2     | main   |            | Added cross-platform default state/source paths in web+indexer scripts with path-default tests                            | python -m unittest tests/test_path_defaults.py tests/test_abstract_helpers.py tests/test_rag_units.py tests/test_routes.py tests/test_security_regressions.py tests/test_update_flow.py                             | pass    |
 | 3     | main   |            | Extracted embedded HTML/EPUB templates to scripts/templates and loaded at startup with placeholder substitution preserved | python -m unittest -q tests/test_path_defaults.py tests/test_abstract_helpers.py tests/test_rag_units.py && python -m unittest -q tests/test_routes.py tests/test_security_regressions.py tests/test_update_flow.py | pass    |
-| 4     |        |            |                                                                                                                           |                                                                                                                                                                                                                     | pending |
+| 4     | main   |            | Extracted inline CSS/JS to assets, switched templates to external script/style loading, and tightened CSP for self-only scripts | python -m unittest -q tests/test_path_defaults.py tests/test_abstract_helpers.py tests/test_rag_units.py && python -m unittest -q tests/test_routes.py tests/test_security_regressions.py tests/test_update_flow.py | pass    |
 | 5     |        |            |                                                                                                                           |                                                                                                                                                                                                                     | pending |
 | 6     |        |            |                                                                                                                           |                                                                                                                                                                                                                     | pending |
 | 7     |        |            |                                                                                                                           |                                                                                                                                                                                                                     | pending |

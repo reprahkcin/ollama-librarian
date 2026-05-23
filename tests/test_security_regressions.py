@@ -9,7 +9,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 APP_PATH = REPO_ROOT / "scripts" / "ollama-web-chat.py"
-INDEX_TEMPLATE_PATH = REPO_ROOT / "scripts" / "templates" / "index.html"
+APP_JS_PATH = REPO_ROOT / "scripts" / "assets" / "app.js"
 
 
 def load_app_module(host: str = "127.0.0.1", api_key: str = "") -> types.ModuleType:
@@ -99,7 +99,7 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertTrue(allowed)
 
     def test_citation_rendering_escapes_html_before_innerhtml(self):
-        source = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
+        source = APP_JS_PATH.read_text(encoding="utf-8")
         self.assertRegex(
             source,
             re.compile(
@@ -107,11 +107,10 @@ class SecurityRegressionTests(unittest.TestCase):
             ),
         )
 
-    def test_csp_uses_nonce_for_scripts_on_main_page(self):
+    def test_csp_uses_self_only_scripts_on_main_page(self):
         app = load_app_module()
         handler = object.__new__(app.Handler)
         handler.path = "/"
-        handler._csp_nonce = "nonce-test-value"
 
         captured = {}
 
@@ -123,14 +122,14 @@ class SecurityRegressionTests(unittest.TestCase):
         app.Handler._send_security_headers(handler)
 
         csp = captured.get("Content-Security-Policy", "")
-        self.assertIn("script-src 'self' 'nonce-nonce-test-value'", csp)
+        self.assertIn("script-src 'self'", csp)
+        self.assertNotIn("nonce-", csp)
         self.assertNotIn("script-src 'self' 'unsafe-inline'", csp)
 
-    def test_csp_uses_nonce_for_scripts_on_epub_reader(self):
+    def test_csp_uses_self_only_scripts_on_epub_reader(self):
         app = load_app_module()
         handler = object.__new__(app.Handler)
         handler.path = "/epub-reader"
-        handler._csp_nonce = "nonce-test-value"
 
         captured = {}
 
@@ -142,7 +141,8 @@ class SecurityRegressionTests(unittest.TestCase):
         app.Handler._send_security_headers(handler)
 
         csp = captured.get("Content-Security-Policy", "")
-        self.assertIn("script-src 'self' 'nonce-nonce-test-value'", csp)
+        self.assertIn("script-src 'self'", csp)
+        self.assertNotIn("nonce-", csp)
         self.assertNotIn("script-src 'self' 'unsafe-inline'", csp)
 
     def test_abstract_recommendation_normalization(self):

@@ -6,7 +6,6 @@ import mimetypes
 import os
 import platform
 import re
-import secrets
 import sqlite3
 import subprocess
 import threading
@@ -1403,19 +1402,13 @@ EPUB_READER_HTML = _load_template("epub-reader.html")
 
 
 class Handler(BaseHTTPRequestHandler):
-    def _make_csp_nonce(self) -> str:
-        return secrets.token_urlsafe(18)
-
     def _send_security_headers(self):
-        nonce = str(getattr(self, "_csp_nonce", "") or "").strip()
         script_src = "script-src 'self'"
-        if nonce:
-            script_src = f"{script_src} 'nonce-{nonce}'"
 
         if self.path.startswith("/epub-reader"):
             self.send_header(
                 "Content-Security-Policy",
-                "default-src 'self'; style-src 'self' 'unsafe-inline' blob:; "
+                "default-src 'self'; style-src 'self' blob:; "
                 f"{script_src}; "
                 "img-src 'self' data: blob:; font-src 'self' data: blob:; connect-src 'self' blob:; frame-src 'self' blob:; "
                 "object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
@@ -1423,7 +1416,7 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.send_header(
                 "Content-Security-Policy",
-                "default-src 'self'; style-src 'self' 'unsafe-inline'; "
+                "default-src 'self'; style-src 'self'; "
                 f"{script_src}; "
                 "img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; "
                 "base-uri 'none'; form-action 'self'",
@@ -1651,23 +1644,17 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if self.path == "/":
-            nonce = self._make_csp_nonce()
-            self._csp_nonce = nonce
             html = HTML.replace("%OLLAMA_BASE%", OLLAMA_BASE)
             html = html.replace("%API_KEY_REQUIRED%",
                                 "true" if bool(API_KEY) else "false")
             html = html.replace("%MAX_UPLOAD_BYTES%", str(MAX_UPLOAD_BYTES))
             html = html.replace("%CURRENT_VERSION%", read_current_version())
-            html = html.replace("%CSP_NONCE_ATTR%", f'nonce="{nonce}"')
             return self._send(200, html, "text/html; charset=utf-8")
 
         if route_path == "/epub-reader":
-            nonce = self._make_csp_nonce()
-            self._csp_nonce = nonce
             html = EPUB_READER_HTML.replace(
                 "%API_KEY_REQUIRED%", "true" if bool(API_KEY) else "false"
             )
-            html = html.replace("%CSP_NONCE_ATTR%", f'nonce="{nonce}"')
             return self._send(200, html, "text/html; charset=utf-8")
 
         if route_path.startswith("/assets/"):
