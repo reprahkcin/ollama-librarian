@@ -103,7 +103,8 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertRegex(
             source,
             re.compile(
-                r"text\.innerHTML\s*=\s*renderInlineMarkdown\(\s*escapeHtml\(\s*String\(entry\.citation\s*\|\|\s*''\)\s*\)\s*\)\s*;"
+                r"text\.innerHTML\s*=\s*renderInlineMarkdown\(\s*escapeHtml\(\s*String\(entry\.citation\s*\|\|\s*(?:''|\"\")\)\s*\)\s*,?\s*\)\s*;",
+                re.DOTALL,
             ),
         )
 

@@ -1635,6 +1635,685 @@ class Handler(BaseHTTPRequestHandler):
             )
             return None
 
+    # GET route handlers
+    def _handle_get_root(self):
+        html = HTML.replace("%OLLAMA_BASE%", OLLAMA_BASE)
+        html = html.replace("%API_KEY_REQUIRED%", "true" if bool(API_KEY) else "false")
+        html = html.replace("%MAX_UPLOAD_BYTES%", str(MAX_UPLOAD_BYTES))
+        html = html.replace("%CURRENT_VERSION%", read_current_version())
+        return self._send(200, html, "text/html; charset=utf-8")
+
+    def _handle_get_epub_reader(self):
+        html = EPUB_READER_HTML.replace(
+            "%API_KEY_REQUIRED%", "true" if bool(API_KEY) else "false"
+        )
+        return self._send(200, html, "text/html; charset=utf-8")
+
+    def _handle_get_assets(self, route_path):
+        rel_asset = unquote(route_path[len("/assets/"):]).lstrip("/")
+        candidate = (ASSET_ROOT / rel_asset).resolve()
+        asset_root_resolved = ASSET_ROOT.resolve()
+        if (
+            not str(candidate).startswith(str(asset_root_resolved) + os.sep)
+            or not candidate.is_file()
+        ):
+            return self._send(404, "Not found")
+
+        content_type, _ = mimetypes.guess_type(str(candidate))
+        if not content_type:
+            content_type = "application/octet-stream"
+        with open(candidate, "rb") as f:
+            payload = f.read()
+        return self._send_bytes(
+            200,
+            payload,
+            content_type,
+            {"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
+    def _handle_get_tags(self):
+        return self._proxy("GET", "/api/tags", None)
+
+    def _handle_get_history(self):
+        return self._send(
+            200,
+            json.dumps(load_history(), ensure_ascii=True),
+            "application/json; charset=utf-8",
+        )
+
+    def _handle_get_instructions(self):
+        return self._send(
+            200,
+            json.dumps(load_instructions(), ensure_ascii=True),
+            "application/json; charset=utf-8",
+        )
+
+    def _handle_get_library_docs(self):
+        try:
+            payload = list_library_docs()
+            return self._send(
+                200,
+                json.dumps(payload, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        except Exception as exc:
+            return self._send(
+                500,
+                json.dumps({"error": str(exc)}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+    def _handle_get_stash(self, parsed_url):
+        params = parse_qs(parsed_url.query)
+        limit_raw = params.get("limit", ["200"])[0]
+        raw_entry_type = params.get("entry_type", [""])[0]
+        entry_type = _normalize_entry_type(raw_entry_type) if str(raw_entry_type).strip() else None
+        try:
+            limit = int(limit_raw)
+        except Exception:
+            limit = 200
+        try:
+            payload = list_stash_entries(limit=max(0, limit), entry_type=entry_type)
+            return self._send(
+                200,
+                json.dumps(payload, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        except Exception as exc:
+            return self._send(
+                500,
+                json.dumps({"error": str(exc)}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+    def _handle_get_bibliography(self, parsed_url):
+        params = parse_qs(parsed_url.query)
+        limit_raw = params.get("limit", ["200"])[0]
+        try:
+            limit = int(limit_raw)
+        except Exception:
+            limit = 200
+        try:
+            payload = list_stash_entries(limit=max(0, limit), entry_type="bibliography")
+            return self._send(
+                200,
+                json.dumps(payload, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        except Exception as exc:
+            return self._send(
+                500,
+                json.dumps({"error": str(exc)}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+    def _handle_get_pdf_status(self):
+        return self._send(
+            200,
+            json.dumps(get_pdf_status(), ensure_ascii=True),
+            "application/json; charset=utf-8",
+        )
+
+    def _handle_get_update_status(self):
+        return self._send(
+            200,
+            json.dumps(get_update_status(), ensure_ascii=True),
+            "application/json; charset=utf-8",
+        )
+
+    def _handle_get_update_check(self):
+        return self._send(
+            200,
+            json.dumps(get_update_status(), ensure_ascii=True),
+            "application/json; charset=utf-8",
+        )
+
+    def _handle_get_update_events(self, parsed_url):
+        params = parse_qs(parsed_url.query)
+        limit_raw = params.get("limit", ["50"])[0]
+        try:
+            limit = int(limit_raw)
+        except Exception:
+            limit = 50
+        return self._send(
+            200,
+            json.dumps(get_update_events(limit=limit), ensure_ascii=True),
+            "application/json; charset=utf-8",
+        )
+
+    def _handle_get_pdf_file(self, parsed_url):
+        params = parse_qs(parsed_url.query)
+        pdf_path = params.get("path", [""])[0]
+        resolved_path, error, code = self._resolve_library_file_path(pdf_path)
+        if error:
+            return self._send(
+                code,
+                json.dumps({"error": error}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        if not resolved_path.lower().endswith(".pdf"):
+            return self._send(
+                404,
+                json.dumps({"error": "PDF not found"}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        filename = os.path.basename(resolved_path)
+        return self._send_file(
+            resolved_path,
+            "application/pdf",
+            {
+                "Content-Disposition": build_inline_content_disposition(filename),
+                "Cache-Control": "no-cache",
+            },
+        )
+
+    def _handle_get_epub_file(self, parsed_url):
+        params = parse_qs(parsed_url.query)
+        epub_path = params.get("path", [""])[0]
+        resolved_path, error, code = self._resolve_library_file_path(epub_path)
+        if error:
+            return self._send(
+                code,
+                json.dumps({"error": error}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        if not resolved_path.lower().endswith(".epub"):
+            return self._send(
+                404,
+                json.dumps({"error": "EPUB not found"}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        filename = os.path.basename(resolved_path)
+        return self._send_file(
+            resolved_path,
+            "application/epub+zip",
+            {
+                "Content-Disposition": build_inline_content_disposition(filename),
+                "Cache-Control": "no-cache",
+            },
+        )
+
+    # POST route handlers
+    def _handle_post_generate(self):
+        raw_length = self.headers.get("Content-Length", "0")
+        try:
+            length = int(raw_length)
+        except ValueError:
+            return self._send(
+                400,
+                json.dumps({"error": "Invalid Content-Length"}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        if length < 0:
+            return self._send(
+                400,
+                json.dumps({"error": "Invalid Content-Length"}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        if length > MAX_BODY_BYTES:
+            return self._send(
+                413,
+                json.dumps({"error": "Request body too large"}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        data = self.rfile.read(length) if length > 0 else b"{}"
+        return self._proxy("POST", "/api/generate", data)
+
+    def _handle_post_abstract_evaluate(self):
+        payload = self._read_json_body()
+        if payload is None:
+            return
+
+        model = _normalize_whitespace(payload.get("model", ""))
+        research_need = str(payload.get("research_need", "") or "").strip()
+        abstract_text = str(payload.get("abstract", "") or "").strip()
+        instructions = str(payload.get("instructions", "") or "").strip()
+
+        if not model:
+            return self._send(
+                400,
+                json.dumps({"ok": False, "error": "model is required"}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        if not research_need:
+            return self._send(
+                400,
+                json.dumps({"ok": False, "error": "research_need is required"}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        if not abstract_text:
+            return self._send(
+                400,
+                json.dumps({"ok": False, "error": "abstract is required"}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        if len(research_need) > ABSTRACT_NEED_MAX_CHARS:
+            return self._send(
+                400,
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": f"research_need exceeds {ABSTRACT_NEED_MAX_CHARS} characters",
+                    },
+                    ensure_ascii=True,
+                ),
+                "application/json; charset=utf-8",
+            )
+        if len(abstract_text) > ABSTRACT_TEXT_MAX_CHARS:
+            return self._send(
+                400,
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": f"abstract exceeds {ABSTRACT_TEXT_MAX_CHARS} characters",
+                    },
+                    ensure_ascii=True,
+                ),
+                "application/json; charset=utf-8",
+            )
+
+        try:
+            result = evaluate_abstract_relevance(
+                model=model,
+                research_need=research_need,
+                abstract_text=abstract_text,
+                instructions=instructions,
+            )
+        except RuntimeError as exc:
+            LOGGER.warning("Abstract evaluation failed: %s", exc)
+            return self._send(
+                502,
+                json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        except Exception:
+            LOGGER.exception("Unexpected abstract evaluation failure")
+            return self._send(
+                500,
+                json.dumps({"ok": False, "error": "Unexpected evaluation error"}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        return self._send(
+            200,
+            json.dumps(result, ensure_ascii=True),
+            "application/json; charset=utf-8",
+        )
+
+    def _handle_post_history(self):
+        payload = self._read_json_body()
+        if payload is None:
+            return
+
+        role = payload.get("role")
+        text = payload.get("text")
+        ts = payload.get("ts")
+        if role not in {"user", "assistant", "system"} or not isinstance(text, str):
+            return self._send(
+                400,
+                json.dumps({"error": "role and text are required"}),
+                "application/json; charset=utf-8",
+            )
+
+        append_history({"role": role, "text": text, "ts": ts})
+        return self._send(200, json.dumps({"ok": True}), "application/json; charset=utf-8")
+
+    def _handle_post_instructions(self):
+        payload = self._read_json_body()
+        if payload is None:
+            return
+
+        instructions = payload.get("instructions", "")
+        if not isinstance(instructions, str):
+            return self._send(
+                400,
+                json.dumps({"error": "instructions must be a string"}),
+                "application/json; charset=utf-8",
+            )
+
+        save_instructions(instructions)
+        return self._send(200, json.dumps({"ok": True}), "application/json; charset=utf-8")
+
+    def _handle_post_pdf_index(self):
+        started = start_pdf_index_job()
+        return self._send(
+            200,
+            json.dumps({"ok": True, "started": started}, ensure_ascii=True),
+            "application/json; charset=utf-8",
+        )
+
+    def _handle_post_update_apply(self):
+        payload = self._read_json_body()
+        if payload is None:
+            return
+
+        requested_target = payload.get("target_version", "")
+        target_version = str(requested_target or "").strip()
+        result = start_update_apply(target_version)
+        code = 202
+        if not result.get("ok"):
+            error_code = str(result.get("error_code") or "")
+            if error_code == "already_running":
+                code = 409
+            elif error_code == "invalid_target":
+                code = 400
+            elif error_code == "preflight_failed":
+                code = 412
+            elif error_code == "apply_start_failed":
+                code = 500
+            else:
+                code = 400
+        return self._send(
+            code,
+            json.dumps(result, ensure_ascii=True),
+            "application/json; charset=utf-8",
+        )
+
+    def _handle_post_update_check(self):
+        payload = check_for_updates()
+        code = 200 if payload.get("ok") else 502
+        return self._send(
+            code,
+            json.dumps(payload, ensure_ascii=True),
+            "application/json; charset=utf-8",
+        )
+
+    def _handle_post_pdf_ask(self):
+        payload = self._read_json_body()
+        if payload is None:
+            return
+
+        query = payload.get("query", "")
+        model = payload.get("model", "qwen2.5:14b")
+        try:
+            top_k = int(payload.get("top_k", PDF_TOP_K))
+        except Exception:
+            top_k = PDF_TOP_K
+        top_k = max(1, min(100, top_k))
+        deepen = bool(payload.get("deepen", False))
+        include_paths = payload.get("include_paths", [])
+        exclude_paths = payload.get("exclude_paths", [])
+        if not isinstance(include_paths, list):
+            include_paths = []
+        if not isinstance(exclude_paths, list):
+            exclude_paths = []
+
+        if not isinstance(query, str) or not query.strip():
+            return self._send(
+                400,
+                json.dumps({"error": "query is required"}),
+                "application/json; charset=utf-8",
+            )
+
+        try:
+            result = ask_pdf_library(
+                query.strip(),
+                str(model),
+                top_k,
+                deepen=deepen,
+                include_paths=[str(x) for x in include_paths if isinstance(x, str)],
+                exclude_paths=[str(x) for x in exclude_paths if isinstance(x, str)],
+            )
+            return self._send(
+                200,
+                json.dumps(result, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        except Exception as exc:
+            return self._send(
+                502,
+                json.dumps({"error": str(exc)}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+    def _handle_post_pdf_brief(self):
+        payload = self._read_json_body()
+        if payload is None:
+            return
+
+        query = payload.get("query", "")
+        model = payload.get("model", "qwen2.5:14b")
+        try:
+            top_k = int(payload.get("top_k", 14))
+        except Exception:
+            top_k = 14
+        top_k = max(1, min(100, top_k))
+        include_paths = payload.get("include_paths", [])
+        exclude_paths = payload.get("exclude_paths", [])
+        if not isinstance(include_paths, list):
+            include_paths = []
+        if not isinstance(exclude_paths, list):
+            exclude_paths = []
+        if not isinstance(query, str) or not query.strip():
+            return self._send(
+                400,
+                json.dumps({"error": "query is required"}),
+                "application/json; charset=utf-8",
+            )
+
+        brief_prompt = (
+            "Create a concise study brief for the topic below using the library context. "
+            "Include sections: Overview, Key Concepts, Formulas/Definitions (if relevant), "
+            "and Suggested Reading Order with citations.\\n\\n"
+            f"Topic: {query.strip()}"
+        )
+
+        try:
+            result = ask_pdf_library(
+                brief_prompt,
+                str(model),
+                top_k,
+                deepen=True,
+                include_paths=[str(x) for x in include_paths if isinstance(x, str)],
+                exclude_paths=[str(x) for x in exclude_paths if isinstance(x, str)],
+            )
+            result["brief_for"] = query.strip()
+            return self._send(
+                200,
+                json.dumps(result, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        except Exception as exc:
+            return self._send(
+                502,
+                json.dumps({"error": str(exc)}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+    def _handle_post_library_upload(self, parsed_url):
+        params = parse_qs(parsed_url.query)
+        raw_name = params.get("name", [""])[0]
+        root, target_path, error, code = self._resolve_upload_target_path(raw_name)
+        if error:
+            return self._send(
+                code,
+                json.dumps({"error": error}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        raw_length = self.headers.get("Content-Length", "0")
+        try:
+            length = int(raw_length)
+        except ValueError:
+            return self._send(
+                400,
+                json.dumps({"error": "Invalid Content-Length"}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        if length <= 0:
+            return self._send(
+                400,
+                json.dumps({"error": "Request body is required"}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        if length > MAX_UPLOAD_BYTES:
+            return self._send(
+                413,
+                json.dumps({"error": "Upload exceeds maximum size"}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        tmp_path = root / f".upload-{int(time.time() * 1000)}-{os.getpid()}-{uuid.uuid4().hex}.part"
+        written = 0
+        try:
+            with open(tmp_path, "wb") as out_f:
+                remaining = length
+                while remaining > 0:
+                    chunk = self.rfile.read(min(64 * 1024, remaining))
+                    if not chunk:
+                        raise ValueError("Unexpected end of upload stream")
+                    out_f.write(chunk)
+                    written += len(chunk)
+                    remaining -= len(chunk)
+
+            if written != length:
+                raise ValueError("Upload size mismatch")
+
+            os.replace(tmp_path, target_path)
+        except ValueError as exc:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except Exception:
+                pass
+            return self._send(
+                400,
+                json.dumps({"error": str(exc)}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        except Exception as exc:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except Exception:
+                pass
+            return self._send(
+                500,
+                json.dumps({"error": f"Failed to save upload: {exc}"}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        rel_path = os.path.relpath(str(target_path), str(root))
+        return self._send(
+            200,
+            json.dumps({"ok": True, "rel_path": rel_path, "bytes": written}, ensure_ascii=True),
+            "application/json; charset=utf-8",
+        )
+
+    def _handle_post_stash(self):
+        payload = self._read_json_body()
+        if payload is None:
+            return
+
+        text = payload.get("text", "")
+        if not isinstance(text, str) or not text.strip():
+            return self._send(
+                400,
+                json.dumps({"error": "text is required"}),
+                "application/json; charset=utf-8",
+            )
+
+        entry = {
+            "saved_at": int(time.time()),
+            "saved_at_iso": payload.get("ts") if isinstance(payload.get("ts"), str) else None,
+            "model": payload.get("model") if isinstance(payload.get("model"), str) else "",
+            "use_pdf_library": bool(payload.get("use_pdf_library", False)),
+            "entry_type": payload.get("entry_type") if isinstance(payload.get("entry_type"), str) else "response",
+            "query": payload.get("query") if isinstance(payload.get("query"), str) else "",
+            "sources": payload.get("sources") if isinstance(payload.get("sources"), list) else [],
+            "text": text.strip(),
+        }
+
+        try:
+            result = append_stash_entry(entry)
+            return self._send(
+                200,
+                json.dumps(result, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        except Exception as exc:
+            return self._send(
+                502,
+                json.dumps({"error": str(exc)}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+    # DELETE route handlers
+    def _handle_delete_history(self):
+        save_history([])
+        return self._send(200, json.dumps({"ok": True}), "application/json; charset=utf-8")
+
+    def _handle_delete_stash(self, parsed_url):
+        params = parse_qs(parsed_url.query)
+        raw_entry_type = params.get("entry_type", [""])[0]
+        entry_type = _normalize_entry_type(raw_entry_type) if str(raw_entry_type).strip() else None
+        if params.get("all", [""])[0] == "1":
+            try:
+                result = clear_stash_entries(entry_type=entry_type)
+                return self._send(
+                    200,
+                    json.dumps(result, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+            except Exception as exc:
+                return self._send(
+                    500,
+                    json.dumps({"error": str(exc)}, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+
+        stash_id_raw = params.get("id", [None])[0]
+        if stash_id_raw is None:
+            return self._send(
+                400,
+                json.dumps({"error": "id is required (or set all=1)"}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        try:
+            stash_id = int(stash_id_raw)
+            result = delete_stash_entry(stash_id)
+            return self._send(
+                200,
+                json.dumps(result, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        except Exception as exc:
+            return self._send(
+                404,
+                json.dumps({"error": str(exc)}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+    def _handle_delete_bibliography(self, parsed_url):
+        params = parse_qs(parsed_url.query)
+        if params.get("all", [""])[0] == "1":
+            try:
+                result = clear_stash_entries(entry_type="bibliography")
+                return self._send(
+                    200,
+                    json.dumps(result, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+            except Exception as exc:
+                return self._send(
+                    500,
+                    json.dumps({"error": str(exc)}, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+
+        return self._send(
+            400,
+            json.dumps({"error": "set all=1 to clear bibliography stash"}, ensure_ascii=True),
+            "application/json; charset=utf-8",
+        )
+
     def do_GET(self):
         parsed_url = urlparse(self.path)
         route_path = parsed_url.path
@@ -1642,213 +2321,29 @@ class Handler(BaseHTTPRequestHandler):
         if not self._require_api_auth_for_route(route_path):
             return
 
-        if self.path == "/":
-            html = HTML.replace("%OLLAMA_BASE%", OLLAMA_BASE)
-            html = html.replace("%API_KEY_REQUIRED%",
-                                "true" if bool(API_KEY) else "false")
-            html = html.replace("%MAX_UPLOAD_BYTES%", str(MAX_UPLOAD_BYTES))
-            html = html.replace("%CURRENT_VERSION%", read_current_version())
-            return self._send(200, html, "text/html; charset=utf-8")
-
-        if route_path == "/epub-reader":
-            html = EPUB_READER_HTML.replace(
-                "%API_KEY_REQUIRED%", "true" if bool(API_KEY) else "false"
-            )
-            return self._send(200, html, "text/html; charset=utf-8")
-
         if route_path.startswith("/assets/"):
-            rel_asset = unquote(route_path[len("/assets/"):]).lstrip("/")
-            candidate = (ASSET_ROOT / rel_asset).resolve()
-            asset_root_resolved = ASSET_ROOT.resolve()
-            if (
-                not str(candidate).startswith(
-                    str(asset_root_resolved) + os.sep)
-                or not candidate.is_file()
-            ):
-                return self._send(404, "Not found")
+            return self._handle_get_assets(route_path)
 
-            content_type, _ = mimetypes.guess_type(str(candidate))
-            if not content_type:
-                content_type = "application/octet-stream"
-            with open(candidate, "rb") as f:
-                payload = f.read()
-            return self._send_bytes(
-                200,
-                payload,
-                content_type,
-                {"Cache-Control": "public, max-age=31536000, immutable"},
-            )
+        get_routes = {
+            "/": lambda: self._handle_get_root(),
+            "/epub-reader": lambda: self._handle_get_epub_reader(),
+            "/api/tags": lambda: self._handle_get_tags(),
+            "/api/history": lambda: self._handle_get_history(),
+            "/api/instructions": lambda: self._handle_get_instructions(),
+            "/api/library/docs": lambda: self._handle_get_library_docs(),
+            "/api/stash": lambda: self._handle_get_stash(parsed_url),
+            "/api/bibliography": lambda: self._handle_get_bibliography(parsed_url),
+            "/api/pdf/status": lambda: self._handle_get_pdf_status(),
+            "/api/update/status": lambda: self._handle_get_update_status(),
+            "/api/update/check": lambda: self._handle_get_update_check(),
+            "/api/update/events": lambda: self._handle_get_update_events(parsed_url),
+            "/api/pdf/file": lambda: self._handle_get_pdf_file(parsed_url),
+            "/api/epub/file": lambda: self._handle_get_epub_file(parsed_url),
+        }
 
-        if route_path == "/api/tags":
-            return self._proxy("GET", "/api/tags", None)
-
-        if route_path == "/api/history":
-            return self._send(
-                200,
-                json.dumps(load_history(), ensure_ascii=True),
-                "application/json; charset=utf-8",
-            )
-
-        if route_path == "/api/instructions":
-            return self._send(
-                200,
-                json.dumps(load_instructions(), ensure_ascii=True),
-                "application/json; charset=utf-8",
-            )
-
-        if route_path == "/api/library/docs":
-            try:
-                payload = list_library_docs()
-                return self._send(
-                    200,
-                    json.dumps(payload, ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-            except Exception as exc:
-                return self._send(
-                    500,
-                    json.dumps({"error": str(exc)}, ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-
-        if route_path == "/api/stash":
-            params = parse_qs(parsed_url.query)
-            limit_raw = params.get("limit", ["200"])[0]
-            raw_entry_type = params.get("entry_type", [""])[0]
-            entry_type = _normalize_entry_type(raw_entry_type) if str(
-                raw_entry_type).strip() else None
-            try:
-                limit = int(limit_raw)
-            except Exception:
-                limit = 200
-            try:
-                payload = list_stash_entries(
-                    limit=max(0, limit), entry_type=entry_type)
-                return self._send(
-                    200,
-                    json.dumps(payload, ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-            except Exception as exc:
-                return self._send(
-                    500,
-                    json.dumps({"error": str(exc)}, ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-
-        if route_path == "/api/bibliography":
-            params = parse_qs(parsed_url.query)
-            limit_raw = params.get("limit", ["200"])[0]
-            try:
-                limit = int(limit_raw)
-            except Exception:
-                limit = 200
-            try:
-                payload = list_stash_entries(
-                    limit=max(0, limit), entry_type="bibliography")
-                return self._send(
-                    200,
-                    json.dumps(payload, ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-            except Exception as exc:
-                return self._send(
-                    500,
-                    json.dumps({"error": str(exc)}, ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-
-        if route_path == "/api/pdf/status":
-            return self._send(
-                200,
-                json.dumps(get_pdf_status(), ensure_ascii=True),
-                "application/json; charset=utf-8",
-            )
-
-        if route_path == "/api/update/status":
-            return self._send(
-                200,
-                json.dumps(get_update_status(), ensure_ascii=True),
-                "application/json; charset=utf-8",
-            )
-
-        if route_path == "/api/update/check":
-            return self._send(
-                200,
-                json.dumps(get_update_status(), ensure_ascii=True),
-                "application/json; charset=utf-8",
-            )
-
-        if route_path == "/api/update/events":
-            params = parse_qs(parsed_url.query)
-            limit_raw = params.get("limit", ["50"])[0]
-            try:
-                limit = int(limit_raw)
-            except Exception:
-                limit = 50
-            return self._send(
-                200,
-                json.dumps(get_update_events(limit=limit), ensure_ascii=True),
-                "application/json; charset=utf-8",
-            )
-
-        if route_path == "/api/pdf/file":
-            params = parse_qs(parsed_url.query)
-            pdf_path = params.get("path", [""])[0]
-            resolved_path, error, code = self._resolve_library_file_path(
-                pdf_path)
-            if error:
-                return self._send(
-                    code,
-                    json.dumps({"error": error}, ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-
-            if not resolved_path.lower().endswith(".pdf"):
-                return self._send(
-                    404,
-                    json.dumps({"error": "PDF not found"}, ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-
-            filename = os.path.basename(resolved_path)
-            return self._send_file(
-                resolved_path,
-                "application/pdf",
-                {
-                    "Content-Disposition": build_inline_content_disposition(filename),
-                    "Cache-Control": "no-cache",
-                },
-            )
-
-        if route_path == "/api/epub/file":
-            params = parse_qs(parsed_url.query)
-            epub_path = params.get("path", [""])[0]
-            resolved_path, error, code = self._resolve_library_file_path(
-                epub_path)
-            if error:
-                return self._send(
-                    code,
-                    json.dumps({"error": error}, ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-
-            if not resolved_path.lower().endswith(".epub"):
-                return self._send(
-                    404,
-                    json.dumps({"error": "EPUB not found"}, ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-
-            filename = os.path.basename(resolved_path)
-            return self._send_file(
-                resolved_path,
-                "application/epub+zip",
-                {
-                    "Content-Disposition": build_inline_content_disposition(filename),
-                    "Cache-Control": "no-cache",
-                },
-            )
+        handler = get_routes.get(route_path)
+        if handler:
+            return handler()
 
         return self._send(404, "Not found")
 
@@ -1862,438 +2357,23 @@ class Handler(BaseHTTPRequestHandler):
         if not self._require_same_origin_for_state_change(route_path):
             return
 
-        if route_path == "/api/generate":
-            raw_length = self.headers.get("Content-Length", "0")
-            try:
-                length = int(raw_length)
-            except ValueError:
-                return self._send(
-                    400,
-                    json.dumps({"error": "Invalid Content-Length"},
-                               ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-            if length < 0:
-                return self._send(
-                    400,
-                    json.dumps({"error": "Invalid Content-Length"},
-                               ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-            if length > MAX_BODY_BYTES:
-                return self._send(
-                    413,
-                    json.dumps({"error": "Request body too large"},
-                               ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-            data = self.rfile.read(length) if length > 0 else b"{}"
-            return self._proxy("POST", "/api/generate", data)
+        post_routes = {
+            "/api/generate": lambda: self._handle_post_generate(),
+            "/api/abstract/evaluate": lambda: self._handle_post_abstract_evaluate(),
+            "/api/history": lambda: self._handle_post_history(),
+            "/api/instructions": lambda: self._handle_post_instructions(),
+            "/api/pdf/index": lambda: self._handle_post_pdf_index(),
+            "/api/update/apply": lambda: self._handle_post_update_apply(),
+            "/api/update/check": lambda: self._handle_post_update_check(),
+            "/api/pdf/ask": lambda: self._handle_post_pdf_ask(),
+            "/api/pdf/brief": lambda: self._handle_post_pdf_brief(),
+            "/api/library/upload": lambda: self._handle_post_library_upload(parsed_url),
+            "/api/stash": lambda: self._handle_post_stash(),
+        }
 
-        if route_path == "/api/abstract/evaluate":
-            payload = self._read_json_body()
-            if payload is None:
-                return
-
-            model = _normalize_whitespace(payload.get("model", ""))
-            research_need = str(payload.get("research_need", "") or "").strip()
-            abstract_text = str(payload.get("abstract", "") or "").strip()
-            instructions = str(payload.get("instructions", "") or "").strip()
-
-            if not model:
-                return self._send(
-                    400,
-                    json.dumps(
-                        {"ok": False, "error": "model is required"}, ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-            if not research_need:
-                return self._send(
-                    400,
-                    json.dumps(
-                        {"ok": False, "error": "research_need is required"}, ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-            if not abstract_text:
-                return self._send(
-                    400,
-                    json.dumps(
-                        {"ok": False, "error": "abstract is required"}, ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-
-            if len(research_need) > ABSTRACT_NEED_MAX_CHARS:
-                return self._send(
-                    400,
-                    json.dumps(
-                        {
-                            "ok": False,
-                            "error": f"research_need exceeds {ABSTRACT_NEED_MAX_CHARS} characters",
-                        },
-                        ensure_ascii=True,
-                    ),
-                    "application/json; charset=utf-8",
-                )
-            if len(abstract_text) > ABSTRACT_TEXT_MAX_CHARS:
-                return self._send(
-                    400,
-                    json.dumps(
-                        {
-                            "ok": False,
-                            "error": f"abstract exceeds {ABSTRACT_TEXT_MAX_CHARS} characters",
-                        },
-                        ensure_ascii=True,
-                    ),
-                    "application/json; charset=utf-8",
-                )
-
-            try:
-                result = evaluate_abstract_relevance(
-                    model=model,
-                    research_need=research_need,
-                    abstract_text=abstract_text,
-                    instructions=instructions,
-                )
-            except RuntimeError as exc:
-                LOGGER.warning("Abstract evaluation failed: %s", exc)
-                return self._send(
-                    502,
-                    json.dumps({"ok": False, "error": str(exc)},
-                               ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-            except Exception:
-                LOGGER.exception("Unexpected abstract evaluation failure")
-                return self._send(
-                    500,
-                    json.dumps(
-                        {"ok": False, "error": "Unexpected evaluation error"}, ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-
-            return self._send(
-                200,
-                json.dumps(result, ensure_ascii=True),
-                "application/json; charset=utf-8",
-            )
-
-        if route_path == "/api/history":
-            payload = self._read_json_body()
-            if payload is None:
-                return
-
-            role = payload.get("role")
-            text = payload.get("text")
-            ts = payload.get("ts")
-            if role not in {"user", "assistant", "system"} or not isinstance(text, str):
-                return self._send(
-                    400,
-                    json.dumps({"error": "role and text are required"}),
-                    "application/json; charset=utf-8",
-                )
-
-            append_history({"role": role, "text": text, "ts": ts})
-            return self._send(200, json.dumps({"ok": True}), "application/json; charset=utf-8")
-
-        if route_path == "/api/instructions":
-            payload = self._read_json_body()
-            if payload is None:
-                return
-
-            instructions = payload.get("instructions", "")
-            if not isinstance(instructions, str):
-                return self._send(
-                    400,
-                    json.dumps({"error": "instructions must be a string"}),
-                    "application/json; charset=utf-8",
-                )
-
-            save_instructions(instructions)
-            return self._send(200, json.dumps({"ok": True}), "application/json; charset=utf-8")
-
-        if route_path == "/api/pdf/index":
-            started = start_pdf_index_job()
-            return self._send(
-                200,
-                json.dumps({"ok": True, "started": started},
-                           ensure_ascii=True),
-                "application/json; charset=utf-8",
-            )
-
-        if route_path == "/api/update/apply":
-            payload = self._read_json_body()
-            if payload is None:
-                return
-
-            requested_target = payload.get("target_version", "")
-            target_version = str(requested_target or "").strip()
-            result = start_update_apply(target_version)
-            code = 202
-            if not result.get("ok"):
-                error_code = str(result.get("error_code") or "")
-                if error_code == "already_running":
-                    code = 409
-                elif error_code == "invalid_target":
-                    code = 400
-                elif error_code == "preflight_failed":
-                    code = 412
-                elif error_code == "apply_start_failed":
-                    code = 500
-                else:
-                    code = 400
-            return self._send(
-                code,
-                json.dumps(result, ensure_ascii=True),
-                "application/json; charset=utf-8",
-            )
-
-        if route_path == "/api/update/check":
-            payload = check_for_updates()
-            code = 200 if payload.get("ok") else 502
-            return self._send(
-                code,
-                json.dumps(payload, ensure_ascii=True),
-                "application/json; charset=utf-8",
-            )
-
-        if route_path == "/api/pdf/ask":
-            payload = self._read_json_body()
-            if payload is None:
-                return
-
-            query = payload.get("query", "")
-            model = payload.get("model", "qwen2.5:14b")
-            try:
-                top_k = int(payload.get("top_k", PDF_TOP_K))
-            except Exception:
-                top_k = PDF_TOP_K
-            top_k = max(1, min(100, top_k))
-            deepen = bool(payload.get("deepen", False))
-            include_paths = payload.get("include_paths", [])
-            exclude_paths = payload.get("exclude_paths", [])
-            if not isinstance(include_paths, list):
-                include_paths = []
-            if not isinstance(exclude_paths, list):
-                exclude_paths = []
-
-            if not isinstance(query, str) or not query.strip():
-                return self._send(
-                    400,
-                    json.dumps({"error": "query is required"}),
-                    "application/json; charset=utf-8",
-                )
-
-            try:
-                result = ask_pdf_library(
-                    query.strip(),
-                    str(model),
-                    top_k,
-                    deepen=deepen,
-                    include_paths=[str(x)
-                                   for x in include_paths if isinstance(x, str)],
-                    exclude_paths=[str(x)
-                                   for x in exclude_paths if isinstance(x, str)],
-                )
-                return self._send(
-                    200,
-                    json.dumps(result, ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-            except Exception as exc:
-                return self._send(
-                    502,
-                    json.dumps({"error": str(exc)}, ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-
-        if route_path == "/api/pdf/brief":
-            payload = self._read_json_body()
-            if payload is None:
-                return
-
-            query = payload.get("query", "")
-            model = payload.get("model", "qwen2.5:14b")
-            try:
-                top_k = int(payload.get("top_k", 14))
-            except Exception:
-                top_k = 14
-            top_k = max(1, min(100, top_k))
-            include_paths = payload.get("include_paths", [])
-            exclude_paths = payload.get("exclude_paths", [])
-            if not isinstance(include_paths, list):
-                include_paths = []
-            if not isinstance(exclude_paths, list):
-                exclude_paths = []
-            if not isinstance(query, str) or not query.strip():
-                return self._send(
-                    400,
-                    json.dumps({"error": "query is required"}),
-                    "application/json; charset=utf-8",
-                )
-
-            brief_prompt = (
-                "Create a concise study brief for the topic below using the library context. "
-                "Include sections: Overview, Key Concepts, Formulas/Definitions (if relevant), "
-                "and Suggested Reading Order with citations.\\n\\n"
-                f"Topic: {query.strip()}"
-            )
-
-            try:
-                result = ask_pdf_library(
-                    brief_prompt,
-                    str(model),
-                    top_k,
-                    deepen=True,
-                    include_paths=[str(x)
-                                   for x in include_paths if isinstance(x, str)],
-                    exclude_paths=[str(x)
-                                   for x in exclude_paths if isinstance(x, str)],
-                )
-                result["brief_for"] = query.strip()
-                return self._send(
-                    200,
-                    json.dumps(result, ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-            except Exception as exc:
-                return self._send(
-                    502,
-                    json.dumps({"error": str(exc)}, ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-
-        if route_path == "/api/library/upload":
-            params = parse_qs(parsed_url.query)
-            raw_name = params.get("name", [""])[0]
-            root, target_path, error, code = self._resolve_upload_target_path(
-                raw_name)
-            if error:
-                return self._send(
-                    code,
-                    json.dumps({"error": error}, ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-
-            raw_length = self.headers.get("Content-Length", "0")
-            try:
-                length = int(raw_length)
-            except ValueError:
-                return self._send(
-                    400,
-                    json.dumps({"error": "Invalid Content-Length"},
-                               ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-
-            if length <= 0:
-                return self._send(
-                    400,
-                    json.dumps({"error": "Request body is required"},
-                               ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-
-            if length > MAX_UPLOAD_BYTES:
-                return self._send(
-                    413,
-                    json.dumps(
-                        {"error": "Upload exceeds maximum size"}, ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-
-            tmp_path = root / \
-                f".upload-{int(time.time() * 1000)}-{os.getpid()}-{uuid.uuid4().hex}.part"
-            written = 0
-            try:
-                with open(tmp_path, "wb") as out_f:
-                    remaining = length
-                    while remaining > 0:
-                        chunk = self.rfile.read(min(64 * 1024, remaining))
-                        if not chunk:
-                            raise ValueError("Unexpected end of upload stream")
-                        out_f.write(chunk)
-                        written += len(chunk)
-                        remaining -= len(chunk)
-
-                if written != length:
-                    raise ValueError("Upload size mismatch")
-
-                os.replace(tmp_path, target_path)
-            except ValueError as exc:
-                try:
-                    if tmp_path.exists():
-                        tmp_path.unlink()
-                except Exception:
-                    pass
-                return self._send(
-                    400,
-                    json.dumps({"error": str(exc)}, ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-            except Exception as exc:
-                try:
-                    if tmp_path.exists():
-                        tmp_path.unlink()
-                except Exception:
-                    pass
-                return self._send(
-                    500,
-                    json.dumps(
-                        {"error": f"Failed to save upload: {exc}"}, ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-
-            rel_path = os.path.relpath(str(target_path), str(root))
-            return self._send(
-                200,
-                json.dumps(
-                    {
-                        "ok": True,
-                        "rel_path": rel_path,
-                        "bytes": written,
-                    },
-                    ensure_ascii=True,
-                ),
-                "application/json; charset=utf-8",
-            )
-
-        if route_path == "/api/stash":
-            payload = self._read_json_body()
-            if payload is None:
-                return
-
-            text = payload.get("text", "")
-            if not isinstance(text, str) or not text.strip():
-                return self._send(
-                    400,
-                    json.dumps({"error": "text is required"}),
-                    "application/json; charset=utf-8",
-                )
-
-            entry = {
-                "saved_at": int(time.time()),
-                "saved_at_iso": payload.get("ts") if isinstance(payload.get("ts"), str) else None,
-                "model": payload.get("model") if isinstance(payload.get("model"), str) else "",
-                "use_pdf_library": bool(payload.get("use_pdf_library", False)),
-                "entry_type": payload.get("entry_type") if isinstance(payload.get("entry_type"), str) else "response",
-                "query": payload.get("query") if isinstance(payload.get("query"), str) else "",
-                "sources": payload.get("sources") if isinstance(payload.get("sources"), list) else [],
-                "text": text.strip(),
-            }
-
-            try:
-                result = append_stash_entry(entry)
-                return self._send(
-                    200,
-                    json.dumps(result, ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-            except Exception as exc:
-                return self._send(
-                    502,
-                    json.dumps({"error": str(exc)}, ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
+        handler = post_routes.get(route_path)
+        if handler:
+            return handler()
 
         return self._send(404, "Not found")
 
@@ -2307,76 +2387,15 @@ class Handler(BaseHTTPRequestHandler):
         if not self._require_same_origin_for_state_change(route_path):
             return
 
-        if route_path == "/api/history":
-            save_history([])
-            return self._send(200, json.dumps({"ok": True}), "application/json; charset=utf-8")
+        delete_routes = {
+            "/api/history": lambda: self._handle_delete_history(),
+            "/api/stash": lambda: self._handle_delete_stash(parsed_url),
+            "/api/bibliography": lambda: self._handle_delete_bibliography(parsed_url),
+        }
 
-        if route_path == "/api/stash":
-            params = parse_qs(parsed_url.query)
-            raw_entry_type = params.get("entry_type", [""])[0]
-            entry_type = _normalize_entry_type(raw_entry_type) if str(
-                raw_entry_type).strip() else None
-            if params.get("all", [""])[0] == "1":
-                try:
-                    result = clear_stash_entries(entry_type=entry_type)
-                    return self._send(
-                        200,
-                        json.dumps(result, ensure_ascii=True),
-                        "application/json; charset=utf-8",
-                    )
-                except Exception as exc:
-                    return self._send(
-                        500,
-                        json.dumps({"error": str(exc)}, ensure_ascii=True),
-                        "application/json; charset=utf-8",
-                    )
-
-            stash_id_raw = params.get("id", [None])[0]
-            if stash_id_raw is None:
-                return self._send(
-                    400,
-                    json.dumps(
-                        {"error": "id is required (or set all=1)"}, ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-            try:
-                stash_id = int(stash_id_raw)
-                result = delete_stash_entry(stash_id)
-                return self._send(
-                    200,
-                    json.dumps(result, ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-            except Exception as exc:
-                return self._send(
-                    404,
-                    json.dumps({"error": str(exc)}, ensure_ascii=True),
-                    "application/json; charset=utf-8",
-                )
-
-        if route_path == "/api/bibliography":
-            params = parse_qs(parsed_url.query)
-            if params.get("all", [""])[0] == "1":
-                try:
-                    result = clear_stash_entries(entry_type="bibliography")
-                    return self._send(
-                        200,
-                        json.dumps(result, ensure_ascii=True),
-                        "application/json; charset=utf-8",
-                    )
-                except Exception as exc:
-                    return self._send(
-                        500,
-                        json.dumps({"error": str(exc)}, ensure_ascii=True),
-                        "application/json; charset=utf-8",
-                    )
-
-            return self._send(
-                400,
-                json.dumps(
-                    {"error": "set all=1 to clear bibliography stash"}, ensure_ascii=True),
-                "application/json; charset=utf-8",
-            )
+        handler = delete_routes.get(route_path)
+        if handler:
+            return handler()
 
         return self._send(404, "Not found")
 
