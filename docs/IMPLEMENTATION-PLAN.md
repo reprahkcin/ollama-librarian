@@ -68,7 +68,7 @@ Suggested commit message:
 
 ### Phase 1 - High-value tests first
 
-Status: IN PROGRESS
+Status: DONE
 
 Scope:
 
@@ -309,7 +309,7 @@ Update this table as we complete each phase.
 | Phase | Branch | Commit SHA | Summary                                                        | Tests run                                                                                            | Result  |
 | ----- | ------ | ---------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ------- |
 | 0     | main   |            | Added route harness and baseline GET/POST route contract tests | python -m unittest tests/test_routes.py tests/test_security_regressions.py tests/test_update_flow.py | pass    |
-| 1     | main   |            | Added route contract coverage and deterministic RAG helper unit tests | python -m unittest tests/test_rag_units.py tests/test_routes.py tests/test_security_regressions.py tests/test_update_flow.py | pass    |
+| 1     | main   |            | Added route contract coverage plus deterministic RAG and abstract helper unit tests | python -m unittest tests/test_abstract_helpers.py tests/test_rag_units.py tests/test_routes.py tests/test_security_regressions.py tests/test_update_flow.py | pass    |
 | 2     |        |            |                                                                |                                                                                                      | pending |
 | 3     |        |            |                                                                |                                                                                                      | pending |
 | 4     |        |            |                                                                |                                                                                                      | pending |
