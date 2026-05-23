@@ -42,7 +42,7 @@ Suggested types:
 
 ### Phase 0 - Baseline and guardrails
 
-Status: TODO
+Status: DONE
 
 Scope:
 
@@ -308,7 +308,7 @@ Update this table as we complete each phase.
 
 | Phase | Branch | Commit SHA | Summary | Tests run | Result  |
 | ----- | ------ | ---------- | ------- | --------- | ------- |
-| 0     |        |            |         |           | pending |
+| 0     | main   |            | Added route harness and baseline GET/POST route contract tests | python -m unittest tests/test_routes.py tests/test_security_regressions.py tests/test_update_flow.py | pass |
 | 1     |        |            |         |           | pending |
 | 2     |        |            |         |           | pending |
 | 3     |        |            |         |           | pending |
