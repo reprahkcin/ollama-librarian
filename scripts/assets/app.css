@@ -590,13 +590,13 @@
       font-size: 0.86rem;
       line-height: 1.4;
       white-space: pre-wrap;
+      max-height: 13rem;
+      overflow: auto;
+    }
     #pdfStatus {
       white-space: pre-line;
       overflow-wrap: anywhere;
       word-break: break-word;
-    }
-      max-height: 13rem;
-      overflow: auto;
     }
     .stash-item-actions {
       display: flex;

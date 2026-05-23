@@ -21,7 +21,10 @@ from typing import Mapping
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from pypdf import PdfReader
+try:
+    from pypdf import PdfReader
+except Exception:
+    PdfReader = None
 
 try:
     from ebooklib import ITEM_DOCUMENT, epub
@@ -157,6 +160,8 @@ def extract_pdf_document_metadata(doc_path: Path) -> dict:
         "authors": [inferred_author] if inferred_author else [],
         "year": "",
     }
+    if PdfReader is None:
+        return out
     try:
         reader = PdfReader(str(doc_path))
         meta = reader.metadata
@@ -525,6 +530,8 @@ def chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
 
 
 def extract_pdf_pages(pdf_path: Path) -> list[tuple[int, str]]:
+    if PdfReader is None:
+        raise RuntimeError("PDF parsing dependency is missing. Install 'pypdf'.")
     reader = PdfReader(str(pdf_path))
     pages = []
     for i, page in enumerate(reader.pages, start=1):
@@ -1280,7 +1287,14 @@ def _doctor_check_python_version(min_major: int = 3, min_minor: int = 10) -> dic
 
 def _doctor_check_dependency_imports() -> list[dict]:
     checks = []
-    checks.append(_doctor_result("import_pypdf", True, "pypdf import ok"))
+    pypdf_ok = PdfReader is not None
+    checks.append(
+        _doctor_result(
+            "import_pypdf",
+            pypdf_ok,
+            "pypdf import ok" if pypdf_ok else "pypdf import failed",
+        )
+    )
     ebook_ok = epub is not None and ITEM_DOCUMENT is not None
     checks.append(
         _doctor_result(
