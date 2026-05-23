@@ -66,8 +66,6 @@ class WebConfig:
     abstract_text_max_chars: int
     default_state_dir: Path
     history_path: str
-    pdf_rag_script: str
-    pdf_rag_python: str
     pdf_source: str
     pdf_index_db: str
     pdf_embed_model: str
@@ -130,14 +128,6 @@ class WebConfig:
             ),
             default_state_dir=default_state_dir,
             history_path=history_path,
-            pdf_rag_script=os.path.expanduser(
-                str(env.get("OLLAMA_WEB_PDF_RAG_SCRIPT",
-                    str(SCRIPT_DIR / "pdf_library_rag.py")))
-            ),
-            pdf_rag_python=os.path.expanduser(
-                str(env.get("OLLAMA_WEB_PDF_RAG_PYTHON",
-                    str(REPO_ROOT / ".venv/bin/python")))
-            ),
             pdf_source=os.path.expanduser(
                 str(env.get("OLLAMA_WEB_PDF_SOURCE", resolve_default_pdf_source()))
             ),
@@ -177,7 +167,14 @@ SUPPORTED_DOC_EXTENSIONS = {".pdf", ".txt", ".md", ".html", ".htm", ".epub"}
 PACKAGE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = PACKAGE_DIR.parent.parent
 SCRIPT_DIR = REPO_ROOT / "scripts"
-ASSET_ROOT = SCRIPT_DIR / "assets"
+PACKAGE_ASSET_ROOT = PACKAGE_DIR / "assets"
+DEV_ASSET_ROOT = SCRIPT_DIR / "assets"
+ASSET_ROOT = PACKAGE_ASSET_ROOT if PACKAGE_ASSET_ROOT.is_dir() else DEV_ASSET_ROOT
+PACKAGE_TEMPLATE_ROOT = PACKAGE_DIR / "templates"
+DEV_TEMPLATE_ROOT = SCRIPT_DIR / "templates"
+TEMPLATE_ROOT = (
+    PACKAGE_TEMPLATE_ROOT if PACKAGE_TEMPLATE_ROOT.is_dir() else DEV_TEMPLATE_ROOT
+)
 
 
 def resolve_default_state_dir() -> Path:
@@ -234,8 +231,6 @@ PDF_LOCK = threading.Lock()
 STASH_LOCK = threading.Lock()
 
 
-PDF_RAG_SCRIPT = CONFIG.pdf_rag_script
-PDF_RAG_PYTHON = CONFIG.pdf_rag_python
 PDF_SOURCE = CONFIG.pdf_source
 PDF_INDEX_DB = CONFIG.pdf_index_db
 PDF_EMBED_MODEL = CONFIG.pdf_embed_model
@@ -246,6 +241,8 @@ PDF_OCR_JOBS = CONFIG.pdf_ocr_jobs
 PDF_OCR_TIMEOUT = CONFIG.pdf_ocr_timeout
 STASH_PATH = CONFIG.stash_path
 APP_VERSION_FILE = REPO_ROOT / "scripts" / "VERSION"
+if (PACKAGE_DIR / "VERSION").is_file():
+    APP_VERSION_FILE = PACKAGE_DIR / "VERSION"
 UPDATE_STATE_PATH = CONFIG.update_state_path
 UPDATE_REPO_OWNER = CONFIG.update_repo_owner
 UPDATE_REPO_NAME = CONFIG.update_repo_name
@@ -1111,8 +1108,13 @@ def start_update_apply(target_version: str) -> dict:
 def run_pdf_rag(extra_args, timeout=600):
     env = os.environ.copy()
     src_path = str(REPO_ROOT / "src")
-    existing_pythonpath = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = src_path if not existing_pythonpath else f"{src_path}{os.pathsep}{existing_pythonpath}"
+    if os.path.isdir(src_path):
+        existing_pythonpath = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = (
+            src_path
+            if not existing_pythonpath
+            else f"{src_path}{os.pathsep}{existing_pythonpath}"
+        )
     cmd = [
         sys.executable,
         "-m",
@@ -1497,7 +1499,7 @@ def save_instructions(instructions):
 
 
 def _load_template(name: str) -> str:
-    template_path = SCRIPT_DIR / "templates" / name
+    template_path = TEMPLATE_ROOT / name
     with open(template_path, "r", encoding="utf-8") as f:
         return f.read()
 
