@@ -122,12 +122,6 @@ Use these exact statuses per test item:
   - response returned
   - no route/auth/CSP errors
 
-1. Deep Study toggle sanity
-
-- Action: toggle Deep Study and ask again
-- Expected:
-  - request succeeds both states
-
 ### D. Upload and Index Interaction
 
 1. Upload docs
@@ -349,19 +343,16 @@ Expected minimum signals:
 9. Enable `Use PDF-grounded answers`.
 10. Send one grounded prompt (for example, `Give one sentence summary of what is in the indexed library.`).
 11. Pause and wait for the tester-selected query wait duration.
-12. Enable `Deep Study Mode`.
-13. Send one deep-study prompt (for example, `In one sentence, what topics dominate these sources?`).
-14. Pause and wait for the tester-selected query wait duration.
-15. Click `Upload Documents`.
-16. Upload one disposable text file from the temp path.
-17. Verify footer/status indicates upload success (for example `Uploaded 1 file; indexing started`).
-18. Click `Sync New PDFs`.
-19. Verify PDF status line transitions to running (contains `PDF index: running`).
-20. Click `View Stash`, verify modal opens, then close it.
-21. Click `View Bibliography`, verify modal opens (empty state acceptable), then close it.
-22. Click `Check for Updates`.
-23. Verify update area reports up-to-date state and release notes link appears.
-24. Click `Clear Conversation` and verify chat resets (`Shared history cleared`).
+12. Click `Upload Documents`.
+13. Upload one disposable text file from the temp path.
+14. Verify footer/status indicates upload success (for example `Uploaded 1 file; indexing started`).
+15. Click `Sync New PDFs`.
+16. Verify PDF status line transitions to running (contains `PDF index: running`).
+17. Click `View Stash`, verify modal opens, then close it.
+18. Click `View Bibliography`, verify modal opens (empty state acceptable), then close it.
+19. Click `Check for Updates`.
+20. Verify update area reports up-to-date state and release notes link appears.
+21. Click `Clear Conversation` and verify chat resets (`Shared history cleared`).
 
 ### D. Exact Restart Verification
 

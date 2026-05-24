@@ -1,5 +1,7 @@
 # Cross-Platform Agent Handoff
 
+Note: The first Windows section below is historical pre-v1.0.3 context and includes steps/features that were later removed.
+
 Platform: Windows
 App URL used: <http://127.0.0.1:8088>
 Ollama URL used: <http://127.0.0.1:11434>
@@ -74,28 +76,28 @@ Branch/commit tested: fixes / 6069ee1
 
 Commands executed (in order):
 
-1) ./scripts/librarian-start-linux.sh
-2) ./scripts/librarian-status-linux.sh
-3) curl -sS -i <http://127.0.0.1:8088/api/tags>
-4) curl -sS -i <http://127.0.0.1:8088/api/pdf/status>
-5) curl -sS -i <http://127.0.0.1:11434/api/tags>
-6) Created /tmp/ollama-librarian-smoke-upload.txt
-7) ./scripts/librarian-stop-linux.sh
-8) ./scripts/librarian-start-linux.sh
-9) ./scripts/librarian-status-linux.sh
-10) curl -sS -i <http://127.0.0.1:8088/api/tags>
-11) curl -sS -i <http://127.0.0.1:8088/api/pdf/status>
+1. ./scripts/librarian-start-linux.sh
+2. ./scripts/librarian-status-linux.sh
+3. curl -sS -i <http://127.0.0.1:8088/api/tags>
+4. curl -sS -i <http://127.0.0.1:8088/api/pdf/status>
+5. curl -sS -i <http://127.0.0.1:11434/api/tags>
+6. Created /tmp/ollama-librarian-smoke-upload.txt
+7. ./scripts/librarian-stop-linux.sh
+8. ./scripts/librarian-start-linux.sh
+9. ./scripts/librarian-status-linux.sh
+10. curl -sS -i <http://127.0.0.1:8088/api/tags>
+11. curl -sS -i <http://127.0.0.1:8088/api/pdf/status>
 
 UI actions executed (in order):
 
-1) Opened app at <http://127.0.0.1:8088>
-2) Refreshed model list
-3) Ungrounded ask: Reply with exactly OK.
-4) Grounded ask: Give one sentence summary of what is in the indexed library.
-5) Uploaded disposable document and triggered sync
-6) Opened stash/bibliography views and validated behavior
-7) Checked updates
-8) Cleared conversation
+1. Opened app at <http://127.0.0.1:8088>
+2. Refreshed model list
+3. Ungrounded ask: Reply with exactly OK.
+4. Grounded ask: Give one sentence summary of what is in the indexed library.
+5. Uploaded disposable document and triggered sync
+6. Opened stash/bibliography views and validated behavior
+7. Checked updates
+8. Cleared conversation
 
 Observed confirmations:
 
@@ -117,7 +119,27 @@ Blocking issues:
 
 Next immediate action for Mac receiving agent:
 
-1) Run full macOS manual plan from top with same tester-controlled wait rule.
-2) Verify no Deep Study / Study Brief controls are present in UI.
-3) Verify normal ungrounded + grounded ask flows still succeed.
-4) Verify upload/sync, stash/bibliography, update check, and stop/start resilience.
+1. Run full macOS manual plan from top with same tester-controlled wait rule.
+2. Verify no Deep Study / Study Brief controls are present in UI.
+3. Verify normal ungrounded + grounded ask flows still succeed.
+4. Verify upload/sync, stash/bibliography, update check, and stop/start resilience.
+
+---
+
+## Release Closure: v1.0.3
+
+Platform summary:
+
+- macOS: PASS
+- Windows: PASS
+- Linux: PASS
+
+Release decisions captured in this round:
+
+1. Deep Study and Study Brief remain removed.
+2. Manual test plan was updated to remove Deep Study/Study Brief expectations.
+3. Version bumped for release packaging and runtime markers to `v1.0.3`.
+
+Ready state:
+
+- The current app state has passed end-to-end manual testing across all three target platforms.
