@@ -13,6 +13,9 @@ Scope:
 - Only run tests in this plan unless explicitly requested otherwise.
 - Record objective evidence for each failed step (command output, API response, or exact UI symptom).
 - Do not make speculative code changes during testing.
+- For chat/retrieval actions, allow up to 30s before treating a request as potentially hung.
+- Do not click `Cancel` before 30s unless the UI is clearly unresponsive.
+- If a request is canceled by the tester, mark that attempt as inconclusive (not FAIL) and recheck with a direct endpoint call (`/api/generate` or `/api/pdf/ask`) before filing a defect.
 - If a test fails, first isolate whether it is:
   - environment issue
   - stale client/cache issue
@@ -419,3 +422,5 @@ Next immediate action for receiving agent:
 - Model selector keyboard navigation may be inconsistent in some automation harnesses; mouse selection is acceptable.
 - Index progress metrics can jump or look non-linear depending on existing library/index state.
 - Ungrounded confirm dialog can appear for send actions when PDF grounding is off; accepting it is part of the expected flow.
+- Chat responses can take a few seconds while model/runtime state warms up; avoid early cancellation.
+- Browser `net::ERR_ABORTED` observed immediately after pressing `Cancel` indicates client-side abort, not a confirmed backend failure.
