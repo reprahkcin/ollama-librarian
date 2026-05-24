@@ -98,19 +98,21 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertTrue(allowed)
 
     def test_citation_rendering_escapes_html_before_innerhtml(self):
-        source = APP_PATH.read_text(encoding="utf-8")
+        app = load_app_module()
+        app_js_path = Path(app.ASSET_ROOT) / "app.js"
+        source = app_js_path.read_text(encoding="utf-8")
         self.assertRegex(
             source,
             re.compile(
-                r"text\.innerHTML\s*=\s*renderInlineMarkdown\(\s*escapeHtml\(\s*String\(entry\.citation\s*\|\|\s*''\)\s*\)\s*\)\s*;"
+                r"text\.innerHTML\s*=\s*renderInlineMarkdown\(\s*escapeHtml\(\s*String\(entry\.citation\s*\|\|\s*(?:''|\"\")\)\s*\)\s*,?\s*\)\s*;",
+                re.DOTALL,
             ),
         )
 
-    def test_csp_uses_nonce_for_scripts_on_main_page(self):
+    def test_csp_uses_self_only_scripts_on_main_page(self):
         app = load_app_module()
         handler = object.__new__(app.Handler)
         handler.path = "/"
-        handler._csp_nonce = "nonce-test-value"
 
         captured = {}
 
@@ -122,14 +124,14 @@ class SecurityRegressionTests(unittest.TestCase):
         app.Handler._send_security_headers(handler)
 
         csp = captured.get("Content-Security-Policy", "")
-        self.assertIn("script-src 'self' 'nonce-nonce-test-value'", csp)
+        self.assertIn("script-src 'self'", csp)
+        self.assertNotIn("nonce-", csp)
         self.assertNotIn("script-src 'self' 'unsafe-inline'", csp)
 
-    def test_csp_uses_nonce_for_scripts_on_epub_reader(self):
+    def test_csp_uses_self_only_scripts_on_epub_reader(self):
         app = load_app_module()
         handler = object.__new__(app.Handler)
         handler.path = "/epub-reader"
-        handler._csp_nonce = "nonce-test-value"
 
         captured = {}
 
@@ -141,7 +143,8 @@ class SecurityRegressionTests(unittest.TestCase):
         app.Handler._send_security_headers(handler)
 
         csp = captured.get("Content-Security-Policy", "")
-        self.assertIn("script-src 'self' 'nonce-nonce-test-value'", csp)
+        self.assertIn("script-src 'self'", csp)
+        self.assertNotIn("nonce-", csp)
         self.assertNotIn("script-src 'self' 'unsafe-inline'", csp)
 
     def test_abstract_recommendation_normalization(self):

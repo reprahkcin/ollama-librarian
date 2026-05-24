@@ -50,6 +50,12 @@ For non-technical users, use:
 - You can upload supported documents directly from the sidebar with `Upload Documents`, then sync/index from the same UI.
 - The sidebar includes an `Abstract Screener` that scores an abstract against your research need and recommends whether to download/index the paper.
 
+## Release Status
+
+- Current validated release: `v1.0.3`
+- Cross-platform manual validation completed on macOS, Windows, and Linux.
+- `Deep Study Mode` and `Study Brief` were removed to stabilize retrieval behavior across platforms.
+
 ## Security Defaults
 
 - Web UI binds to localhost by default (`127.0.0.1`).
@@ -260,6 +266,18 @@ What common messages mean:
 For a non-technical guide, see:
 
 - [Setup Guides/RESEARCHER-QUICKSTART.md](Setup Guides/RESEARCHER-QUICKSTART.md)
+
+## Manual QA Handoff (Agent to Agent)
+
+For reproducible cross-machine manual testing, use:
+
+- [docs/MANUAL-TEST-PLAN.md](docs/MANUAL-TEST-PLAN.md)
+
+Start with the exact replay instructions in:
+
+- [docs/MANUAL-TEST-PLAN.md#11-exact-reproduction-flow-match-prior-agent-run](docs/MANUAL-TEST-PLAN.md#11-exact-reproduction-flow-match-prior-agent-run)
+
+When handing off to another agent, include the required payload format from Section 11.F to preserve command order, UI action order, and observed confirmations.
 
 ## Security Regression Tests
 

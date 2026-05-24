@@ -1,0 +1,40 @@
+    :root { color-scheme: light; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      background: #f7f7f4;
+      color: #1d232f;
+      height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+    .bar {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.65rem 0.85rem;
+      background: #ffffff;
+      border-bottom: 1px solid #d8dee8;
+    }
+    .bar button {
+      border: 1px solid #c8cfdb;
+      border-radius: 8px;
+      background: #eef3fb;
+      color: #1f2a44;
+      padding: 0.38rem 0.62rem;
+      cursor: pointer;
+    }
+    .meta {
+      margin-left: auto;
+      font-size: 0.86rem;
+      color: #4d5b75;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 65vw;
+    }
+    #viewer {
+      width: 100%;
+      height: calc(100vh - 52px);
+      background: #ffffff;
+    }
