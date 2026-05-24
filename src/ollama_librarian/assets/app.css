@@ -432,6 +432,7 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
+  -webkit-user-select: none;
   user-select: none;
 }
 .sidebar-accordion summary::-webkit-details-marker {
