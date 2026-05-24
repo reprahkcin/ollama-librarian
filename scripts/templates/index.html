@@ -101,22 +101,6 @@
           />
           Use PDF-grounded answers
         </label>
-        <label
-          class="checkrow"
-          for="deepStudy"
-          title="Expands retrieval depth and context for more thorough, citation-heavy answers. Slower but usually more complete."
-        >
-          <input
-            id="deepStudy"
-            type="checkbox"
-            title="Expands retrieval depth and context for more thorough, citation-heavy answers. Slower but usually more complete."
-          />
-          Deep Study Mode
-        </label>
-        <div id="linuxDeepStudyNotice" class="tiny platform-footnote" hidden>
-          Linux: Deep Study can time out on some systems; if it does, turn Deep
-          Study off and retry.
-        </div>
         <button
           id="syncPdfLibrary"
           class="btn-soft"
@@ -217,14 +201,6 @@
             <button id="send" class="btn-primary" type="button">Send</button>
             <button id="cancel" class="btn-soft" type="button" disabled>
               Cancel
-            </button>
-            <button
-              id="studyBrief"
-              class="btn-soft"
-              type="button"
-              title="Creates a structured brief from your PDF library with citations and suggested reading order."
-            >
-              Study Brief
             </button>
             <button
               id="makeBibliography"

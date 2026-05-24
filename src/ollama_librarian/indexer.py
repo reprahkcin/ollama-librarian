@@ -336,6 +336,7 @@ class RagCliConfig:
     ocr_timeout: int
     web_host: str = "127.0.0.1"
     web_port: int = 8088
+    ask_answer_timeout: int = 600
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "RagCliConfig":
@@ -353,6 +354,8 @@ class RagCliConfig:
             ),
             search_top_k=max(1, _env_int(env, "OLLAMA_WEB_PDF_TOP_K", 6)),
             ask_top_k=max(1, _env_int(env, "OLLAMA_WEB_PDF_TOP_K", 6)),
+            ask_answer_timeout=max(30, _env_int(
+                env, "OLLAMA_WEB_PDF_ANSWER_TIMEOUT", 600)),
             ocr_lang=str(env.get("OLLAMA_WEB_PDF_OCR_LANG", "eng")),
             ocr_jobs=max(1, _env_int(env, "OLLAMA_WEB_PDF_OCR_JOBS", 2)),
             ocr_timeout=max(60, _env_int(
@@ -442,7 +445,7 @@ def now_ts() -> int:
     return int(time.time())
 
 
-def http_post_json(base_url: str, endpoint: str, payload: dict) -> dict:
+def http_post_json(base_url: str, endpoint: str, payload: dict, timeout: int = 180) -> dict:
     body = json.dumps(payload).encode("utf-8")
     req = Request(
         f"{base_url.rstrip('/')}{endpoint}",
@@ -451,7 +454,7 @@ def http_post_json(base_url: str, endpoint: str, payload: dict) -> dict:
         method="POST",
     )
     try:
-        with urlopen(req, timeout=180) as resp:
+        with urlopen(req, timeout=max(1, int(timeout))) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
             return json.loads(raw)
     except HTTPError as exc:
@@ -485,7 +488,7 @@ def embed_text(base_url: str, model: str, text: str) -> list[float]:
     raise RuntimeError("Unexpected embedding response format from Ollama")
 
 
-def generate_answer(base_url: str, model: str, prompt: str) -> str:
+def generate_answer(base_url: str, model: str, prompt: str, timeout: int = 180) -> str:
     data = http_post_json(
         base_url,
         "/api/generate",
@@ -495,6 +498,7 @@ def generate_answer(base_url: str, model: str, prompt: str) -> str:
             "stream": False,
             "keep_alive": "60s",
         },
+        timeout=timeout,
     )
     return str(data.get("response", "")).strip()
 
@@ -1088,7 +1092,12 @@ def ask_command(args) -> int:
         f"Context:\n{context}\n\n"
         "Answer:"
     )
-    answer = generate_answer(args.ollama_base, args.answer_model, prompt)
+    answer = generate_answer(
+        args.ollama_base,
+        args.answer_model,
+        prompt,
+        timeout=max(1, int(getattr(args, "answer_timeout", 180))),
+    )
     metadata_map = load_document_metadata_map(
         conn, [path for _, path, _, _ in top])
     sources = [
@@ -1581,6 +1590,12 @@ def build_parser(config: RagCliConfig | None = None):
     p_ask.add_argument("--query", required=True)
     p_ask.add_argument("--top-k", type=int, default=resolved.ask_top_k)
     p_ask.add_argument("--answer-model", default="qwen2.5:14b")
+    p_ask.add_argument(
+        "--answer-timeout",
+        type=int,
+        default=resolved.ask_answer_timeout,
+        help="Network timeout in seconds for /api/generate while producing grounded answers",
+    )
     p_ask.add_argument(
         "--include-path",
         action="append",

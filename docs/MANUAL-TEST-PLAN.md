@@ -13,8 +13,9 @@ Scope:
 - Only run tests in this plan unless explicitly requested otherwise.
 - Record objective evidence for each failed step (command output, API response, or exact UI symptom).
 - Do not make speculative code changes during testing.
-- For chat/retrieval actions, allow up to 30s before treating a request as potentially hung.
-- Do not click `Cancel` before 30s unless the UI is clearly unresponsive.
+- For chat/retrieval actions, define a tester-selected wait duration before each run (for example, 90s, 180s, or another value you choose).
+- After each query submission, pause and wait the full tester-selected duration before treating the request as potentially hung.
+- Do not click `Cancel` before the selected wait duration unless the UI is clearly unresponsive.
 - If a request is canceled by the tester, mark that attempt as inconclusive (not FAIL) and recheck with a direct endpoint call (`/api/generate` or `/api/pdf/ask`) before filing a defect.
 - If a test fails, first isolate whether it is:
   - environment issue
@@ -64,7 +65,7 @@ Use these exact statuses per test item:
   - script exits successfully
   - app listening on `http://127.0.0.1:8088`
 
-2. Check service status
+1. Check service status
 
 - Command:
   - `./scripts/librarian-status-macos.sh`
@@ -72,7 +73,7 @@ Use these exact statuses per test item:
   - Ollama: running
   - Web UI: running
 
-3. API smoke check
+1. API smoke check
 
 - Commands:
   - `curl -sS -i http://127.0.0.1:8088/api/tags`
@@ -84,21 +85,21 @@ Use these exact statuses per test item:
 
 ### B. Core UI Smoke
 
-4. Load UI
+1. Load UI
 
 - Action: open `http://127.0.0.1:8088/`
 - Expected:
   - page renders with no blocking JS errors
   - model status transitions from checking to online
 
-5. Model dropdown
+1. Model dropdown
 
 - Action: click Refresh models
 - Expected:
   - model list populated
   - `qwen2.5:14b` available/selectable
 
-6. PDF status panel
+1. PDF status panel
 
 - Expected:
   - shows non-error status text
@@ -106,14 +107,14 @@ Use these exact statuses per test item:
 
 ### C. Chat and Retrieval
 
-7. Basic chat
+1. Basic chat
 
 - Action: send `reply with exactly ok`
 - Expected:
   - assistant responds
   - no client-side errors
 
-8. PDF-grounded ask
+1. PDF-grounded ask
 
 - Preconditions: `Use PDF-grounded answers` checked
 - Action: ask a grounded question about indexed content
@@ -121,7 +122,7 @@ Use these exact statuses per test item:
   - response returned
   - no route/auth/CSP errors
 
-9. Deep Study toggle sanity
+1. Deep Study toggle sanity
 
 - Action: toggle Deep Study and ask again
 - Expected:
@@ -129,14 +130,14 @@ Use these exact statuses per test item:
 
 ### D. Upload and Index Interaction
 
-10. Upload docs
+1. Upload docs
 
 - Action: click `Upload Documents` and select supported files
 - Expected:
   - upload flow completes without JS error
   - status/metadata updates visibly
 
-11. Trigger sync
+1. Trigger sync
 
 - Action: click `Sync New PDFs`
 - Expected:
@@ -145,7 +146,7 @@ Use these exact statuses per test item:
 
 ### E. Stash / Bibliography / History
 
-12. Stash controls
+1. Stash controls
 
 - Actions:
   - stash an assistant response
@@ -154,13 +155,13 @@ Use these exact statuses per test item:
 - Expected:
   - CRUD operations succeed
 
-13. Bibliography view
+1. Bibliography view
 
 - Action: open `View Bibliography`
 - Expected:
   - list opens and handles empty/non-empty states correctly
 
-14. Clear conversation
+1. Clear conversation
 
 - Action: click `Clear Conversation`
 - Expected:
@@ -169,7 +170,7 @@ Use these exact statuses per test item:
 
 ### F. Update Surface (manual-only behavior)
 
-15. Update status/check
+1. Update status/check
 
 - Actions:
   - click `Check for Updates`
@@ -177,21 +178,21 @@ Use these exact statuses per test item:
   - status field updates
   - release notes link behavior is correct
 
-16. Confirm manual mode behavior
+1. Confirm manual mode behavior
 
 - Expected:
   - no automatic update application occurs
 
 ### G. Stop/Restart Resilience
 
-17. Stop app
+1. Stop app
 
 - Command:
   - `./scripts/librarian-stop-macos.sh`
 - Expected:
   - process stops cleanly
 
-18. Restart app and quick recheck
+1. Restart app and quick recheck
 
 - Commands:
   - `./scripts/librarian-start-macos.sh`
@@ -237,16 +238,16 @@ If models/PDF status fail in UI:
 - `curl -sS -i http://127.0.0.1:8088/api/tags`
 - `curl -sS -i http://127.0.0.1:8088/api/pdf/status`
 
-2. Check upstream Ollama:
+1. Check upstream Ollama:
 
 - `curl -sS -i http://127.0.0.1:11434/api/tags`
 
-3. If backend is healthy but UI is broken:
+1. If backend is healthy but UI is broken:
 
 - reload page and check browser console/runtime errors
 - suspect stale asset cache or frontend exception
 
-4. If backend endpoints fail:
+1. If backend endpoints fail:
 
 - capture exact status code and response body
 - check service status scripts
@@ -266,6 +267,7 @@ API smoke:
 UI smoke:
 Chat:
 PDF-grounded:
+Query wait duration used:
 Upload/Sync:
 Stash/Bibliography:
 Update surface:
@@ -342,17 +344,24 @@ Expected minimum signals:
 4. Ensure `Use PDF-grounded answers` is unchecked.
 5. Send prompt `Reply with exactly OK.`.
 6. If confirmation appears (`Send this query without PDF grounding?`), click confirm/OK.
-7. Verify assistant returns `OK`.
-8. Click `Upload Documents`.
-9. Upload one disposable text file from the temp path.
-10. Verify footer/status indicates upload success (for example `Uploaded 1 file; indexing started`).
-11. Click `Sync New PDFs`.
-12. Verify PDF status line transitions to running (contains `PDF index: running`).
-13. Click `View Stash`, verify modal opens, then close it.
-14. Click `View Bibliography`, verify modal opens (empty state acceptable), then close it.
-15. Click `Check for Updates`.
-16. Verify update area reports up-to-date state and release notes link appears.
-17. Click `Clear Conversation` and verify chat resets (`Shared history cleared`).
+7. Pause and wait for the tester-selected query wait duration.
+8. Verify assistant returns `OK`.
+9. Enable `Use PDF-grounded answers`.
+10. Send one grounded prompt (for example, `Give one sentence summary of what is in the indexed library.`).
+11. Pause and wait for the tester-selected query wait duration.
+12. Enable `Deep Study Mode`.
+13. Send one deep-study prompt (for example, `In one sentence, what topics dominate these sources?`).
+14. Pause and wait for the tester-selected query wait duration.
+15. Click `Upload Documents`.
+16. Upload one disposable text file from the temp path.
+17. Verify footer/status indicates upload success (for example `Uploaded 1 file; indexing started`).
+18. Click `Sync New PDFs`.
+19. Verify PDF status line transitions to running (contains `PDF index: running`).
+20. Click `View Stash`, verify modal opens, then close it.
+21. Click `View Bibliography`, verify modal opens (empty state acceptable), then close it.
+22. Click `Check for Updates`.
+23. Verify update area reports up-to-date state and release notes link appears.
+24. Click `Clear Conversation` and verify chat resets (`Shared history cleared`).
 
 ### D. Exact Restart Verification
 
@@ -406,6 +415,7 @@ Observed confirmations:
 - Startup/status:
 - API 200 checks:
 - Chat response text:
+- Query wait duration used:
 - Upload/sync status text:
 - Update status text:
 - Clear conversation text:

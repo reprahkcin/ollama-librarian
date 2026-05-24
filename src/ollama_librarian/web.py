@@ -70,6 +70,7 @@ class WebConfig:
     pdf_index_db: str
     pdf_embed_model: str
     pdf_top_k: int
+    pdf_answer_timeout: int
     pdf_ocr_on_sync: bool
     pdf_ocr_lang: str
     pdf_ocr_jobs: int
@@ -138,6 +139,8 @@ class WebConfig:
             pdf_embed_model=str(
                 env.get("OLLAMA_WEB_PDF_EMBED_MODEL", "nomic-embed-text")),
             pdf_top_k=_env_int(env, "OLLAMA_WEB_PDF_TOP_K", 6),
+            pdf_answer_timeout=_env_int(
+                env, "OLLAMA_WEB_PDF_ANSWER_TIMEOUT", 600, min_value=30),
             pdf_ocr_on_sync=_env_bool_true_unless_false(
                 env, "OLLAMA_WEB_PDF_OCR_ON_SYNC", "1"),
             pdf_ocr_lang=str(env.get("OLLAMA_WEB_PDF_OCR_LANG", "eng")),
@@ -235,6 +238,7 @@ PDF_SOURCE = CONFIG.pdf_source
 PDF_INDEX_DB = CONFIG.pdf_index_db
 PDF_EMBED_MODEL = CONFIG.pdf_embed_model
 PDF_TOP_K = CONFIG.pdf_top_k
+PDF_ANSWER_TIMEOUT = CONFIG.pdf_answer_timeout
 PDF_OCR_ON_SYNC = CONFIG.pdf_ocr_on_sync
 PDF_OCR_LANG = CONFIG.pdf_ocr_lang
 PDF_OCR_JOBS = CONFIG.pdf_ocr_jobs
@@ -1206,7 +1210,6 @@ def ask_pdf_library(
     query: str,
     model: str,
     top_k: int,
-    deepen: bool = False,
     include_paths: list[str] | None = None,
     exclude_paths: list[str] | None = None,
 ):
@@ -1218,10 +1221,10 @@ def ask_pdf_library(
         str(top_k),
         "--answer-model",
         model,
+        "--answer-timeout",
+        str(PDF_ANSWER_TIMEOUT),
         "--json-output",
     ]
-    if deepen:
-        args.append("--deepen")
     for path in include_paths or []:
         if isinstance(path, str) and path.strip():
             args.extend(["--include-path", path.strip()])
@@ -1229,7 +1232,7 @@ def ask_pdf_library(
         if isinstance(path, str) and path.strip():
             args.extend(["--exclude-path", path.strip()])
 
-    raw = run_pdf_rag(args, timeout=600)
+    raw = run_pdf_rag(args, timeout=max(600, int(PDF_ANSWER_TIMEOUT) + 120))
     parsed = json.loads(raw) if raw else {}
     if not isinstance(parsed, dict):
         raise RuntimeError("Unexpected PDF ask response")
@@ -2158,7 +2161,6 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             top_k = PDF_TOP_K
         top_k = max(1, min(100, top_k))
-        deepen = bool(payload.get("deepen", False))
         include_paths = payload.get("include_paths", [])
         exclude_paths = payload.get("exclude_paths", [])
         if not isinstance(include_paths, list):
@@ -2178,68 +2180,11 @@ class Handler(BaseHTTPRequestHandler):
                 query.strip(),
                 str(model),
                 top_k,
-                deepen=deepen,
                 include_paths=[str(x)
                                for x in include_paths if isinstance(x, str)],
                 exclude_paths=[str(x)
                                for x in exclude_paths if isinstance(x, str)],
             )
-            return self._send(
-                200,
-                json.dumps(result, ensure_ascii=True),
-                "application/json; charset=utf-8",
-            )
-        except Exception as exc:
-            return self._send(
-                502,
-                json.dumps({"error": str(exc)}, ensure_ascii=True),
-                "application/json; charset=utf-8",
-            )
-
-    def _handle_post_pdf_brief(self):
-        payload = self._read_json_body()
-        if payload is None:
-            return
-
-        query = payload.get("query", "")
-        model = payload.get("model", "qwen2.5:14b")
-        try:
-            top_k = int(payload.get("top_k", 14))
-        except Exception:
-            top_k = 14
-        top_k = max(1, min(100, top_k))
-        include_paths = payload.get("include_paths", [])
-        exclude_paths = payload.get("exclude_paths", [])
-        if not isinstance(include_paths, list):
-            include_paths = []
-        if not isinstance(exclude_paths, list):
-            exclude_paths = []
-        if not isinstance(query, str) or not query.strip():
-            return self._send(
-                400,
-                json.dumps({"error": "query is required"}),
-                "application/json; charset=utf-8",
-            )
-
-        brief_prompt = (
-            "Create a concise study brief for the topic below using the library context. "
-            "Include sections: Overview, Key Concepts, Formulas/Definitions (if relevant), "
-            "and Suggested Reading Order with citations.\\n\\n"
-            f"Topic: {query.strip()}"
-        )
-
-        try:
-            result = ask_pdf_library(
-                brief_prompt,
-                str(model),
-                top_k,
-                deepen=True,
-                include_paths=[str(x)
-                               for x in include_paths if isinstance(x, str)],
-                exclude_paths=[str(x)
-                               for x in exclude_paths if isinstance(x, str)],
-            )
-            result["brief_for"] = query.strip()
             return self._send(
                 200,
                 json.dumps(result, ensure_ascii=True),
@@ -2503,7 +2448,6 @@ class Handler(BaseHTTPRequestHandler):
             "/api/update/apply": lambda: self._handle_post_update_apply(),
             "/api/update/check": lambda: self._handle_post_update_check(),
             "/api/pdf/ask": lambda: self._handle_post_pdf_ask(),
-            "/api/pdf/brief": lambda: self._handle_post_pdf_brief(),
             "/api/library/upload": lambda: self._handle_post_library_upload(parsed_url),
             "/api/stash": lambda: self._handle_post_stash(),
         }

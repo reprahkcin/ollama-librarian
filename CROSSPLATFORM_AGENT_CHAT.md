@@ -48,3 +48,68 @@ Commands executed (in order):
 - None
   Next immediate action for receiving agent:
 - Run Linux sequence from top using scripts/librarian-start-linux.sh, scripts/librarian-status-linux.sh, scripts/librarian-stop-linux.sh and mirror the same UI flow with the 30s chat/retrieval wait rule before any cancel.
+
+---
+
+## Linux -> Mac Handoff (Post-Timeout + Deep-Study Removal Changes)
+
+Platform: Linux
+App URL used: http://127.0.0.1:8088
+Ollama URL used: http://127.0.0.1:11434
+Branch/commit tested: fixes / 6069ee1
+
+### What Changed In Code (Needs Mac Validation)
+
+1. Increased/propagated PDF answer timeout path so long grounded queries can complete.
+2. Removed Deep Study product surface from web UI/API path for now.
+  - Removed Deep Study checkbox and Linux Deep Study notice from main UI templates.
+  - Removed Study Brief button and related frontend flow.
+  - Removed `/api/pdf/brief` route in web backend.
+  - Removed web-layer usage of `deepen` for `/api/pdf/ask`.
+3. Updated manual test plan guidance for tester-controlled wait duration before cancel decisions.
+
+### Linux Run Summary
+
+Commands executed (in order):
+1) ./scripts/librarian-start-linux.sh
+2) ./scripts/librarian-status-linux.sh
+3) curl -sS -i http://127.0.0.1:8088/api/tags
+4) curl -sS -i http://127.0.0.1:8088/api/pdf/status
+5) curl -sS -i http://127.0.0.1:11434/api/tags
+6) Created /tmp/ollama-librarian-smoke-upload.txt
+7) ./scripts/librarian-stop-linux.sh
+8) ./scripts/librarian-start-linux.sh
+9) ./scripts/librarian-status-linux.sh
+10) curl -sS -i http://127.0.0.1:8088/api/tags
+11) curl -sS -i http://127.0.0.1:8088/api/pdf/status
+
+UI actions executed (in order):
+1) Opened app at http://127.0.0.1:8088
+2) Refreshed model list
+3) Ungrounded ask: Reply with exactly OK.
+4) Grounded ask: Give one sentence summary of what is in the indexed library.
+5) Uploaded disposable document and triggered sync
+6) Opened stash/bibliography views and validated behavior
+7) Checked updates
+8) Cleared conversation
+
+Observed confirmations:
+- Startup/status: PASS
+- API 200 checks: PASS
+- Chat response text: ungrounded OK + grounded response with citations
+- Query wait duration used: 90s minimum pause before any cancel decision
+- Upload/sync status text: upload success and index status progressed to idle
+- Update status text: up-to-date with release notes link
+- Clear conversation text: Shared history cleared.
+
+Deviations from expected flow:
+- None blocking. Grounded calls can be slow on warmed/cold runs.
+
+Blocking issues:
+- None in Linux run.
+
+Next immediate action for Mac receiving agent:
+1) Run full macOS manual plan from top with same tester-controlled wait rule.
+2) Verify no Deep Study / Study Brief controls are present in UI.
+3) Verify normal ungrounded + grounded ask flows still succeed.
+4) Verify upload/sync, stash/bibliography, update check, and stop/start resilience.

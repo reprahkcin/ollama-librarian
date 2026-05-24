@@ -50,8 +50,6 @@ const evaluateAbstractEl = document.getElementById("evaluateAbstract");
 const clearAbstractEl = document.getElementById("clearAbstract");
 const abstractResultEl = document.getElementById("abstractResult");
 const usePdfLibraryEl = document.getElementById("usePdfLibrary");
-const deepStudyEl = document.getElementById("deepStudy");
-const linuxDeepStudyNoticeEl = document.getElementById("linuxDeepStudyNotice");
 const syncPdfLibraryEl = document.getElementById("syncPdfLibrary");
 const uploadLibraryDocsEl = document.getElementById("uploadLibraryDocs");
 const pdfProgressEl = document.getElementById("pdfProgress");
@@ -61,7 +59,6 @@ const updateStatusEl = document.getElementById("updateStatus");
 const updateNotesLinkEl = document.getElementById("updateNotesLink");
 const checkUpdatesEl = document.getElementById("checkUpdates");
 const applyUpdateEl = document.getElementById("applyUpdate");
-const studyBriefEl = document.getElementById("studyBrief");
 const makeBibliographyEl = document.getElementById("makeBibliography");
 const promptHistorySelectEl = document.getElementById("promptHistorySelect");
 const promptUseSelectedEl = document.getElementById("promptUseSelected");
@@ -118,28 +115,6 @@ const SUPPORTED_UPLOAD_EXTENSIONS = new Set([
   ".epub",
 ]);
 let latestUpdateVersion = "";
-
-function isLikelyLinuxClient() {
-  const uaDataPlatform =
-    typeof navigator !== "undefined" && navigator.userAgentData
-      ? String(navigator.userAgentData.platform || "")
-      : "";
-  const platform =
-    typeof navigator !== "undefined" ? String(navigator.platform || "") : "";
-  const ua =
-    typeof navigator !== "undefined" ? String(navigator.userAgent || "") : "";
-  const sample = `${uaDataPlatform} ${platform} ${ua}`.toLowerCase();
-  return sample.includes("linux") && !sample.includes("android");
-}
-
-function applyPlatformNotices() {
-  if (!linuxDeepStudyNoticeEl) return;
-  if (isLikelyLinuxClient()) {
-    linuxDeepStudyNoticeEl.removeAttribute("hidden");
-  } else {
-    linuxDeepStudyNoticeEl.setAttribute("hidden", "hidden");
-  }
-}
 
 function extensionOfName(name) {
   const raw = String(name || "")
@@ -1841,73 +1816,6 @@ async function generateBibliographyFromLatestSources() {
   }
 }
 
-async function createStudyBrief() {
-  const query = promptEl.value.trim() || lastUserPrompt;
-  if (!query) {
-    addMessage(
-      "system",
-      "Enter a topic first (or ask a question) to create a study brief.",
-    );
-    return;
-  }
-  if (!usePdfLibraryEl.checked) {
-    addMessage(
-      "system",
-      "Enable PDF-grounded answers to create a study brief.",
-    );
-    return;
-  }
-
-  setBusy(true);
-  metaEl.textContent = "Building study brief...";
-  try {
-    const model = modelEl.value;
-    const filters = buildDocFiltersForRequest();
-    if (libraryDocs.length) {
-      const selectionError = buildDocSelectionError(filters);
-      if (selectionError) {
-        throw new Error(selectionError);
-      }
-    }
-    const res = await fetch("/api/pdf/brief", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        query,
-        model,
-        top_k: deepStudyEl.checked ? 20 : 14,
-        include_paths: filters.includePaths,
-        exclude_paths: filters.excludePaths,
-      }),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-
-    const sourceRows = Array.isArray(data.sources) ? data.sources : [];
-    const citationEntries = buildApaCitationEntries(sourceRows);
-    let answer = data.answer || "[no brief field]";
-
-    lastPdfSources = sourceRows;
-    lastCitationQuery = query;
-
-    await addMessageAndStore("assistant", answer, {
-      citationEntries,
-      citationQuery: query,
-    });
-    await stashResponse(answer, {
-      entry_type: "study_brief",
-      query,
-      sources: Array.isArray(data.sources) ? data.sources : [],
-    });
-    metaEl.textContent = "Study brief ready (and stashed)";
-  } catch (err) {
-    addMessage("system", `Study brief failed: ${err.message}`);
-    metaEl.textContent = "Study brief failed";
-  } finally {
-    setBusy(false);
-  }
-}
-
 function formatEpoch(ts) {
   if (!ts) return "never";
   const d = new Date(ts * 1000);
@@ -2155,12 +2063,10 @@ function setBusy(isBusy) {
   instructionsEl.disabled = isBusy;
   saveInstructionsEl.disabled = isBusy;
   usePdfLibraryEl.disabled = isBusy;
-  deepStudyEl.disabled = isBusy;
   syncPdfLibraryEl.disabled = isBusy;
   uploadLibraryDocsEl.disabled = isBusy;
   openLibraryDocsEl.disabled = isBusy;
   openStashEl.disabled = isBusy;
-  studyBriefEl.disabled = isBusy;
   clearEl.disabled = isBusy;
   sendEl.textContent = isBusy ? "Thinking..." : "Send";
 }
@@ -2249,7 +2155,6 @@ async function sendPrompt() {
   const model = modelEl.value;
   const instructions = instructionsEl.value.trim();
   const usePdfLibrary = usePdfLibraryEl.checked;
-  const deepStudy = deepStudyEl.checked;
   if (!prompt) return;
   if (!model) {
     addMessage("system", "No model is available. Install a model and refresh.");
@@ -2297,8 +2202,7 @@ async function sendPrompt() {
         body: JSON.stringify({
           query: prompt,
           model,
-          top_k: deepStudy ? 16 : 8,
-          deepen: deepStudy,
+          top_k: 8,
           include_paths: filters.includePaths,
           exclude_paths: filters.excludePaths,
         }),
@@ -2452,7 +2356,6 @@ usePdfLibraryEl.addEventListener("change", () => {
   }
   metaEl.textContent = "Ungrounded mode enabled";
 });
-studyBriefEl.addEventListener("click", createStudyBrief);
 makeBibliographyEl.addEventListener(
   "click",
   generateBibliographyFromLatestSources,
@@ -2506,7 +2409,6 @@ promptHistory = loadPromptHistory();
 pinnedPrompts = loadPinnedPrompts();
 promptHistoryIndex = promptHistory.length;
 renderPromptHistoryDropdown();
-applyPlatformNotices();
 loadHistory();
 loadInstructions();
 loadModels();
