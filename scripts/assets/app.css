@@ -531,6 +531,12 @@ textarea {
   line-height: 1.3;
   white-space: pre-wrap;
 }
+.platform-footnote {
+  margin-top: -0.15rem;
+  color: var(--muted);
+  opacity: 0.92;
+  white-space: normal;
+}
 .stash-modal {
   position: fixed;
   inset: 0;

@@ -51,6 +51,7 @@ const clearAbstractEl = document.getElementById("clearAbstract");
 const abstractResultEl = document.getElementById("abstractResult");
 const usePdfLibraryEl = document.getElementById("usePdfLibrary");
 const deepStudyEl = document.getElementById("deepStudy");
+const linuxDeepStudyNoticeEl = document.getElementById("linuxDeepStudyNotice");
 const syncPdfLibraryEl = document.getElementById("syncPdfLibrary");
 const uploadLibraryDocsEl = document.getElementById("uploadLibraryDocs");
 const pdfProgressEl = document.getElementById("pdfProgress");
@@ -117,6 +118,28 @@ const SUPPORTED_UPLOAD_EXTENSIONS = new Set([
   ".epub",
 ]);
 let latestUpdateVersion = "";
+
+function isLikelyLinuxClient() {
+  const uaDataPlatform =
+    typeof navigator !== "undefined" && navigator.userAgentData
+      ? String(navigator.userAgentData.platform || "")
+      : "";
+  const platform =
+    typeof navigator !== "undefined" ? String(navigator.platform || "") : "";
+  const ua =
+    typeof navigator !== "undefined" ? String(navigator.userAgent || "") : "";
+  const sample = `${uaDataPlatform} ${platform} ${ua}`.toLowerCase();
+  return sample.includes("linux") && !sample.includes("android");
+}
+
+function applyPlatformNotices() {
+  if (!linuxDeepStudyNoticeEl) return;
+  if (isLikelyLinuxClient()) {
+    linuxDeepStudyNoticeEl.removeAttribute("hidden");
+  } else {
+    linuxDeepStudyNoticeEl.setAttribute("hidden", "hidden");
+  }
+}
 
 function extensionOfName(name) {
   const raw = String(name || "")
@@ -2483,6 +2506,7 @@ promptHistory = loadPromptHistory();
 pinnedPrompts = loadPinnedPrompts();
 promptHistoryIndex = promptHistory.length;
 renderPromptHistoryDropdown();
+applyPlatformNotices();
 loadHistory();
 loadInstructions();
 loadModels();

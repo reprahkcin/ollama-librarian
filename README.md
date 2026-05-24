@@ -49,6 +49,7 @@ For non-technical users, use:
 - EPUB citations open in an in-app EPUB reader at section-level locations (EPUB does not have universal PDF-style page numbers).
 - You can upload supported documents directly from the sidebar with `Upload Documents`, then sync/index from the same UI.
 - The sidebar includes an `Abstract Screener` that scores an abstract against your research need and recommends whether to download/index the paper.
+- Linux known issue: `Deep Study Mode` can fail or time out on some systems during larger retrieval prompts due to upstream Ollama runtime instability. If this occurs, retry with `Deep Study Mode` off.
 
 ## Security Defaults
 

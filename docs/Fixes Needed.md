@@ -1,3 +1,30 @@
+Outstanding issue: Linux deep search (Deep Study Mode) instability
+
+Status: Open
+Severity: High for Linux users who rely on deep retrieval flows
+
+Summary
+
+- On Linux systems, larger prompt payloads can fail or time out when Deep Study Mode is enabled.
+- Reproduced through direct Ollama generate calls (outside web route), indicating runtime-level instability rather than app-only logic.
+
+User-facing mitigation
+
+- UI now includes a Linux-only footnote near Deep Study Mode warning users about this limitation.
+- Recommended fallback is to retry with Deep Study Mode disabled.
+
+Evidence snapshot
+
+- Short prompts succeed consistently.
+- Larger prompts can return 500 after extended runtimes (for example around 1m14s to 1m30s).
+- Reproduced on Linux after Ollama reinstall and NVIDIA open/proprietary 595 driver validation.
+
+Next environment actions
+
+- Reboot after driver stack changes before re-validation.
+- If still failing, validate on alternate NVIDIA driver branch (for example 580 or 535).
+- Keep code behavior aligned with main while environment root cause is isolated.
+
 Fixes for the coding agent
 I'll write these as discrete, actionable items with enough context that an agent can pick any one up without re-deriving the situation.
 
