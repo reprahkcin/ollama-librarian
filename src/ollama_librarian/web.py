@@ -1516,7 +1516,7 @@ class Handler(BaseHTTPRequestHandler):
     def _send_security_headers(self):
         script_src = "script-src 'self'"
 
-        if self.path.startswith("/epub-reader"):
+        if self.path.startswith("/epub-reader") or self.path.startswith("/pdf-reader"):
             self.send_header(
                 "Content-Security-Policy",
                 "default-src 'self'; style-src 'self' blob:; "
@@ -1763,6 +1763,39 @@ class Handler(BaseHTTPRequestHandler):
         )
         html = html.replace("%ASSET_CACHE_BUSTER%", ASSET_CACHE_BUSTER)
         return self._send(200, html, "text/html; charset=utf-8")
+
+    def _handle_get_pdf_reader(self, parsed_url):
+        params = parse_qs(parsed_url.query)
+        source_path = str(params.get("path", [""])[0] or "").strip()
+        resolved_path, error, code = self._resolve_library_file_path(
+            source_path)
+        if error:
+            return self._send(
+                code,
+                json.dumps({"error": error}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        if not resolved_path.lower().endswith(".pdf"):
+            return self._send(
+                404,
+                json.dumps({"error": "PDF not found"}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        page_raw = str(params.get("page", ["1"])[0] or "1").strip()
+        try:
+            page_num = max(1, int(page_raw))
+        except Exception:
+            page_num = 1
+
+        safe_query_path = quote(source_path, safe="")
+        pdf_url = f"/api/pdf/file?path={safe_query_path}#page={page_num}"
+        self.send_response(302)
+        self._send_security_headers()
+        self.send_header("Location", pdf_url)
+        self.end_headers()
+        return None
 
     def _handle_get_assets(self, route_path):
         rel_asset = unquote(route_path[len("/assets/"):]).lstrip("/")
@@ -2409,6 +2442,7 @@ class Handler(BaseHTTPRequestHandler):
         get_routes = {
             "/": lambda: self._handle_get_root(),
             "/epub-reader": lambda: self._handle_get_epub_reader(),
+            "/pdf-reader": lambda: self._handle_get_pdf_reader(parsed_url),
             "/api/tags": lambda: self._handle_get_tags(),
             "/api/history": lambda: self._handle_get_history(),
             "/api/instructions": lambda: self._handle_get_instructions(),
