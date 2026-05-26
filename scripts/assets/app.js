@@ -585,13 +585,13 @@ function sourceLinkFromDescriptor(rawDescriptor) {
       return `/epub-reader?path=${strictEncodeURIComponent(cleanPath)}&section=${sectionOrPage}`;
     }
     if (/\.pdf$/i.test(cleanPath)) {
-      return `/api/pdf/file?path=${strictEncodeURIComponent(cleanPath)}#page=${sectionOrPage}`;
+      return `/pdf-reader?path=${strictEncodeURIComponent(cleanPath)}&page=${sectionOrPage}`;
     }
     return null;
   };
 
   const urlMatch = raw.match(
-    /(?:https?:\/\/|\/api\/pdf\/file\?|\/epub-reader\?)[^\s;,)\]]+/i,
+    /(?:https?:\/\/|\/api\/pdf\/file\?|\/pdf-reader\?|\/epub-reader\?)[^\s;,)\]]+/i,
   );
   if (urlMatch) {
     return { href: urlMatch[0], title: raw, label: "source" };
@@ -611,6 +611,20 @@ function sourceLinkFromDescriptor(rawDescriptor) {
           ? loc
           : Number(src.page || src.location || 1);
       const href = buildDocHref(path, Math.max(1, Number(page || 1)));
+      if (!href) return null;
+      return { href, title: raw, label: "source" };
+    }
+  }
+
+  const sourcePathExplicit = raw.match(
+    /source\s+path\s*=\s*(.+?\.(?:pdf|epub))\b/i,
+  );
+  if (sourcePathExplicit) {
+    const path = String(sourcePathExplicit[1] || "").trim();
+    const locMatch = raw.match(/(?:location|page)\s*=\s*(\d+)/i);
+    const loc = Number(locMatch && locMatch[1] ? locMatch[1] : 1);
+    if (path) {
+      const href = buildDocHref(path, Math.max(1, loc));
       if (!href) return null;
       return { href, title: raw, label: "source" };
     }
@@ -674,7 +688,7 @@ function renderInlineMarkdown(text) {
   out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   out = out.replace(/\*([^*]+)\*/g, "<em>$1</em>");
   out = out.replace(
-    /\[([^\]]+)\]\(((?:https?:\/\/|\/api\/pdf\/file\?|\/epub-reader\?)[^\s]+)\)/g,
+    /\[([^\]]+)\]\(((?:https?:\/\/|\/api\/pdf\/file\?|\/pdf-reader\?|\/epub-reader\?)[^\s]+)\)/g,
     '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>',
   );
   out = replaceOutsideTags(
@@ -685,7 +699,7 @@ function renderInlineMarkdown(text) {
       if (!raw) return "";
       const descriptorMatches = Array.from(
         raw.matchAll(
-          /source\s+path\s*\d+(?:\s*,?\s*(?:location|page)\s*\d+)?|source\s*=\s*.+?\.(?:pdf|epub)(?:\s+(?:location|page)\s*=\s*\d+)?/gi,
+          /source\s+path\s*\d+(?:\s*,?\s*(?:location|page)\s*\d+)?|source\s+path\s*=\s*.+?\.(?:pdf|epub)(?:\s*,?\s*(?:location|page)\s*=\s*\d+)?|source\s*=\s*.+?\.(?:pdf|epub)(?:\s+(?:location|page)\s*=\s*\d+)?/gi,
         ),
       );
       const descriptors = descriptorMatches.length
@@ -717,6 +731,18 @@ function renderInlineMarkdown(text) {
   out = replaceOutsideTags(
     out,
     /\bsource\s+path\s*\d+(?:\s*,\s*(?:location|page)\s*\d+)?\b/gi,
+    (match) => {
+      const link = sourceLinkFromDescriptor(match);
+      const title = String(match).replace(/"/g, "&quot;");
+      if (link && link.href) {
+        return `<a class="source-inline" href="${link.href}" target="_blank" rel="noopener noreferrer" title="${title}">source</a>`;
+      }
+      return `<span class="source-inline" title="${title}">source</span>`;
+    },
+  );
+  out = replaceOutsideTags(
+    out,
+    /\bsource\s+path\s*=\s*.+?\.(?:pdf|epub)(?:\s*,?\s*(?:location|page)\s*=\s*\d+)?/gi,
     (match) => {
       const link = sourceLinkFromDescriptor(match);
       const title = String(match).replace(/"/g, "&quot;");
@@ -1682,11 +1708,11 @@ function pathBase(p) {
 }
 
 function isPdfSourcePath(p) {
-  return /\\.pdf$/i.test(String(p || "").trim());
+  return /\.pdf$/i.test(String(p || "").trim());
 }
 
 function isEpubSourcePath(p) {
-  return /\\.epub$/i.test(String(p || "").trim());
+  return /\.epub$/i.test(String(p || "").trim());
 }
 
 function buildSourceOpenUrl(path, loc) {
@@ -1694,7 +1720,7 @@ function buildSourceOpenUrl(path, loc) {
   const location = Math.max(1, Number(loc || 1));
   if (!cleanPath) return "";
   if (isPdfSourcePath(cleanPath)) {
-    return `/api/pdf/file?path=${strictEncodeURIComponent(cleanPath)}#page=${location}`;
+    return `/pdf-reader?path=${strictEncodeURIComponent(cleanPath)}&page=${location}`;
   }
   if (isEpubSourcePath(cleanPath)) {
     return `/epub-reader?path=${strictEncodeURIComponent(cleanPath)}&section=${location}`;

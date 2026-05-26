@@ -1,6 +1,8 @@
 import json
+from pathlib import Path
 import unittest
 from urllib.error import HTTPError
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from tests.helpers.server_harness import running_server
@@ -223,6 +225,46 @@ class RouteBaselineTests(unittest.TestCase):
         self.assertIsInstance(payload, dict)
         self.assertIn("ok", payload)
         self.assertIn("source_path", payload)
+
+    def test_get_pdf_file_serves_inline_content(self):
+        with running_server() as (app, base_url):
+            pdf_dir = Path(app.PDF_SOURCE)
+            pdf_dir.mkdir(parents=True, exist_ok=True)
+            pdf_path = pdf_dir / "inline-test.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+            encoded_path = quote(str(pdf_path), safe="")
+
+            req = Request(
+                f"{base_url}/api/pdf/file?path={encoded_path}", method="GET")
+            with urlopen(req, timeout=10) as resp:
+                headers = dict(resp.headers)
+                self.assertEqual(resp.status, 200)
+                self.assertIn("application/pdf",
+                              headers.get("Content-Type", ""))
+                self.assertIn(
+                    "inline;",
+                    headers.get("Content-Disposition", ""),
+                )
+
+    def test_pdf_reader_route_resolves_to_pdf_response(self):
+        with running_server() as (app, base_url):
+            pdf_dir = Path(app.PDF_SOURCE)
+            pdf_dir.mkdir(parents=True, exist_ok=True)
+            pdf_path = pdf_dir / "redirect-test.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+            encoded_path = quote(str(pdf_path), safe="")
+
+            req = Request(
+                f"{base_url}/pdf-reader?path={encoded_path}&page=7",
+                method="GET",
+            )
+            with urlopen(req, timeout=10) as resp:
+                final_url = resp.geturl()
+                headers = dict(resp.headers)
+                self.assertEqual(resp.status, 200)
+                self.assertIn("/api/pdf/file?path=", final_url)
+                self.assertIn("application/pdf",
+                              headers.get("Content-Type", ""))
 
     def test_get_update_status_returns_shape(self):
         with running_server() as (_, base_url):
