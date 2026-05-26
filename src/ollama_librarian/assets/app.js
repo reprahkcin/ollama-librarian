@@ -556,11 +556,18 @@ function escapeHtml(text) {
 }
 
 const sourceDescriptorWarned = new Set();
+const MAX_SOURCE_DESCRIPTOR_WARNED = 256;
 
 function warnSourceDescriptorParseFailure(raw) {
   const key = String(raw || "").trim();
   if (!key || sourceDescriptorWarned.has(key)) {
     return;
+  }
+  if (sourceDescriptorWarned.size >= MAX_SOURCE_DESCRIPTOR_WARNED) {
+    const oldest = sourceDescriptorWarned.values().next().value;
+    if (oldest) {
+      sourceDescriptorWarned.delete(oldest);
+    }
   }
   sourceDescriptorWarned.add(key);
   console.warn("Unparsed source descriptor:", key);
