@@ -555,6 +555,17 @@ function escapeHtml(text) {
     .replace(/'/g, "&#39;");
 }
 
+const sourceDescriptorWarned = new Set();
+
+function warnSourceDescriptorParseFailure(raw) {
+  const key = String(raw || "").trim();
+  if (!key || sourceDescriptorWarned.has(key)) {
+    return;
+  }
+  sourceDescriptorWarned.add(key);
+  console.warn("Unparsed source descriptor:", key);
+}
+
 function sourceLinkFromDescriptor(rawDescriptor) {
   const raw = String(rawDescriptor || "").trim();
   if (!raw) return null;
@@ -563,10 +574,10 @@ function sourceLinkFromDescriptor(rawDescriptor) {
     const cleanPath = String(path || "").trim();
     if (!cleanPath) return null;
     const sectionOrPage = Math.max(1, Number(loc || 1));
-    if (/\\.epub$/i.test(cleanPath)) {
+    if (/\.epub$/i.test(cleanPath)) {
       return `/epub-reader?path=${strictEncodeURIComponent(cleanPath)}&section=${sectionOrPage}`;
     }
-    if (/\\.pdf$/i.test(cleanPath)) {
+    if (/\.pdf$/i.test(cleanPath)) {
       return `/api/pdf/file?path=${strictEncodeURIComponent(cleanPath)}#page=${sectionOrPage}`;
     }
     return null;
@@ -580,7 +591,7 @@ function sourceLinkFromDescriptor(rawDescriptor) {
   }
 
   const indexed = raw.match(
-    /source\\s+path\\s*(\\d+)(?:\\s*,?\\s*(?:location|page)\\s*(\\d+))?/i,
+    /source\s+path\s*(\d+)(?:\s*,?\s*(?:location|page)\s*(\d+))?/i,
   );
   if (indexed) {
     const idx = Math.max(1, Number(indexed[1] || 1)) - 1;
@@ -598,10 +609,10 @@ function sourceLinkFromDescriptor(rawDescriptor) {
     }
   }
 
-  const explicitSource = raw.match(/source\\s*=\\s*(.+?\\.(?:pdf|epub))\\b/i);
+  const explicitSource = raw.match(/source\s*=\s*(.+?\.(?:pdf|epub))\b/i);
   if (explicitSource) {
     const path = String(explicitSource[1] || "").trim();
-    const locMatch = raw.match(/(?:location|page)\\s*=\\s*(\\d+)/i);
+    const locMatch = raw.match(/(?:location|page)\s*=\s*(\d+)/i);
     const loc = Number(locMatch && locMatch[1] ? locMatch[1] : 1);
     if (path) {
       const href = buildDocHref(path, Math.max(1, loc));
@@ -613,11 +624,15 @@ function sourceLinkFromDescriptor(rawDescriptor) {
   const pathMatch = raw.match(/(?:\/[\w .\-()&%+]+)+\.(?:pdf|epub)\b/i);
   if (pathMatch) {
     const path = pathMatch[0];
-    const pageMatch = raw.match(/(?:page|location|p\\.)\\s*(\\d+)/i);
+    const pageMatch = raw.match(/(?:page|location|p\.)\s*(\d+)/i);
     const page = Number(pageMatch && pageMatch[1] ? pageMatch[1] : 1);
     const href = buildDocHref(path, Math.max(1, page));
     if (!href) return null;
     return { href, title: raw, label: "source" };
+  }
+
+  if (/(?:source\s*=|source\s+path|\.pdf\b|\.epub\b)/i.test(raw)) {
+    warnSourceDescriptorParseFailure(raw);
   }
 
   return null;
