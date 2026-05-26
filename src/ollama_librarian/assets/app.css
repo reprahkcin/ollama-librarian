@@ -27,7 +27,7 @@
   --surface-inset: var(--osu-off-white);
   --surface-deep: var(--osu-star-canvas);
   --ink: var(--osu-copy);
-  --muted: var(--osu-crater);
+  --muted: var(--osu-high-desert);
   --primary: var(--osu-orange);
   --primary-2: var(--osu-stratosphere);
   --accent: var(--osu-luminance);
@@ -386,7 +386,7 @@ button:disabled {
   align-self: center;
   background: var(--osu-candela);
   border: 1px solid var(--osu-solar-flare);
-  color: var(--osu-high-desert);
+  color: var(--osu-dark-bg);
   font-size: 0.9rem;
 }
 .composer {
