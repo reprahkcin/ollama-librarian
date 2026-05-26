@@ -1,40 +1,62 @@
-    :root { color-scheme: light; }
-    body {
-      margin: 0;
-      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-      background: #f7f7f4;
-      color: #1d232f;
-      height: 100vh;
-      display: grid;
-      grid-template-rows: auto 1fr;
-    }
-    .bar {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      padding: 0.65rem 0.85rem;
-      background: #ffffff;
-      border-bottom: 1px solid #d8dee8;
-    }
-    .bar button {
-      border: 1px solid #c8cfdb;
-      border-radius: 8px;
-      background: #eef3fb;
-      color: #1f2a44;
-      padding: 0.38rem 0.62rem;
-      cursor: pointer;
-    }
-    .meta {
-      margin-left: auto;
-      font-size: 0.86rem;
-      color: #4d5b75;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      max-width: 65vw;
-    }
-    #viewer {
-      width: 100%;
-      height: calc(100vh - 52px);
-      background: #ffffff;
-    }
+:root {
+  color-scheme: light;
+  --osu-orange: #d73f09;
+  --osu-white: #ffffff;
+  --osu-off-white: #f7f5f5;
+  --osu-copy: #423e3c;
+  --osu-nav: #e9e5e4;
+  --osu-stratosphere: #006a8e;
+  --osu-coastline: #a7aca2;
+  --osu-moondust: #c6dae7;
+}
+body {
+  margin: 0;
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    Segoe UI,
+    Roboto,
+    Helvetica,
+    Arial,
+    sans-serif;
+  background: var(--osu-off-white);
+  color: var(--osu-copy);
+  height: 100vh;
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.65rem 0.85rem;
+  background: var(--osu-white);
+  border-bottom: 1px solid var(--osu-coastline);
+}
+.bar button {
+  border: 1px solid var(--osu-stratosphere);
+  border-radius: 8px;
+  background: var(--osu-moondust);
+  color: var(--osu-copy);
+  padding: 0.38rem 0.62rem;
+  cursor: pointer;
+}
+.bar button:hover {
+  background: var(--osu-orange);
+  color: var(--osu-white);
+}
+.meta {
+  margin-left: auto;
+  font-size: 0.86rem;
+  color: var(--osu-stratosphere);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 65vw;
+}
+#viewer {
+  width: 100%;
+  height: calc(100vh - 52px);
+  background: var(--osu-white);
+}
