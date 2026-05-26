@@ -464,6 +464,8 @@ button:disabled {
 }
 .abstract-eval .tiny {
   font-size: 0.74rem;
+  text-align: left;
+  white-space: normal;
 }
 .abstract-input {
   min-height: 76px;

@@ -640,6 +640,14 @@ function protectMathSegments(text) {
 function renderInlineMarkdown(text) {
   const protectedMath = protectMathSegments(text);
   let out = protectedMath.out;
+  const replaceOutsideTags = (input, pattern, replacer) =>
+    input
+      .split(/(<[^>]+>)/g)
+      .map((part) =>
+        part.startsWith("<") ? part : part.replace(pattern, replacer),
+      )
+      .join("");
+
   out = out.replace(/`([^`]+)`/g, "<code>$1</code>");
   out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   out = out.replace(/\*([^*]+)\*/g, "<em>$1</em>");
@@ -647,7 +655,8 @@ function renderInlineMarkdown(text) {
     /\[([^\]]+)\]\(((?:https?:\/\/|\/api\/pdf\/file\?|\/epub-reader\?)[^\s]+)\)/g,
     '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>',
   );
-  out = out.replace(
+  out = replaceOutsideTags(
+    out,
     /\[([^\]]*(?:source\s+path|source\s*=)[^\]]*)\]/gi,
     (_, inner) => {
       const raw = String(inner || "").trim();
@@ -683,7 +692,8 @@ function renderInlineMarkdown(text) {
       return links.length ? ` ${links.join(" ")}` : "";
     },
   );
-  out = out.replace(
+  out = replaceOutsideTags(
+    out,
     /\bsource\s+path\s*\d+(?:\s*,\s*(?:location|page)\s*\d+)?\b/gi,
     (match) => {
       const link = sourceLinkFromDescriptor(match);
@@ -694,7 +704,8 @@ function renderInlineMarkdown(text) {
       return `<span class="source-inline" title="${title}">source</span>`;
     },
   );
-  out = out.replace(
+  out = replaceOutsideTags(
+    out,
     /\bsource\s*=\s*.+?\.(?:pdf|epub)(?:\s+(?:location|page)\s*=\s*\d+)?/gi,
     (match) => {
       const link = sourceLinkFromDescriptor(match);
@@ -857,7 +868,49 @@ function renderMarkdown(text) {
     },
   );
 
-  const lines = withPlaceholders.split("\\n");
+  const rawLines = withPlaceholders.split(/\r?\n|\\n/);
+  const lines = [];
+  for (const rawLine of rawLines) {
+    const line = String(rawLine || "");
+    const trimmed = line.trimStart();
+    if (/^\d+\.\s+/.test(trimmed) || /^[-*]\s+/.test(trimmed)) {
+      lines.push(line);
+      continue;
+    }
+
+    const inlineList = line.match(/^\s*([^:\n]+:\s*)(\d+\.\s+.+)$/);
+    if (!inlineList) {
+      lines.push(line);
+      continue;
+    }
+
+    const intro = inlineList[1].trim();
+    const listChunk = inlineList[2].trim();
+    const starts = [];
+    const marker = /\d+\.\s+/g;
+    let hit;
+    while ((hit = marker.exec(listChunk)) !== null) {
+      if (hit.index === 0 || /\s/.test(listChunk[hit.index - 1])) {
+        starts.push(hit.index);
+      }
+    }
+
+    if (!starts.length) {
+      lines.push(line);
+      continue;
+    }
+
+    lines.push(intro);
+    for (let i = 0; i < starts.length; i += 1) {
+      const start = starts[i];
+      const end = i + 1 < starts.length ? starts[i + 1] : listChunk.length;
+      const item = listChunk.slice(start, end).trim();
+      if (item) {
+        lines.push(item);
+      }
+    }
+  }
+
   const html = [];
   let inUl = false;
   let inOl = false;
@@ -930,7 +983,12 @@ function renderMarkdown(text) {
       }
     }
 
-    if (/\.(?:pdf|epub)\b/i.test(t) && !/\[[^\]]+\]\([^\)]+\)/.test(t)) {
+    if (
+      /\.(?:pdf|epub)\b/i.test(t) &&
+      !/^\d+\.\s+/.test(t) &&
+      !/^[-*]\s+/.test(t) &&
+      !/\[[^\]]+\]\([^\)]+\)/.test(t)
+    ) {
       closeLists();
       const link = sourceLinkFromDescriptor(t);
       if (link && link.href) {
