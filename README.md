@@ -52,9 +52,11 @@ For non-technical users, use:
 
 ## Release Status
 
-- Current validated release: `v1.0.3`
+- Current validated release: `v1.0.4`
 - Cross-platform manual validation completed on macOS, Windows, and Linux.
 - `Deep Study Mode` and `Study Brief` were removed to stabilize retrieval behavior across platforms.
+- Source PDF/EPUB citation links were fixed to open correctly again.
+- UI theme updated to Oregon State branding palette with contrast fixes for readability.
 
 ## Security Defaults
 
