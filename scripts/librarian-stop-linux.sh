@@ -27,6 +27,10 @@ echo "Stopping web app and Ollama (if running)..."
 stop_pid_file "$WEB_PID_FILE"
 stop_pid_file "$OLLAMA_PID_FILE"
 
+# Also stop orphaned indexing workers that can outlive the web process and keep DB locks.
+pkill -f "ollama_librarian.indexer" >/dev/null 2>&1 || true
+pkill -f "scripts/pdf_library_rag.py.* index" >/dev/null 2>&1 || true
+
 if http_ok "http://127.0.0.1:8088/api/pdf/status"; then
   echo "Note: Web UI is still running (not started by this script instance)."
 fi
