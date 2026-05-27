@@ -133,8 +133,11 @@ OLLAMA_WEB_HISTORY_PATH="$HOME/Library/Application Support/ollama-librarian/olla
 OLLAMA_WEB_STASH_PATH="$HOME/Library/Application Support/ollama-librarian/ollama-response-stash.json" \
 OLLAMA_WEB_PDF_OCR_ON_SYNC=1 \
 OLLAMA_WEB_PDF_OCR_LANG=eng \
-OLLAMA_WEB_PDF_OCR_JOBS=4 \
+OLLAMA_WEB_PDF_OCR_JOBS=1 \
 OLLAMA_WEB_PDF_OCR_TIMEOUT=3600 \
+OLLAMA_WEB_PDF_EMBED_NUM_THREAD=2 \
+OLLAMA_WEB_PDF_EMBED_DELAY_MS=200 \
+OLLAMA_WEB_PDF_DOC_COOLDOWN_SECONDS=10 \
 ./scripts/ollama-web-chat.py
 ```
 
@@ -154,7 +157,7 @@ From the UI:
 - Copying files into your library folder, or
 - Clicking Upload Documents in the sidebar
 
-3. Click Sync New PDFs
+1. Click Sync New PDFs
 
 Optional CLI sync with prune:
 
@@ -202,13 +205,13 @@ Use this section to validate update endpoints and apply flows.
 curl -sS http://127.0.0.1:8088/api/update/status | jq .
 ```
 
-2. Check for updates:
+1. Check for updates:
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8088/api/update/check | jq .
 ```
 
-3. Test apply in git mode:
+1. Test apply in git mode:
 
 ```bash
 ./scripts/librarian-stop-macos.sh
@@ -219,7 +222,7 @@ curl -sS -X POST http://127.0.0.1:8088/api/update/apply \
   -d '{"target_version":"main"}' | jq .
 ```
 
-4. Test apply in script mode:
+1. Test apply in script mode:
 
 ```bash
 ./scripts/librarian-stop-macos.sh
@@ -232,7 +235,7 @@ curl -sS -X POST http://127.0.0.1:8088/api/update/apply \
   -d "{\"target_version\":\"$target\"}" | jq .
 ```
 
-5. Poll update status until complete:
+1. Poll update status until complete:
 
 ```bash
 while true; do
@@ -243,7 +246,7 @@ while true; do
 done
 ```
 
-6. Negative test (git mode blocks targets that differ from `OLLAMA_WEB_UPDATE_BRANCH`):
+1. Negative test (git mode blocks targets that differ from `OLLAMA_WEB_UPDATE_BRANCH`):
 
 ```bash
 ./scripts/librarian-stop-macos.sh
