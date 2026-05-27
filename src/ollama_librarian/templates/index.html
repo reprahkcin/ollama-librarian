@@ -87,63 +87,79 @@
           </div>
         </details>
 
-        <label>PDF Library</label>
-        <label
-          class="checkrow"
-          for="usePdfLibrary"
-          title="Use retrieval from your indexed PDF library instead of plain model-only responses."
-        >
-          <input
-            id="usePdfLibrary"
-            type="checkbox"
-            checked
+        <section class="sidebar-section" aria-label="PDF processing section">
+          <h3 class="sidebar-section-title">PDF Processing</h3>
+          <label
+            class="checkrow"
+            for="usePdfLibrary"
             title="Use retrieval from your indexed PDF library instead of plain model-only responses."
-          />
-          Use PDF-grounded answers
-        </label>
-        <button
-          id="syncPdfLibrary"
-          class="btn-soft"
-          type="button"
-          title="Indexes new or changed PDFs. OCR fallback is used for scanned/text-only images when available."
-        >
-          Sync New PDFs
-        </button>
-        <button
-          id="uploadLibraryDocs"
-          class="btn-soft"
-          type="button"
-          title="Upload supported documents into the configured library (.pdf, .txt, .md, .html, .htm, .epub)."
-        >
-          Upload Documents
-        </button>
-        <div id="pdfStatus" class="tiny">PDF index: checking...</div>
-        <div id="pdfProgress" class="pdf-progress hidden">
-          <div id="pdfProgressBar" class="pdf-progress-bar"></div>
-        </div>
+          >
+            <input
+              id="usePdfLibrary"
+              type="checkbox"
+              checked
+              title="Use retrieval from your indexed PDF library instead of plain model-only responses."
+            />
+            Use PDF-grounded answers
+          </label>
+          <button
+            id="syncPdfLibrary"
+            class="btn-soft"
+            type="button"
+            title="Indexes new or changed PDFs. OCR fallback is used for scanned/text-only images when available."
+          >
+            Sync New PDFs
+          </button>
+          <button
+            id="uploadLibraryDocs"
+            class="btn-soft"
+            type="button"
+            title="Upload supported documents into the configured library (.pdf, .txt, .md, .html, .htm, .epub)."
+          >
+            Upload Documents
+          </button>
+          <button id="openLibraryDocs" class="btn-soft" type="button">
+            Library Docs
+          </button>
+          <div id="pdfStatus" class="pdf-status-panel">
+            <div id="pdfStatusSummary" class="tiny">PDF index: checking...</div>
+            <div id="pdfStatusCounts" class="tiny"></div>
+            <div id="pdfStatusTiming" class="tiny"></div>
+            <div id="pdfStatusAdaptive" class="tiny"></div>
+            <div id="pdfStatusError" class="tiny pdf-status-error" hidden></div>
+          </div>
+          <div id="pdfProgress" class="pdf-progress hidden">
+            <div id="pdfProgressBar" class="pdf-progress-bar"></div>
+          </div>
+        </section>
 
-        <label>App Updates</label>
-        <div id="appVersion" class="tiny">Version: %CURRENT_VERSION%</div>
-        <div id="updateStatus" class="tiny">Updates: not checked</div>
-        <a
-          id="updateNotesLink"
-          class="tiny"
-          href="#"
-          target="_blank"
-          rel="noopener noreferrer"
-          hidden
-          >View release notes</a
+        <details
+          class="sidebar-accordion"
+          id="updatesAccordion"
+          aria-label="Application updates section"
         >
-        <button id="checkUpdates" class="btn-soft" type="button">
-          Check for Updates
-        </button>
-        <button id="applyUpdate" class="btn-soft" type="button" disabled>
-          Update to Latest
-        </button>
+          <summary>App Updates</summary>
+          <div class="accordion-content">
+            <div id="appVersion" class="tiny">Version: %CURRENT_VERSION%</div>
+            <div id="updateStatus" class="tiny">Updates: not checked</div>
+            <a
+              id="updateNotesLink"
+              class="tiny"
+              href="#"
+              target="_blank"
+              rel="noopener noreferrer"
+              hidden
+              >View release notes</a
+            >
+            <button id="checkUpdates" class="btn-soft" type="button">
+              Check for Updates
+            </button>
+            <button id="applyUpdate" class="btn-soft" type="button" disabled>
+              Update to Latest
+            </button>
+          </div>
+        </details>
 
-        <button id="openLibraryDocs" class="btn-soft" type="button">
-          Library Docs
-        </button>
         <button id="openStash" class="btn-soft" type="button">
           View Stash
         </button>
