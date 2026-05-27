@@ -323,6 +323,12 @@ def _env_int(env: Mapping[str, str], key: str, default: int) -> int:
         return default
 
 
+def _env_bool_true_unless_false(env: Mapping[str, str], key: str, default: str = "1") -> bool:
+    return str(env.get(key, default)).strip().lower() not in {
+        "0", "false", "no", "off"
+    }
+
+
 @dataclass(frozen=True)
 class RagCliConfig:
     ollama_base: str
@@ -334,6 +340,15 @@ class RagCliConfig:
     ocr_lang: str
     ocr_jobs: int
     ocr_timeout: int
+    embed_num_thread: int = 2
+    embed_delay_ms: int = 200
+    doc_cooldown_seconds: int = 10
+    dynamic_throttle: bool = True
+    dynamic_target_embed_ms: int = 1400
+    dynamic_max_delay_ms: int = 2000
+    dynamic_delay_step_ms: int = 50
+    dynamic_min_threads: int = 1
+    dynamic_max_threads: int = 3
     web_host: str = "127.0.0.1"
     web_port: int = 8088
     ask_answer_timeout: int = 600
@@ -360,12 +375,42 @@ class RagCliConfig:
             ocr_jobs=max(1, _env_int(env, "OLLAMA_WEB_PDF_OCR_JOBS", 2)),
             ocr_timeout=max(60, _env_int(
                 env, "OLLAMA_WEB_PDF_OCR_TIMEOUT", 1800)),
+            embed_num_thread=max(1, _env_int(
+                env, "OLLAMA_WEB_PDF_EMBED_NUM_THREAD", 2)),
+            embed_delay_ms=max(0, _env_int(
+                env, "OLLAMA_WEB_PDF_EMBED_DELAY_MS", 200)),
+            doc_cooldown_seconds=max(0, _env_int(
+                env, "OLLAMA_WEB_PDF_DOC_COOLDOWN_SECONDS", 10)),
+            dynamic_throttle=_env_bool_true_unless_false(
+                env, "OLLAMA_WEB_PDF_DYNAMIC_THROTTLE", "1"),
+            dynamic_target_embed_ms=max(200, _env_int(
+                env, "OLLAMA_WEB_PDF_DYNAMIC_TARGET_EMBED_MS", 1400)),
+            dynamic_max_delay_ms=max(0, _env_int(
+                env, "OLLAMA_WEB_PDF_DYNAMIC_MAX_DELAY_MS", 2000)),
+            dynamic_delay_step_ms=max(1, _env_int(
+                env, "OLLAMA_WEB_PDF_DYNAMIC_DELAY_STEP_MS", 50)),
+            dynamic_min_threads=max(1, _env_int(
+                env, "OLLAMA_WEB_PDF_DYNAMIC_MIN_THREADS", 1)),
+            dynamic_max_threads=max(1, _env_int(
+                env, "OLLAMA_WEB_PDF_DYNAMIC_MAX_THREADS", 3)),
             web_host=str(env.get("OLLAMA_WEB_HOST", "127.0.0.1")).strip(),
             web_port=max(1, _env_int(env, "OLLAMA_WEB_PORT", 8088)),
         )
 
 
 RAG_CONFIG = RagCliConfig.from_env(os.environ)
+
+
+def open_index_db(index_db: Path, writable: bool = False) -> sqlite3.Connection:
+    # Give SQLite enough time to wait for transient lock contention.
+    conn = sqlite3.connect(str(index_db), timeout=60 if writable else 15)
+    conn.execute("PRAGMA busy_timeout = 60000")
+    conn.execute("PRAGMA foreign_keys = ON")
+    if writable:
+        # WAL allows concurrent readers during long-running writes.
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
+    return conn
 
 
 def is_pdf_path(path: Path) -> bool:
@@ -466,11 +511,12 @@ def http_post_json(base_url: str, endpoint: str, payload: dict, timeout: int = 1
             f"Cannot reach Ollama at {base_url}: {exc}") from exc
 
 
-def embed_text(base_url: str, model: str, text: str) -> list[float]:
+def embed_text(base_url: str, model: str, text: str, num_thread: int = 3) -> list[float]:
+    embed_options = {"num_thread": max(1, int(num_thread))}
     # Newer Ollama endpoint.
     try:
         data = http_post_json(base_url, "/api/embed",
-                              {"model": model, "input": text})
+                              {"model": model, "input": text, "options": embed_options})
         if isinstance(data.get("embeddings"), list) and data["embeddings"]:
             first = data["embeddings"][0]
             if isinstance(first, list):
@@ -482,7 +528,7 @@ def embed_text(base_url: str, model: str, text: str) -> list[float]:
 
     # Backward-compatible endpoint.
     data = http_post_json(base_url, "/api/embeddings",
-                          {"model": model, "prompt": text})
+                          {"model": model, "prompt": text, "options": embed_options})
     if isinstance(data.get("embedding"), list):
         return [float(v) for v in data["embedding"]]
     raise RuntimeError("Unexpected embedding response format from Ollama")
@@ -578,6 +624,89 @@ def extract_pdf_pages_with_ocr(
                 detail or f"ocrmypdf failed with code {proc.returncode}")
 
         return extract_pdf_pages(out_pdf)
+
+
+class AdaptiveEmbedThrottle:
+    def __init__(
+        self,
+        enabled: bool,
+        base_threads: int,
+        base_delay_ms: int,
+        min_threads: int,
+        max_threads: int,
+        target_embed_ms: int,
+        max_delay_ms: int,
+        delay_step_ms: int,
+    ):
+        self.enabled = bool(enabled)
+        self.base_threads = max(1, int(base_threads))
+        self.base_delay_ms = max(0, int(base_delay_ms))
+        self.min_threads = max(1, int(min_threads))
+        self.max_threads = max(self.min_threads, int(max_threads))
+        self.target_embed_ms = max(200, int(target_embed_ms))
+        self.max_delay_ms = max(self.base_delay_ms, int(max_delay_ms))
+        self.delay_step_ms = max(1, int(delay_step_ms))
+
+        self.current_threads = min(
+            self.max_threads,
+            max(self.min_threads, self.base_threads),
+        )
+        self.current_delay_ms = self.base_delay_ms
+
+        self.samples = 0
+        self.adjustments = 0
+        self.ema_embed_ms: float | None = None
+
+    def _step_down(self) -> str | None:
+        if self.current_threads > self.min_threads:
+            self.current_threads -= 1
+            self.adjustments += 1
+            return "threads_down"
+        if self.current_delay_ms < self.max_delay_ms:
+            self.current_delay_ms = min(
+                self.max_delay_ms,
+                self.current_delay_ms + self.delay_step_ms,
+            )
+            self.adjustments += 1
+            return "delay_up"
+        return None
+
+    def _step_up(self) -> str | None:
+        if self.current_delay_ms > self.base_delay_ms:
+            self.current_delay_ms = max(
+                self.base_delay_ms,
+                self.current_delay_ms - self.delay_step_ms,
+            )
+            self.adjustments += 1
+            return "delay_down"
+        if self.current_threads < self.max_threads:
+            self.current_threads += 1
+            self.adjustments += 1
+            return "threads_up"
+        return None
+
+    def observe_embed_ms(self, elapsed_ms: float) -> str | None:
+        if not self.enabled:
+            return None
+
+        elapsed = max(1.0, float(elapsed_ms))
+        self.samples += 1
+        if self.ema_embed_ms is None:
+            self.ema_embed_ms = elapsed
+        else:
+            self.ema_embed_ms = (0.2 * elapsed) + (0.8 * self.ema_embed_ms)
+
+        # Adjust at a fixed cadence to avoid oscillation.
+        if self.samples % 6 != 0:
+            return None
+
+        high_ms = self.target_embed_ms * 1.2
+        low_ms = self.target_embed_ms * 0.75
+        if self.ema_embed_ms > high_ms:
+            return self._step_down()
+        if self.ema_embed_ms < low_ms:
+            return self._step_up()
+        return None
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -716,7 +845,7 @@ def metadata_sync_command(args) -> int:
         print(f"Index DB not found: {index_db}", file=sys.stderr)
         return 1
 
-    conn = sqlite3.connect(str(index_db))
+    conn = open_index_db(index_db, writable=True)
     init_db(conn)
 
     docs = discover_source_documents(source)
@@ -783,7 +912,7 @@ def index_command(args) -> int:
     index_db = Path(args.index_db).expanduser()
     index_db.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = sqlite3.connect(str(index_db))
+    conn = open_index_db(index_db, writable=True)
     init_db(conn)
 
     docs = discover_source_documents(source)
@@ -811,6 +940,19 @@ def index_command(args) -> int:
         )
 
     total_pdfs = sum(1 for doc_path in docs if is_pdf_path(doc_path))
+    embed_delay_sec = max(0, int(getattr(args, "embed_delay_ms", 0))) / 1000.0
+    doc_cooldown_sec = max(0, int(getattr(args, "doc_cooldown_seconds", 0)))
+    throttle = AdaptiveEmbedThrottle(
+        enabled=bool(getattr(args, "dynamic_throttle", False)),
+        base_threads=max(1, int(getattr(args, "embed_num_thread", 1))),
+        base_delay_ms=max(0, int(getattr(args, "embed_delay_ms", 0))),
+        min_threads=max(1, int(getattr(args, "dynamic_min_threads", 1))),
+        max_threads=max(1, int(getattr(args, "dynamic_max_threads", 1))),
+        target_embed_ms=max(
+            200, int(getattr(args, "dynamic_target_embed_ms", 1400))),
+        max_delay_ms=max(0, int(getattr(args, "dynamic_max_delay_ms", 2000))),
+        delay_step_ms=max(1, int(getattr(args, "dynamic_delay_step_ms", 50))),
+    )
 
     for doc_path in docs:
         rel_or_abs = str(doc_path)
@@ -878,7 +1020,24 @@ def index_command(args) -> int:
             chunks = chunk_text(page_text, args.chunk_size, args.chunk_overlap)
             for i, chunk in enumerate(chunks):
                 try:
-                    emb = embed_text(args.ollama_base, args.embed_model, chunk)
+                    embed_started = time.perf_counter()
+                    emb = embed_text(
+                        args.ollama_base,
+                        args.embed_model,
+                        chunk,
+                        num_thread=throttle.current_threads if throttle.enabled else args.embed_num_thread,
+                    )
+                    embed_elapsed_ms = (
+                        time.perf_counter() - embed_started) * 1000.0
+                    change = throttle.observe_embed_ms(embed_elapsed_ms)
+                    if change and not getattr(args, "json_summary", False):
+                        avg_ms = round(
+                            float(throttle.ema_embed_ms or embed_elapsed_ms), 1)
+                        print(
+                            f"[throttle] {change}: threads={throttle.current_threads}, "
+                            f"delay_ms={throttle.current_delay_ms}, avg_embed_ms={avg_ms}",
+                            file=sys.stderr,
+                        )
                 except Exception as exc:
                     print(
                         f"[warn] embedding failed for {doc_path} unit {page_num}: {exc}", file=sys.stderr)
@@ -886,6 +1045,13 @@ def index_command(args) -> int:
                 chunk_rows.append(
                     (page_num, i, chunk, json.dumps(emb, separators=(",", ":"))))
                 chunk_count += 1
+                current_embed_delay_sec = (
+                    throttle.current_delay_ms / 1000.0
+                    if throttle.enabled
+                    else embed_delay_sec
+                )
+                if current_embed_delay_sec > 0:
+                    time.sleep(current_embed_delay_sec)
 
         doc_id = upsert_document(
             conn,
@@ -910,6 +1076,8 @@ def index_command(args) -> int:
         if not getattr(args, "json_summary", False):
             print(
                 f"[indexed] {doc_path} (units={len(pages)}, chunks={chunk_count})")
+        if doc_cooldown_sec > 0:
+            time.sleep(doc_cooldown_sec)
 
     removed = 0
     conn.commit()
@@ -936,6 +1104,11 @@ def index_command(args) -> int:
         "ocr_attempted": ocr_attempted,
         "ocr_succeeded": ocr_succeeded,
         "ocr_failed": ocr_failed,
+        "dynamic_throttle": bool(throttle.enabled),
+        "dynamic_adjustments": int(throttle.adjustments),
+        "dynamic_final_embed_num_thread": int(throttle.current_threads),
+        "dynamic_final_embed_delay_ms": int(throttle.current_delay_ms),
+        "dynamic_avg_embed_ms": round(float(throttle.ema_embed_ms or 0.0), 1),
     }
     if getattr(args, "json_summary", False):
         print(json.dumps(summary, ensure_ascii=True))
@@ -998,8 +1171,13 @@ def search_command(args) -> int:
         print(f"Index DB not found: {index_db}", file=sys.stderr)
         return 1
 
-    conn = sqlite3.connect(str(index_db))
-    q_emb = embed_text(args.ollama_base, args.embed_model, args.query)
+    conn = open_index_db(index_db)
+    q_emb = embed_text(
+        args.ollama_base,
+        args.embed_model,
+        args.query,
+        num_thread=args.embed_num_thread,
+    )
     top = retrieve_top_chunks(conn, q_emb, args.top_k)
 
     if not top:
@@ -1026,8 +1204,13 @@ def ask_command(args) -> int:
         print(f"Index DB not found: {index_db}", file=sys.stderr)
         return 1
 
-    conn = sqlite3.connect(str(index_db))
-    q_emb = embed_text(args.ollama_base, args.embed_model, args.query)
+    conn = open_index_db(index_db)
+    q_emb = embed_text(
+        args.ollama_base,
+        args.embed_model,
+        args.query,
+        num_thread=args.embed_num_thread,
+    )
     include_paths = {
         str(path).strip()
         for path in getattr(args, "include_path", [])
@@ -1140,7 +1323,7 @@ def status_command(args) -> int:
         }, ensure_ascii=True))
         return 0
 
-    conn = sqlite3.connect(str(index_db))
+    conn = open_index_db(index_db)
     row = conn.execute(
         "SELECT COUNT(*), COALESCE(SUM(chunks_indexed),0), MAX(indexed_at) FROM documents"
     ).fetchone()
@@ -1168,7 +1351,7 @@ def verify_command(args) -> int:
         print(payload["error"], file=sys.stderr)
         return 1
 
-    conn = sqlite3.connect(str(index_db))
+    conn = open_index_db(index_db)
     rows = conn.execute(
         "SELECT path, pages_indexed, chunks_indexed, indexed_at FROM documents ORDER BY path"
     ).fetchall()
@@ -1534,6 +1717,67 @@ def build_parser(config: RagCliConfig | None = None):
         "--embed-model",
         default=resolved.embed_model,
         help="Embedding model name available in Ollama",
+    )
+    parser.add_argument(
+        "--embed-num-thread",
+        type=int,
+        default=resolved.embed_num_thread,
+        help="Per-request thread cap for embedding calls (lower is cooler, default: 3)",
+    )
+    parser.add_argument(
+        "--embed-delay-ms",
+        type=int,
+        default=resolved.embed_delay_ms,
+        help="Delay in milliseconds between embedding calls to reduce sustained heat (default: 200)",
+    )
+    parser.add_argument(
+        "--doc-cooldown-seconds",
+        type=int,
+        default=resolved.doc_cooldown_seconds,
+        help="Cooldown in seconds after each indexed document to reduce thermal spikes (default: 5)",
+    )
+    parser.add_argument(
+        "--dynamic-throttle",
+        dest="dynamic_throttle",
+        action="store_true",
+        default=bool(resolved.dynamic_throttle),
+        help="Enable adaptive embed throttling based on observed embed latency",
+    )
+    parser.add_argument(
+        "--no-dynamic-throttle",
+        dest="dynamic_throttle",
+        action="store_false",
+        help="Disable adaptive embed throttling",
+    )
+    parser.add_argument(
+        "--dynamic-target-embed-ms",
+        type=int,
+        default=resolved.dynamic_target_embed_ms,
+        help="Target average embedding latency in milliseconds for adaptive throttling",
+    )
+    parser.add_argument(
+        "--dynamic-max-delay-ms",
+        type=int,
+        default=resolved.dynamic_max_delay_ms,
+        help="Maximum adaptive delay between embedding calls in milliseconds",
+    )
+    parser.add_argument(
+        "--dynamic-delay-step-ms",
+        type=int,
+        default=resolved.dynamic_delay_step_ms,
+        help="Adaptive delay adjustment step in milliseconds",
+    )
+    parser.add_argument(
+        "--dynamic-min-threads",
+        type=int,
+        default=resolved.dynamic_min_threads,
+        help="Minimum embed threads allowed during adaptive throttling",
+    )
+    parser.add_argument(
+        "--dynamic-max-threads",
+        type=int,
+        default=resolved.dynamic_max_threads,
+        help="Maximum embed threads allowed during adaptive throttling",
     )
     parser.add_argument(
         "--index-db",
