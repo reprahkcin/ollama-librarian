@@ -138,6 +138,47 @@ Use these exact statuses per test item:
   - index job starts or reports already synced
   - status panel updates without error
 
+### D1. Library Directory Selection
+
+1. Directory picker path set
+
+- Action: in `PDF Processing`, click `Browse...` and choose a folder
+- Expected:
+  - path field updates to selected folder
+  - status/meta confirms directory update
+  - subsequent uploads/indexing use that directory
+
+1. Manual fallback path set
+
+- Action: type a valid full path and click `Set Directory`
+- Expected:
+  - path accepted and normalized
+  - no JS/backend error
+  - updated path is reflected in `/api/pdf/status`
+
+Linux note:
+
+- If picker fails to open, verify one of `zenity`, `kdialog`, or `yad` is installed.
+- If none are installed, mark picker step BLOCKED and continue with manual fallback path set.
+
+### D2. Pause and ETA Validation
+
+1. Pause flow
+
+- Action: start sync, then click `Pause Processing`
+- Expected:
+  - button transitions to pause-requested state, then returns to `Sync New PDFs`
+  - `/api/pdf/status.index_job.running` becomes `false`
+  - `/api/pdf/status.index_job.last_result.paused` is `true`
+
+1. ETA stabilization behavior
+
+- Action: start sync and observe status during first minutes
+- Expected:
+  - early run may show `ETA: estimating`
+  - ETA should appear only after enough progress is collected
+  - ETA should not jump immediately to unrealistically short values based on pre-existing indexed docs
+
 ### E. Stash / Bibliography / History
 
 1. Stash controls

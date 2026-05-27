@@ -51,6 +51,7 @@ For non-technical users, use:
 - PDF indexing controls, document upload, Library Docs, and the processing dashboard are grouped under a `PDF Processing` sidebar section.
 - You can set or change the library directory directly in the `PDF Processing` section; the app creates the folder if needed and remembers it for future runs.
 - Use `Browse...` to open a folder picker dialog and set the library directory without typing full paths.
+- On Linux, the folder picker requires one of: `zenity`, `kdialog`, or `yad`. If none are installed, use the path field and click `Set Directory`.
 - `App Updates` is in a collapsed-by-default sidebar section for less frequent use.
 - The sidebar includes an `Abstract Screener` that scores an abstract against your research need and recommends whether to download/index the paper.
 
