@@ -226,6 +226,17 @@ class RouteBaselineTests(unittest.TestCase):
         self.assertIn("ok", payload)
         self.assertIn("source_path", payload)
 
+    def test_post_pdf_index_pause_is_stable_when_not_running(self):
+        with running_server() as (_, base_url):
+            status, payload, _ = _request_json(
+                "POST", f"{base_url}/api/pdf/index/pause", {}
+            )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload.get("ok"))
+        self.assertFalse(payload.get("paused"))
+        self.assertIn("message", payload)
+
     def test_post_pdf_source_updates_runtime_source_path(self):
         with running_server() as (app, base_url):
             target = Path(app.DEFAULT_STATE_DIR) / "custom-library"

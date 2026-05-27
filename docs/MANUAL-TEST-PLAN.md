@@ -240,10 +240,10 @@ Linux note:
 
 Run the same functional flow as macOS, substituting script commands:
 
-- Start: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'F:\\GIT\\ollama-librarian\\scripts\\librarian-start-windows.ps1'`
-- Stop: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'F:\\GIT\\ollama-librarian\\scripts\\librarian-stop-windows.ps1'`
-- Status: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'F:\\GIT\\ollama-librarian\\scripts\\librarian-status-windows.ps1'`
-- Open UI: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'F:\\GIT\\ollama-librarian\\scripts\\librarian-open-ui-windows.ps1'`
+- Start: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File '<REPO_PATH>\\scripts\\librarian-start-windows.ps1'`
+- Stop: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File '<REPO_PATH>\\scripts\\librarian-stop-windows.ps1'`
+- Status: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File '<REPO_PATH>\\scripts\\librarian-status-windows.ps1'`
+- Open UI: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File '<REPO_PATH>\\scripts\\librarian-open-ui-windows.ps1'`
 
 Windows shell note:
 

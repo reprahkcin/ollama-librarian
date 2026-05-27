@@ -1787,7 +1787,10 @@ def build_parser(config: RagCliConfig | None = None):
         "--embed-num-thread",
         type=int,
         default=resolved.embed_num_thread,
-        help="Per-request thread cap for embedding calls (lower is cooler, default: 3)",
+        help=(
+            "Per-request thread cap for embedding calls "
+            f"(lower is cooler, default: {resolved.embed_num_thread})"
+        ),
     )
     parser.add_argument(
         "--embed-delay-ms",
@@ -1799,7 +1802,10 @@ def build_parser(config: RagCliConfig | None = None):
         "--doc-cooldown-seconds",
         type=int,
         default=resolved.doc_cooldown_seconds,
-        help="Cooldown in seconds after each indexed document to reduce thermal spikes (default: 5)",
+        help=(
+            "Cooldown in seconds after each indexed document to reduce thermal spikes "
+            f"(default: {resolved.doc_cooldown_seconds})"
+        ),
     )
     parser.add_argument(
         "--dynamic-throttle",

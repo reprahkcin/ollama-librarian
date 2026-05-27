@@ -1874,9 +1874,13 @@ function renderCitationActions(citationEntries, queryText = "") {
     const text = document.createElement("div");
     text.className = "citation-text md";
     const confidence = entry.confidence || sourceConfidenceInfo();
-    text.innerHTML =
-      `<span class="source-confidence-badge ${confidence.className}" title="${escapeHtml(confidence.title)}">${escapeHtml(confidence.label)} confidence</span> ` +
-      renderInlineMarkdown(escapeHtml(String(entry.citation || "")));
+    text.innerHTML = renderInlineMarkdown(escapeHtml(String(entry.citation || "")));
+    const badge = document.createElement("span");
+    badge.className = `source-confidence-badge ${confidence.className}`;
+    badge.title = String(confidence.title || "");
+    badge.textContent = `${String(confidence.label || "Unknown")} confidence`;
+    text.prepend(document.createTextNode(" "));
+    text.prepend(badge);
 
     const stashBtn = document.createElement("button");
     stashBtn.className = "stash-btn";

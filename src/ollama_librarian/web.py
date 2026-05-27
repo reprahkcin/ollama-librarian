@@ -404,7 +404,12 @@ def set_pdf_source_path(raw_path: str) -> dict:
         raise ValueError("source_path is required")
 
     resolved = Path(os.path.expanduser(requested)).resolve()
-    resolved.mkdir(parents=True, exist_ok=True)
+    if resolved.exists() and not resolved.is_dir():
+        raise ValueError("source_path must resolve to a directory")
+    try:
+        resolved.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ValueError(f"source_path could not be prepared: {exc}") from exc
     if not resolved.is_dir():
         raise ValueError("source_path must resolve to a directory")
     normalized = str(resolved)
