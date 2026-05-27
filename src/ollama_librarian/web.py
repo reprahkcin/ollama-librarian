@@ -7,6 +7,7 @@ import mimetypes
 import os
 import platform
 import re
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -69,8 +70,17 @@ class WebConfig:
     pdf_source: str
     pdf_index_db: str
     pdf_embed_model: str
+    pdf_embed_delay_ms: int
+    pdf_doc_cooldown_seconds: int
+    pdf_dynamic_throttle: bool
+    pdf_dynamic_target_embed_ms: int
+    pdf_dynamic_max_delay_ms: int
+    pdf_dynamic_delay_step_ms: int
+    pdf_dynamic_min_threads: int
+    pdf_dynamic_max_threads: int
     pdf_top_k: int
     pdf_answer_timeout: int
+    pdf_embed_num_thread: int
     pdf_ocr_on_sync: bool
     pdf_ocr_lang: str
     pdf_ocr_jobs: int
@@ -138,6 +148,24 @@ class WebConfig:
             ),
             pdf_embed_model=str(
                 env.get("OLLAMA_WEB_PDF_EMBED_MODEL", "nomic-embed-text")),
+            pdf_embed_delay_ms=_env_int(
+                env, "OLLAMA_WEB_PDF_EMBED_DELAY_MS", 200, min_value=0),
+            pdf_doc_cooldown_seconds=_env_int(
+                env, "OLLAMA_WEB_PDF_DOC_COOLDOWN_SECONDS", 10, min_value=0),
+            pdf_dynamic_throttle=_env_bool_true_unless_false(
+                env, "OLLAMA_WEB_PDF_DYNAMIC_THROTTLE", "1"),
+            pdf_dynamic_target_embed_ms=_env_int(
+                env, "OLLAMA_WEB_PDF_DYNAMIC_TARGET_EMBED_MS", 1400, min_value=200),
+            pdf_dynamic_max_delay_ms=_env_int(
+                env, "OLLAMA_WEB_PDF_DYNAMIC_MAX_DELAY_MS", 2000, min_value=0),
+            pdf_dynamic_delay_step_ms=_env_int(
+                env, "OLLAMA_WEB_PDF_DYNAMIC_DELAY_STEP_MS", 50, min_value=1),
+            pdf_dynamic_min_threads=_env_int(
+                env, "OLLAMA_WEB_PDF_DYNAMIC_MIN_THREADS", 1, min_value=1),
+            pdf_dynamic_max_threads=_env_int(
+                env, "OLLAMA_WEB_PDF_DYNAMIC_MAX_THREADS", 3, min_value=1),
+            pdf_embed_num_thread=_env_int(
+                env, "OLLAMA_WEB_PDF_EMBED_NUM_THREAD", 2, min_value=1),
             pdf_top_k=_env_int(env, "OLLAMA_WEB_PDF_TOP_K", 6),
             pdf_answer_timeout=_env_int(
                 env, "OLLAMA_WEB_PDF_ANSWER_TIMEOUT", 600, min_value=30),
@@ -237,6 +265,15 @@ STASH_LOCK = threading.Lock()
 PDF_SOURCE = CONFIG.pdf_source
 PDF_INDEX_DB = CONFIG.pdf_index_db
 PDF_EMBED_MODEL = CONFIG.pdf_embed_model
+PDF_EMBED_DELAY_MS = CONFIG.pdf_embed_delay_ms
+PDF_DOC_COOLDOWN_SECONDS = CONFIG.pdf_doc_cooldown_seconds
+PDF_DYNAMIC_THROTTLE = CONFIG.pdf_dynamic_throttle
+PDF_DYNAMIC_TARGET_EMBED_MS = CONFIG.pdf_dynamic_target_embed_ms
+PDF_DYNAMIC_MAX_DELAY_MS = CONFIG.pdf_dynamic_max_delay_ms
+PDF_DYNAMIC_DELAY_STEP_MS = CONFIG.pdf_dynamic_delay_step_ms
+PDF_DYNAMIC_MIN_THREADS = CONFIG.pdf_dynamic_min_threads
+PDF_DYNAMIC_MAX_THREADS = CONFIG.pdf_dynamic_max_threads
+PDF_EMBED_NUM_THREAD = CONFIG.pdf_embed_num_thread
 PDF_TOP_K = CONFIG.pdf_top_k
 PDF_ANSWER_TIMEOUT = CONFIG.pdf_answer_timeout
 PDF_OCR_ON_SYNC = CONFIG.pdf_ocr_on_sync
@@ -265,7 +302,17 @@ PDF_INDEX_STATE = {
     "last_finished_at": None,
     "last_result": None,
     "last_error": None,
+    "pause_requested": False,
+    "last_paused_at": None,
+    "active_pid": None,
 }
+PDF_INDEX_PROCESS: subprocess.Popen | None = None
+PDF_SOURCE_SCAN_CACHE = {
+    "source_path": "",
+    "total_documents": 0,
+    "scanned_at": 0.0,
+}
+PDF_SOURCE_SCAN_CACHE_TTL_SECONDS = 30.0
 UPDATE_LOCK = threading.Lock()
 UPDATE_STATE = {
     "job_id": None,
@@ -1110,7 +1157,7 @@ def start_update_apply(target_version: str) -> dict:
     }
 
 
-def run_pdf_rag(extra_args, timeout=600):
+def _build_pdf_rag_command(extra_args: list[str]) -> tuple[list[str], dict[str, str]]:
     env = os.environ.copy()
     src_path = str(REPO_ROOT / "src")
     if os.path.isdir(src_path):
@@ -1128,16 +1175,111 @@ def run_pdf_rag(extra_args, timeout=600):
         OLLAMA_BASE,
         "--embed-model",
         PDF_EMBED_MODEL,
+        "--embed-num-thread",
+        str(PDF_EMBED_NUM_THREAD),
+        "--embed-delay-ms",
+        str(PDF_EMBED_DELAY_MS),
+        "--doc-cooldown-seconds",
+        str(PDF_DOC_COOLDOWN_SECONDS),
+        "--dynamic-target-embed-ms",
+        str(PDF_DYNAMIC_TARGET_EMBED_MS),
+        "--dynamic-max-delay-ms",
+        str(PDF_DYNAMIC_MAX_DELAY_MS),
+        "--dynamic-delay-step-ms",
+        str(PDF_DYNAMIC_DELAY_STEP_MS),
+        "--dynamic-min-threads",
+        str(PDF_DYNAMIC_MIN_THREADS),
+        "--dynamic-max-threads",
+        str(PDF_DYNAMIC_MAX_THREADS),
         "--index-db",
         PDF_INDEX_DB,
-    ] + list(extra_args)
+    ]
+    cmd.append(
+        "--dynamic-throttle" if PDF_DYNAMIC_THROTTLE else "--no-dynamic-throttle")
+    cmd.extend(list(extra_args))
+    return cmd, env
+
+
+def run_pdf_rag(extra_args, timeout: int | None = 600):
+    cmd, env = _build_pdf_rag_command(list(extra_args))
+    timeout_arg: int | None
+    if timeout is None:
+        timeout_arg = None
+    else:
+        timeout_arg = int(timeout)
+        if timeout_arg <= 0:
+            timeout_arg = None
     proc = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=timeout, env=env)
+        cmd, capture_output=True, text=True, timeout=timeout_arg, env=env)
     out = (proc.stdout or "").strip()
     err = (proc.stderr or "").strip()
     if proc.returncode != 0:
         raise RuntimeError(err or out or f"Command failed: {' '.join(cmd)}")
     return out
+
+
+def pause_pdf_index_job() -> dict:
+    global PDF_INDEX_PROCESS
+
+    with PDF_LOCK:
+        proc = PDF_INDEX_PROCESS
+        if not PDF_INDEX_STATE.get("running") or proc is None:
+            return {"ok": True, "paused": False, "message": "Index job is not running"}
+        PDF_INDEX_STATE["pause_requested"] = True
+        PDF_INDEX_STATE["last_paused_at"] = int(time.time())
+        pid = int(proc.pid or 0)
+
+    try:
+        if platform.system().lower() == "windows":
+            proc.terminate()
+        else:
+            if pid > 0:
+                try:
+                    os.killpg(os.getpgid(pid), signal.SIGTERM)
+                except Exception:
+                    proc.terminate()
+            else:
+                proc.terminate()
+    except Exception as exc:
+        return {"ok": False, "paused": False, "error": str(exc)}
+
+    return {"ok": True, "paused": True, "message": "Pause requested"}
+
+
+def _count_source_documents(source_path: str) -> int:
+    root = Path(source_path).expanduser()
+    if not root.exists() or not root.is_dir():
+        return 0
+
+    total = 0
+    for candidate in root.rglob("*"):
+        if not candidate.is_file():
+            continue
+        if candidate.suffix.lower() in SUPPORTED_DOC_EXTENSIONS:
+            total += 1
+    return total
+
+
+def _get_source_document_total(source_path: str) -> int:
+    now = time.time()
+    with PDF_LOCK:
+        cached_source = str(PDF_SOURCE_SCAN_CACHE.get("source_path", ""))
+        cached_total = int(PDF_SOURCE_SCAN_CACHE.get(
+            "total_documents", 0) or 0)
+        cached_at = float(PDF_SOURCE_SCAN_CACHE.get("scanned_at", 0.0) or 0.0)
+        if (
+            cached_source == str(source_path)
+            and (now - cached_at) <= PDF_SOURCE_SCAN_CACHE_TTL_SECONDS
+        ):
+            return cached_total
+
+    total = _count_source_documents(source_path)
+
+    with PDF_LOCK:
+        PDF_SOURCE_SCAN_CACHE["source_path"] = str(source_path)
+        PDF_SOURCE_SCAN_CACHE["total_documents"] = int(total)
+        PDF_SOURCE_SCAN_CACHE["scanned_at"] = float(now)
+    return int(total)
 
 
 def get_pdf_status():
@@ -1158,16 +1300,42 @@ def get_pdf_status():
 
     with PDF_LOCK:
         state = dict(PDF_INDEX_STATE)
+
+    indexed_documents = max(0, int(status.get("documents", 0) or 0))
+    total_documents = _get_source_document_total(PDF_SOURCE)
+    remaining_documents = max(0, total_documents - indexed_documents)
+    completion_pct = 0
+    if total_documents > 0:
+        completion_pct = max(
+            0,
+            min(100, int(round((indexed_documents / float(total_documents)) * 100))),
+        )
+
     status["index_job"] = state
     status["source_path"] = PDF_SOURCE
+    status["indexed_documents"] = indexed_documents
+    status["total_documents"] = int(total_documents)
+    status["remaining_documents"] = int(remaining_documents)
+    status["completion_pct"] = int(completion_pct)
+    status["adaptive_throttle"] = {
+        "enabled": bool(PDF_DYNAMIC_THROTTLE),
+        "target_embed_ms": int(PDF_DYNAMIC_TARGET_EMBED_MS),
+        "max_delay_ms": int(PDF_DYNAMIC_MAX_DELAY_MS),
+        "delay_step_ms": int(PDF_DYNAMIC_DELAY_STEP_MS),
+        "min_threads": int(PDF_DYNAMIC_MIN_THREADS),
+        "max_threads": int(PDF_DYNAMIC_MAX_THREADS),
+    }
     return status
 
 
 def _index_worker():
+    global PDF_INDEX_PROCESS
     with PDF_LOCK:
         PDF_INDEX_STATE["running"] = True
         PDF_INDEX_STATE["last_started_at"] = int(time.time())
         PDF_INDEX_STATE["last_error"] = None
+        PDF_INDEX_STATE["pause_requested"] = False
+        PDF_INDEX_STATE["active_pid"] = None
     try:
         index_args = ["index", "--source",
                       PDF_SOURCE, "--prune", "--json-summary"]
@@ -1181,19 +1349,50 @@ def _index_worker():
                 "--ocr-timeout",
                 str(PDF_OCR_TIMEOUT),
             ])
-            raw = run_pdf_rag(
-                index_args,
-                timeout=7200,
-            )
-            parsed = json.loads(raw) if raw else {"ok": True}
+        cmd, env = _build_pdf_rag_command(index_args)
+        popen_kwargs = {
+            "args": cmd,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": True,
+            "env": env,
+        }
+        if platform.system().lower() != "windows":
+            popen_kwargs["start_new_session"] = True
+        proc = subprocess.Popen(**popen_kwargs)
+        with PDF_LOCK:
+            PDF_INDEX_PROCESS = proc
+            PDF_INDEX_STATE["active_pid"] = int(proc.pid or 0)
+
+        out, err = proc.communicate()
+        if proc.returncode != 0:
+            detail = (err or out or "").strip()
+            paused = False
             with PDF_LOCK:
-                PDF_INDEX_STATE["last_result"] = parsed
+                paused = bool(PDF_INDEX_STATE.get("pause_requested"))
+            if paused:
+                with PDF_LOCK:
+                    PDF_INDEX_STATE["last_result"] = {
+                        "ok": True,
+                        "paused": True,
+                        "message": "Paused by user",
+                    }
+                    PDF_INDEX_STATE["last_error"] = None
+                return
+            raise RuntimeError(detail or f"Command failed: {' '.join(cmd)}")
+
+        raw = (out or "").strip()
+        parsed = json.loads(raw) if raw else {"ok": True}
+        with PDF_LOCK:
+            PDF_INDEX_STATE["last_result"] = parsed
     except Exception as exc:
         with PDF_LOCK:
             PDF_INDEX_STATE["last_error"] = str(exc)
     finally:
         with PDF_LOCK:
+            PDF_INDEX_PROCESS = None
             PDF_INDEX_STATE["running"] = False
+            PDF_INDEX_STATE["active_pid"] = None
             PDF_INDEX_STATE["last_finished_at"] = int(time.time())
 
 
@@ -2146,6 +2345,15 @@ class Handler(BaseHTTPRequestHandler):
             "application/json; charset=utf-8",
         )
 
+    def _handle_post_pdf_index_pause(self):
+        result = pause_pdf_index_job()
+        code = 200 if result.get("ok") else 500
+        return self._send(
+            code,
+            json.dumps(result, ensure_ascii=True),
+            "application/json; charset=utf-8",
+        )
+
     def _handle_post_update_apply(self):
         payload = self._read_json_body()
         if payload is None:
@@ -2479,6 +2687,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/history": lambda: self._handle_post_history(),
             "/api/instructions": lambda: self._handle_post_instructions(),
             "/api/pdf/index": lambda: self._handle_post_pdf_index(),
+            "/api/pdf/index/pause": lambda: self._handle_post_pdf_index_pause(),
             "/api/update/apply": lambda: self._handle_post_update_apply(),
             "/api/update/check": lambda: self._handle_post_update_check(),
             "/api/pdf/ask": lambda: self._handle_post_pdf_ask(),
