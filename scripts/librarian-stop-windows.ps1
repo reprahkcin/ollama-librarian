@@ -20,5 +20,7 @@ Stop-FromPidFile $OllamaPidFile
 
 Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'ollama-web-chat.py' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'ollama serve' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'ollama_librarian.indexer' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'pdf_library_rag.py.+ index' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 
 Write-Host 'Stopped.'
