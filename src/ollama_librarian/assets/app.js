@@ -1874,7 +1874,9 @@ function renderCitationActions(citationEntries, queryText = "") {
     const text = document.createElement("div");
     text.className = "citation-text md";
     const confidence = entry.confidence || sourceConfidenceInfo();
-    text.innerHTML = renderInlineMarkdown(escapeHtml(String(entry.citation || "")));
+    text.innerHTML = renderInlineMarkdown(
+      escapeHtml(String(entry.citation || "")),
+    );
     const badge = document.createElement("span");
     badge.className = `source-confidence-badge ${confidence.className}`;
     badge.title = String(confidence.title || "");

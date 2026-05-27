@@ -150,12 +150,12 @@ The items below are discrete and actionable, with enough context that an agent c
 
    Add `scripts/librarian-doctor` (or a `--doctor` flag, or an `ollama-librarian doctor` entry point) that checks:
 
-   - Python version >= 3.10
-   - `pypdf` and `ebooklib` importability
-   - Ollama reachability at `OLLAMA_BASE_URL`
-   - Required models pulled (`nomic-embed-text`, `qwen2.5:14b`)
-   - Index DB writability
-   - Source directory existence/readability
-   - `OLLAMA_WEB_PORT` availability
+- Python version >= 3.10
+- `pypdf` and `ebooklib` importability
+- Ollama reachability at `OLLAMA_BASE_URL`
+- Required models pulled (`nomic-embed-text`, `qwen2.5:14b`)
+- Index DB writability
+- Source directory existence/readability
+- `OLLAMA_WEB_PORT` availability
 
    Print pass/fail per check to reduce support load.
