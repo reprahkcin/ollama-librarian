@@ -10,6 +10,19 @@ $LogDir = Join-Path $StateDir 'logs'
 $OllamaPidFile = Join-Path $RunDir 'ollama.pid'
 $WebPidFile = Join-Path $RunDir 'web.pid'
 $PythonBin = Join-Path $RepoDir '.venv\Scripts\python.exe'
+$OcrOnSync = if ($env:OLLAMA_WEB_PDF_OCR_ON_SYNC) { $env:OLLAMA_WEB_PDF_OCR_ON_SYNC } else { '1' }
+$OcrLang = if ($env:OLLAMA_WEB_PDF_OCR_LANG) { $env:OLLAMA_WEB_PDF_OCR_LANG } else { 'eng' }
+$OcrJobs = if ($env:OLLAMA_WEB_PDF_OCR_JOBS) { $env:OLLAMA_WEB_PDF_OCR_JOBS } else { '1' }
+$OcrTimeout = if ($env:OLLAMA_WEB_PDF_OCR_TIMEOUT) { $env:OLLAMA_WEB_PDF_OCR_TIMEOUT } else { '3600' }
+$EmbedNumThread = if ($env:OLLAMA_WEB_PDF_EMBED_NUM_THREAD) { $env:OLLAMA_WEB_PDF_EMBED_NUM_THREAD } else { '2' }
+$EmbedDelayMs = if ($env:OLLAMA_WEB_PDF_EMBED_DELAY_MS) { $env:OLLAMA_WEB_PDF_EMBED_DELAY_MS } else { '200' }
+$DocCooldownSeconds = if ($env:OLLAMA_WEB_PDF_DOC_COOLDOWN_SECONDS) { $env:OLLAMA_WEB_PDF_DOC_COOLDOWN_SECONDS } else { '10' }
+$DynamicThrottle = if ($env:OLLAMA_WEB_PDF_DYNAMIC_THROTTLE) { $env:OLLAMA_WEB_PDF_DYNAMIC_THROTTLE } else { '1' }
+$DynamicTargetEmbedMs = if ($env:OLLAMA_WEB_PDF_DYNAMIC_TARGET_EMBED_MS) { $env:OLLAMA_WEB_PDF_DYNAMIC_TARGET_EMBED_MS } else { '1400' }
+$DynamicMaxDelayMs = if ($env:OLLAMA_WEB_PDF_DYNAMIC_MAX_DELAY_MS) { $env:OLLAMA_WEB_PDF_DYNAMIC_MAX_DELAY_MS } else { '2000' }
+$DynamicDelayStepMs = if ($env:OLLAMA_WEB_PDF_DYNAMIC_DELAY_STEP_MS) { $env:OLLAMA_WEB_PDF_DYNAMIC_DELAY_STEP_MS } else { '50' }
+$DynamicMinThreads = if ($env:OLLAMA_WEB_PDF_DYNAMIC_MIN_THREADS) { $env:OLLAMA_WEB_PDF_DYNAMIC_MIN_THREADS } else { '1' }
+$DynamicMaxThreads = if ($env:OLLAMA_WEB_PDF_DYNAMIC_MAX_THREADS) { $env:OLLAMA_WEB_PDF_DYNAMIC_MAX_THREADS } else { '3' }
 
 New-Item -ItemType Directory -Path $LibraryDir -Force | Out-Null
 New-Item -ItemType Directory -Path $RunDir -Force | Out-Null
@@ -53,10 +66,19 @@ if (-not (Test-Http 'http://127.0.0.1:8088/api/pdf/status')) {
   $env:OLLAMA_WEB_PDF_INDEX_DB = Join-Path $StateDir 'pdf-rag.sqlite'
   $env:OLLAMA_WEB_HISTORY_PATH = Join-Path $StateDir 'ollama-web-chat-history.json'
   $env:OLLAMA_WEB_STASH_PATH = Join-Path $StateDir 'ollama-response-stash.json'
-  $env:OLLAMA_WEB_PDF_OCR_ON_SYNC = '1'
-  $env:OLLAMA_WEB_PDF_OCR_LANG = 'eng'
-  $env:OLLAMA_WEB_PDF_OCR_JOBS = '4'
-  $env:OLLAMA_WEB_PDF_OCR_TIMEOUT = '3600'
+  $env:OLLAMA_WEB_PDF_OCR_ON_SYNC = $OcrOnSync
+  $env:OLLAMA_WEB_PDF_OCR_LANG = $OcrLang
+  $env:OLLAMA_WEB_PDF_OCR_JOBS = $OcrJobs
+  $env:OLLAMA_WEB_PDF_OCR_TIMEOUT = $OcrTimeout
+  $env:OLLAMA_WEB_PDF_EMBED_NUM_THREAD = $EmbedNumThread
+  $env:OLLAMA_WEB_PDF_EMBED_DELAY_MS = $EmbedDelayMs
+  $env:OLLAMA_WEB_PDF_DOC_COOLDOWN_SECONDS = $DocCooldownSeconds
+  $env:OLLAMA_WEB_PDF_DYNAMIC_THROTTLE = $DynamicThrottle
+  $env:OLLAMA_WEB_PDF_DYNAMIC_TARGET_EMBED_MS = $DynamicTargetEmbedMs
+  $env:OLLAMA_WEB_PDF_DYNAMIC_MAX_DELAY_MS = $DynamicMaxDelayMs
+  $env:OLLAMA_WEB_PDF_DYNAMIC_DELAY_STEP_MS = $DynamicDelayStepMs
+  $env:OLLAMA_WEB_PDF_DYNAMIC_MIN_THREADS = $DynamicMinThreads
+  $env:OLLAMA_WEB_PDF_DYNAMIC_MAX_THREADS = $DynamicMaxThreads
 
   $webProc = Start-Process -FilePath $PythonBin -ArgumentList @($webScript) -WindowStyle Hidden -PassThru
   $webProc.Id | Out-File -FilePath $WebPidFile -Encoding ascii -Force

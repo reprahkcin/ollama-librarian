@@ -30,6 +30,29 @@ Linux deep search (Deep Study Mode) instability.
 - Keep this file as historical context for why Deep Study was removed.
 - Re-evaluate reintroduction only after upstream runtime stability is demonstrated cross-platform.
 
+## Resolved Issue
+
+Directory picker could leave the UI stuck on `Opening...`.
+
+- Status: Resolved on 2026-05-27 with recoverable timeout handling in native picker calls.
+- Severity: Medium (primary UX path impaired, but manual path fallback remained available).
+
+### Summary
+
+- Native folder picker calls could block long enough that the web route never returned promptly.
+- The frontend would remain in `Opening...` until service restart in bad cases.
+
+### User-Facing Resolution
+
+- Native picker subprocess calls now enforce bounded timeout windows.
+- Timeout/errors return recoverable responses so UI restores from `Opening...`.
+- Manual path entry (`Set Directory`) continues to work as explicit fallback.
+
+### Current Follow-Up
+
+- Validate interactive native picker behavior on Windows and Linux desktop sessions.
+- Keep treating headless picker timeout as non-blocking when UI recovery + manual fallback pass.
+
 ## Fixes for the Coding Agent
 
 The items below are discrete and actionable, with enough context that an agent can pick any one up without re-deriving the situation.
@@ -48,7 +71,6 @@ The items below are discrete and actionable, with enough context that an agent c
 
 3. **Fix macOS-only default paths so Linux and Windows work without env var overrides.**
    In `scripts/ollama-web-chat.py` and `scripts/pdf_library_rag.py`, these defaults are hard-coded to `~/Library/Application Support/home-network-setup/...`:
-
    - `HISTORY_PATH`
    - `PDF_INDEX_DB`
    - `STASH_PATH` (via `resolve_default_stash_path`)
@@ -56,7 +78,6 @@ The items below are discrete and actionable, with enough context that an agent c
    - The `--index-db` argparse default in `pdf_library_rag.py`
 
    Replace with a platform-dispatched helper:
-
    - macOS: `~/Library/Application Support/ollama-librarian/`
    - Windows: `%APPDATA%\ollama-librarian\` (via `os.environ["APPDATA"]`)
    - Linux: `$XDG_DATA_HOME/ollama-librarian/` or `~/.local/share/ollama-librarian/`
@@ -83,7 +104,6 @@ The items below are discrete and actionable, with enough context that an agent c
    `tests/` currently has only `test_security_regressions.py` and `test_update_flow.py`.
 
    Add `tests/test_routes.py` that starts the server on a random port and asserts response shape for documented endpoints:
-
    - `/api/tags`
    - `/api/history` (GET/POST/DELETE)
    - `/api/instructions` (GET/POST)
@@ -98,7 +118,6 @@ The items below are discrete and actionable, with enough context that an agent c
 
 7. **Add tests for deterministic RAG helpers.**
    In `pdf_library_rag.py`, add unit tests for pure functions:
-
    - `chunk_text`
    - `cosine_similarity`
    - `extract_year`
@@ -112,7 +131,6 @@ The items below are discrete and actionable, with enough context that an agent c
 
 8. **Add tests for abstract screener normalization helpers.**
    In `ollama-web-chat.py`, test these pure contract-normalization helpers:
-
    - `_extract_json_object`
    - `_clamp_confidence`
    - `_confidence_bucket`
@@ -128,7 +146,7 @@ The items below are discrete and actionable, with enough context that an agent c
    Move configuration into a `Config` dataclass loaded at startup so overrides are testable and the full config surface is centralized. The Runtime Environment Variables section in README is currently hand-maintained and could drift; consider generating it from dataclass field docs.
 
 10. **Add a doctor/diagnose subcommand.**
-   Common user failure mode: "I followed setup but it doesn't work."
+    Common user failure mode: "I followed setup but it doesn't work."
 
    Add `scripts/librarian-doctor` (or a `--doctor` flag, or an `ollama-librarian doctor` entry point) that checks:
 

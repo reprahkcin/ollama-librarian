@@ -138,6 +138,47 @@ Use these exact statuses per test item:
   - index job starts or reports already synced
   - status panel updates without error
 
+### D1. Library Directory Selection
+
+1. Directory picker path set
+
+- Action: in `PDF Processing`, click `Browse...` and choose a folder
+- Expected:
+  - path field updates to selected folder
+  - status/meta confirms directory update
+  - subsequent uploads/indexing use that directory
+
+1. Manual fallback path set
+
+- Action: type a valid full path and click `Set Directory`
+- Expected:
+  - path accepted and normalized
+  - no JS/backend error
+  - updated path is reflected in `/api/pdf/status`
+
+Linux note:
+
+- If picker fails to open, verify one of `zenity`, `kdialog`, or `yad` is installed.
+- If none are installed, mark picker step BLOCKED and continue with manual fallback path set.
+
+### D2. Pause and ETA Validation
+
+1. Pause flow
+
+- Action: start sync, then click `Pause Processing`
+- Expected:
+  - button transitions to pause-requested state, then returns to `Sync New PDFs`
+  - `/api/pdf/status.index_job.running` becomes `false`
+  - `/api/pdf/status.index_job.last_result.paused` is `true`
+
+1. ETA stabilization behavior
+
+- Action: start sync and observe status during first minutes
+- Expected:
+  - early run may show `ETA: estimating`
+  - ETA should appear only after enough progress is collected
+  - ETA should not jump immediately to unrealistically short values based on pre-existing indexed docs
+
 ### E. Stash / Bibliography / History
 
 1. Stash controls
@@ -199,17 +240,34 @@ Use these exact statuses per test item:
 
 Run the same functional flow as macOS, substituting script commands:
 
-- Start: `./scripts/librarian-start-windows.ps1`
-- Stop: `./scripts/librarian-stop-windows.ps1`
-- Status: `./scripts/librarian-status-windows.ps1`
-- Open UI: `./scripts/librarian-open-ui-windows.ps1`
+- Start: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File '<REPO_PATH>\\scripts\\librarian-start-windows.ps1'`
+- Stop: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File '<REPO_PATH>\\scripts\\librarian-stop-windows.ps1'`
+- Status: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File '<REPO_PATH>\\scripts\\librarian-status-windows.ps1'`
+- Open UI: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File '<REPO_PATH>\\scripts\\librarian-open-ui-windows.ps1'`
+
+Windows shell note:
+
+- In Git Bash, prefer `powershell.exe` and an absolute `-File` path.
+- Do not assume `pwsh` is installed.
+- Relative PowerShell paths using backslashes (for example `.\\scripts\\...`) may not resolve correctly from Git Bash.
 
 Windows-specific checks:
 
 - Path handling in status/update output is valid on Windows.
 - PowerShell scripts handle reruns cleanly (no orphan processes).
+- Directory picker behavior: clicking `Browse...` must not remain stuck in `Opening...`; it should either resolve with a selected path or recover with a timeout/error message and re-enable controls.
+- If picker cannot open, UI should recover and show a recoverable message; manual `Set Directory` must still work.
 
-## 6) Linux Test Sequence
+## 6) Current Handoff Notes (2026-05-27)
+
+- macOS focused fix landed for native directory picker hangs:
+  - picker subprocess calls now time out safely instead of hanging indefinitely
+  - timeout/failure returns recoverable JSON so UI resets from `Opening...`
+  - manual `Set Directory` remains the required fallback path
+- In headless/automated environments, native dialogs may still time out; this is expected and should be treated as non-blocking if UI recovery + manual fallback pass.
+- Windows validation result (2026-05-27): in automation, `Browse...` can remain in `Opening...` until picker timeout, then recovers with a non-blocking timeout message; manual `Set Directory` succeeds and `/api/pdf/status.source_path` updates.
+
+## 7) Linux Test Sequence
 
 Run the same functional flow as macOS, substituting script commands:
 
@@ -223,7 +281,7 @@ Linux-specific checks:
 - XDG/home path defaults behave as expected.
 - Script permissions and shebang execution are clean.
 
-## 7) Failure Isolation Playbook
+## 8) Failure Isolation Playbook
 
 If models/PDF status fail in UI:
 
@@ -246,7 +304,7 @@ If models/PDF status fail in UI:
 - capture exact status code and response body
 - check service status scripts
 
-## 8) Evidence Template (per platform)
+## 9) Evidence Template (per platform)
 
 Record this block after each platform run:
 
@@ -278,7 +336,42 @@ Failures:
 Final verdict: PASS | FAIL | BLOCKED
 ```
 
-## 9) Agent Handoff Template
+Latest captured run (Windows, 2026-05-27):
+
+```text
+Platform: Windows
+Date/Time: 2026-05-27
+Agent: GitHub Copilot (GPT-5.3-Codex)
+Branch/Commit: performance-adjustments / 7ca95f1
+
+Startup/Status: PASS (Ollama running, Web UI running on http://127.0.0.1:8088)
+API smoke: PASS (/api/tags 200, /api/pdf/status 200)
+UI smoke: PASS after full refresh (restart + cache-busting URL)
+Chat: PASS (ungrounded prompt returned "OK")
+PDF-grounded: PASS (response returned with source links)
+Query wait duration used: 90s
+Upload/Sync: PASS (uploaded 1 file; counts updated to docs 10/10, chunks 9171)
+Stash/Bibliography: PASS (stash CRUD + bibliography modal open/close)
+Update surface: PASS (already latest, release notes link present)
+Restart resilience: PASS (stop/start/status successful; post-restart APIs remained 200)
+
+Failures:
+- ID: none
+- Repro steps: n/a
+- Expected: n/a
+- Actual: n/a
+- Evidence: n/a
+- Severity: n/a
+
+Environment caveats:
+- `Browse...` directory picker stayed in `Opening...` until timeout in this automation run.
+- UI recovered with timeout message and manual `Set Directory` succeeded.
+- `/api/pdf/status.source_path` reflected the updated path.
+
+Final verdict: PASS
+```
+
+## 10) Agent Handoff Template
 
 Use this exact handoff payload between agents:
 
@@ -292,7 +385,7 @@ Last known good commit:
 Next immediate action:
 ```
 
-## 10) Exit Criteria
+## 11) Exit Criteria
 
 Testing cycle is complete when:
 
@@ -300,7 +393,7 @@ Testing cycle is complete when:
 - no untriaged FAIL items remain
 - any accepted residual issues are explicitly documented with severity and follow-up owner
 
-## 11) Exact Reproduction Flow (Match Prior Agent Run)
+## 12) Exact Reproduction Flow (Match Prior Agent Run)
 
 Use this section when handing off to a new agent on a different machine and you want a near-identical execution path.
 
@@ -347,7 +440,7 @@ Expected minimum signals:
 13. Upload one disposable text file from the temp path.
 14. Verify footer/status indicates upload success (for example `Uploaded 1 file; indexing started`).
 15. Click `Sync New PDFs`.
-16. Verify PDF status line transitions to running (contains `PDF index: running`).
+16. Verify PDF status line either transitions to running (`PDF index: running`) or remains/returns idle with updated doc/chunk counts when no work remains.
 17. Click `View Stash`, verify modal opens, then close it.
 18. Click `View Bibliography`, verify modal opens (empty state acceptable), then close it.
 19. Click `Check for Updates`.
@@ -380,11 +473,8 @@ macOS/Linux:
 
 Windows PowerShell:
 
-1. `@"`
-2. `Ollama Librarian smoke upload file.`
-3. `This is a disposable test document for manual QA.`
-4. `"@ | Set-Content -Path "$env:TEMP\\ollama-librarian-smoke-upload.txt"`
-5. cleanup: `Remove-Item "$env:TEMP\\ollama-librarian-smoke-upload.txt" -ErrorAction SilentlyContinue`
+1. `Set-Content -Path "$env:TEMP\\ollama-librarian-smoke-upload.txt" -Value @("Ollama Librarian smoke upload file.","This is a disposable test document for manual QA.")`
+2. cleanup: `Remove-Item "$env:TEMP\\ollama-librarian-smoke-upload.txt" -ErrorAction SilentlyContinue`
 
 ### F. Cross-Machine Handoff Payload (Required)
 

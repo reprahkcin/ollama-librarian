@@ -7,6 +7,8 @@ import mimetypes
 import os
 import platform
 import re
+import signal
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -69,8 +71,17 @@ class WebConfig:
     pdf_source: str
     pdf_index_db: str
     pdf_embed_model: str
+    pdf_embed_delay_ms: int
+    pdf_doc_cooldown_seconds: int
+    pdf_dynamic_throttle: bool
+    pdf_dynamic_target_embed_ms: int
+    pdf_dynamic_max_delay_ms: int
+    pdf_dynamic_delay_step_ms: int
+    pdf_dynamic_min_threads: int
+    pdf_dynamic_max_threads: int
     pdf_top_k: int
     pdf_answer_timeout: int
+    pdf_embed_num_thread: int
     pdf_ocr_on_sync: bool
     pdf_ocr_lang: str
     pdf_ocr_jobs: int
@@ -138,6 +149,24 @@ class WebConfig:
             ),
             pdf_embed_model=str(
                 env.get("OLLAMA_WEB_PDF_EMBED_MODEL", "nomic-embed-text")),
+            pdf_embed_delay_ms=_env_int(
+                env, "OLLAMA_WEB_PDF_EMBED_DELAY_MS", 200, min_value=0),
+            pdf_doc_cooldown_seconds=_env_int(
+                env, "OLLAMA_WEB_PDF_DOC_COOLDOWN_SECONDS", 10, min_value=0),
+            pdf_dynamic_throttle=_env_bool_true_unless_false(
+                env, "OLLAMA_WEB_PDF_DYNAMIC_THROTTLE", "1"),
+            pdf_dynamic_target_embed_ms=_env_int(
+                env, "OLLAMA_WEB_PDF_DYNAMIC_TARGET_EMBED_MS", 1400, min_value=200),
+            pdf_dynamic_max_delay_ms=_env_int(
+                env, "OLLAMA_WEB_PDF_DYNAMIC_MAX_DELAY_MS", 2000, min_value=0),
+            pdf_dynamic_delay_step_ms=_env_int(
+                env, "OLLAMA_WEB_PDF_DYNAMIC_DELAY_STEP_MS", 50, min_value=1),
+            pdf_dynamic_min_threads=_env_int(
+                env, "OLLAMA_WEB_PDF_DYNAMIC_MIN_THREADS", 1, min_value=1),
+            pdf_dynamic_max_threads=_env_int(
+                env, "OLLAMA_WEB_PDF_DYNAMIC_MAX_THREADS", 3, min_value=1),
+            pdf_embed_num_thread=_env_int(
+                env, "OLLAMA_WEB_PDF_EMBED_NUM_THREAD", 2, min_value=1),
             pdf_top_k=_env_int(env, "OLLAMA_WEB_PDF_TOP_K", 6),
             pdf_answer_timeout=_env_int(
                 env, "OLLAMA_WEB_PDF_ANSWER_TIMEOUT", 600, min_value=30),
@@ -232,11 +261,21 @@ HISTORY_PATH = CONFIG.history_path
 HISTORY_LOCK = threading.Lock()
 PDF_LOCK = threading.Lock()
 STASH_LOCK = threading.Lock()
+PDF_SOURCE_OVERRIDE_PATH = DEFAULT_STATE_DIR / "ui-config.json"
 
 
 PDF_SOURCE = CONFIG.pdf_source
 PDF_INDEX_DB = CONFIG.pdf_index_db
 PDF_EMBED_MODEL = CONFIG.pdf_embed_model
+PDF_EMBED_DELAY_MS = CONFIG.pdf_embed_delay_ms
+PDF_DOC_COOLDOWN_SECONDS = CONFIG.pdf_doc_cooldown_seconds
+PDF_DYNAMIC_THROTTLE = CONFIG.pdf_dynamic_throttle
+PDF_DYNAMIC_TARGET_EMBED_MS = CONFIG.pdf_dynamic_target_embed_ms
+PDF_DYNAMIC_MAX_DELAY_MS = CONFIG.pdf_dynamic_max_delay_ms
+PDF_DYNAMIC_DELAY_STEP_MS = CONFIG.pdf_dynamic_delay_step_ms
+PDF_DYNAMIC_MIN_THREADS = CONFIG.pdf_dynamic_min_threads
+PDF_DYNAMIC_MAX_THREADS = CONFIG.pdf_dynamic_max_threads
+PDF_EMBED_NUM_THREAD = CONFIG.pdf_embed_num_thread
 PDF_TOP_K = CONFIG.pdf_top_k
 PDF_ANSWER_TIMEOUT = CONFIG.pdf_answer_timeout
 PDF_OCR_ON_SYNC = CONFIG.pdf_ocr_on_sync
@@ -265,7 +304,17 @@ PDF_INDEX_STATE = {
     "last_finished_at": None,
     "last_result": None,
     "last_error": None,
+    "pause_requested": False,
+    "last_paused_at": None,
+    "active_pid": None,
 }
+PDF_INDEX_PROCESS: subprocess.Popen | None = None
+PDF_SOURCE_SCAN_CACHE = {
+    "source_path": "",
+    "total_documents": 0,
+    "scanned_at": 0.0,
+}
+PDF_SOURCE_SCAN_CACHE_TTL_SECONDS = 30.0
 UPDATE_LOCK = threading.Lock()
 UPDATE_STATE = {
     "job_id": None,
@@ -291,6 +340,222 @@ UPDATE_STATE = {
     "last_error": None,
 }
 UPDATE_EVENTS: list[dict] = []
+
+
+def _normalize_pdf_source_path(raw_path: str) -> str:
+    return str(Path(os.path.expanduser(str(raw_path))).resolve())
+
+
+def _load_pdf_source_override() -> str | None:
+    if not PDF_SOURCE_OVERRIDE_PATH.is_file():
+        return None
+    try:
+        parsed = json.loads(
+            PDF_SOURCE_OVERRIDE_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:
+        LOGGER.warning("Failed to parse %s: %s", PDF_SOURCE_OVERRIDE_PATH, exc)
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    raw = parsed.get("pdf_source")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return _normalize_pdf_source_path(raw)
+
+
+def _persist_pdf_source_override_unlocked(source_path: str) -> None:
+    PDF_SOURCE_OVERRIDE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = PDF_SOURCE_OVERRIDE_PATH.with_suffix(".tmp")
+    tmp_path.write_text(
+        json.dumps({"pdf_source": source_path}, ensure_ascii=True, indent=2),
+        encoding="utf-8",
+    )
+    os.replace(tmp_path, PDF_SOURCE_OVERRIDE_PATH)
+
+
+def _bootstrap_pdf_source_override() -> None:
+    global PDF_SOURCE
+
+    override = _load_pdf_source_override()
+    if not override:
+        return
+
+    try:
+        resolved = Path(override)
+        resolved.mkdir(parents=True, exist_ok=True)
+        if not resolved.is_dir():
+            raise RuntimeError("configured path is not a directory")
+        PDF_SOURCE = str(resolved)
+    except Exception as exc:
+        LOGGER.warning(
+            "Ignoring invalid PDF source override %r: %s", override, exc)
+
+
+def get_pdf_source_path() -> str:
+    with PDF_LOCK:
+        return str(PDF_SOURCE)
+
+
+def set_pdf_source_path(raw_path: str) -> dict:
+    global PDF_SOURCE
+
+    requested = str(raw_path or "").strip()
+    if not requested:
+        raise ValueError("source_path is required")
+
+    resolved = Path(os.path.expanduser(requested)).resolve()
+    if resolved.exists() and not resolved.is_dir():
+        raise ValueError("source_path must resolve to a directory")
+    try:
+        resolved.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ValueError(f"source_path could not be prepared: {exc}") from exc
+    if not resolved.is_dir():
+        raise ValueError("source_path must resolve to a directory")
+    normalized = str(resolved)
+
+    with PDF_LOCK:
+        if PDF_INDEX_STATE.get("running"):
+            raise RuntimeError(
+                "Cannot change library directory while indexing is running")
+
+        changed = normalized != str(PDF_SOURCE)
+        PDF_SOURCE = normalized
+        PDF_SOURCE_SCAN_CACHE["source_path"] = ""
+        PDF_SOURCE_SCAN_CACHE["total_documents"] = 0
+        PDF_SOURCE_SCAN_CACHE["scanned_at"] = 0.0
+        _persist_pdf_source_override_unlocked(normalized)
+
+    return {
+        "ok": True,
+        "changed": bool(changed),
+        "source_path": normalized,
+    }
+
+
+def _pick_directory_with_native_dialog() -> str | None:
+    picker_timeout_seconds = 60
+    system = platform.system().lower()
+
+    if system == "windows":
+        cmd = [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            (
+                "Add-Type -AssemblyName System.Windows.Forms; "
+                "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog; "
+                "$dialog.Description = 'Select Library Directory'; "
+                "$dialog.ShowNewFolderButton = $true; "
+                "$result = $dialog.ShowDialog(); "
+                "if ($result -eq [System.Windows.Forms.DialogResult]::OK) { "
+                "Write-Output $dialog.SelectedPath }"
+            ),
+        ]
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=picker_timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"Windows folder dialog timed out after {picker_timeout_seconds}s. You can set the path manually."
+            ) from exc
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "").strip()
+            raise RuntimeError(detail or "Windows folder dialog failed")
+        selected = (proc.stdout or "").strip()
+        return selected or None
+
+    if system == "darwin":
+        cmd = [
+            "osascript",
+            "-e",
+            (
+                'tell application "Finder"\n'
+                "activate\n"
+                'set chosenFolder to choose folder with prompt "Select Library Directory" '
+                "default location (path to home folder)\n"
+                "set posixPath to POSIX path of chosenFolder\n"
+                "return posixPath\n"
+                "end tell"
+            ),
+        ]
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=picker_timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"macOS folder dialog timed out after {picker_timeout_seconds}s. You can set the path manually."
+            ) from exc
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "").strip()
+            if "User canceled" in detail:
+                return None
+            raise RuntimeError(detail or "macOS folder dialog failed")
+        selected = (proc.stdout or "").strip()
+        return selected or None
+
+    linux_pick_cmds = []
+    if shutil.which("zenity"):
+        linux_pick_cmds.append([
+            "zenity",
+            "--file-selection",
+            "--directory",
+            "--title=Select Library Directory",
+        ])
+    if shutil.which("kdialog"):
+        linux_pick_cmds.append([
+            "kdialog",
+            "--getexistingdirectory",
+            str(Path.home()),
+            "--title",
+            "Select Library Directory",
+        ])
+    if shutil.which("yad"):
+        linux_pick_cmds.append([
+            "yad",
+            "--file-selection",
+            "--directory",
+            "--title=Select Library Directory",
+        ])
+
+    if not linux_pick_cmds:
+        raise RuntimeError(
+            "No native folder picker found. Install zenity/kdialog/yad, or set the path manually."
+        )
+
+    last_error = ""
+    for cmd in linux_pick_cmds:
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=picker_timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"Linux folder dialog timed out after {picker_timeout_seconds}s. You can set the path manually."
+            ) from exc
+        if proc.returncode == 0:
+            selected = (proc.stdout or "").strip()
+            return selected or None
+        if proc.returncode == 1:
+            return None
+        last_error = (proc.stderr or proc.stdout or "").strip()
+
+    raise RuntimeError(last_error or "Linux folder dialog failed")
+
+
+_bootstrap_pdf_source_override()
 
 
 def _append_update_event_unlocked() -> None:
@@ -1110,7 +1375,7 @@ def start_update_apply(target_version: str) -> dict:
     }
 
 
-def run_pdf_rag(extra_args, timeout=600):
+def _build_pdf_rag_command(extra_args: list[str]) -> tuple[list[str], dict[str, str]]:
     env = os.environ.copy()
     src_path = str(REPO_ROOT / "src")
     if os.path.isdir(src_path):
@@ -1128,16 +1393,111 @@ def run_pdf_rag(extra_args, timeout=600):
         OLLAMA_BASE,
         "--embed-model",
         PDF_EMBED_MODEL,
+        "--embed-num-thread",
+        str(PDF_EMBED_NUM_THREAD),
+        "--embed-delay-ms",
+        str(PDF_EMBED_DELAY_MS),
+        "--doc-cooldown-seconds",
+        str(PDF_DOC_COOLDOWN_SECONDS),
+        "--dynamic-target-embed-ms",
+        str(PDF_DYNAMIC_TARGET_EMBED_MS),
+        "--dynamic-max-delay-ms",
+        str(PDF_DYNAMIC_MAX_DELAY_MS),
+        "--dynamic-delay-step-ms",
+        str(PDF_DYNAMIC_DELAY_STEP_MS),
+        "--dynamic-min-threads",
+        str(PDF_DYNAMIC_MIN_THREADS),
+        "--dynamic-max-threads",
+        str(PDF_DYNAMIC_MAX_THREADS),
         "--index-db",
         PDF_INDEX_DB,
-    ] + list(extra_args)
+    ]
+    cmd.append(
+        "--dynamic-throttle" if PDF_DYNAMIC_THROTTLE else "--no-dynamic-throttle")
+    cmd.extend(list(extra_args))
+    return cmd, env
+
+
+def run_pdf_rag(extra_args, timeout: int | None = 600):
+    cmd, env = _build_pdf_rag_command(list(extra_args))
+    timeout_arg: int | None
+    if timeout is None:
+        timeout_arg = None
+    else:
+        timeout_arg = int(timeout)
+        if timeout_arg <= 0:
+            timeout_arg = None
     proc = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=timeout, env=env)
+        cmd, capture_output=True, text=True, timeout=timeout_arg, env=env)
     out = (proc.stdout or "").strip()
     err = (proc.stderr or "").strip()
     if proc.returncode != 0:
         raise RuntimeError(err or out or f"Command failed: {' '.join(cmd)}")
     return out
+
+
+def pause_pdf_index_job() -> dict:
+    global PDF_INDEX_PROCESS
+
+    with PDF_LOCK:
+        proc = PDF_INDEX_PROCESS
+        if not PDF_INDEX_STATE.get("running") or proc is None:
+            return {"ok": True, "paused": False, "message": "Index job is not running"}
+        PDF_INDEX_STATE["pause_requested"] = True
+        PDF_INDEX_STATE["last_paused_at"] = int(time.time())
+        pid = int(proc.pid or 0)
+
+    try:
+        if platform.system().lower() == "windows":
+            proc.terminate()
+        else:
+            if pid > 0:
+                try:
+                    os.killpg(os.getpgid(pid), signal.SIGTERM)
+                except Exception:
+                    proc.terminate()
+            else:
+                proc.terminate()
+    except Exception as exc:
+        return {"ok": False, "paused": False, "error": str(exc)}
+
+    return {"ok": True, "paused": True, "message": "Pause requested"}
+
+
+def _count_source_documents(source_path: str) -> int:
+    root = Path(source_path).expanduser()
+    if not root.exists() or not root.is_dir():
+        return 0
+
+    total = 0
+    for candidate in root.rglob("*"):
+        if not candidate.is_file():
+            continue
+        if candidate.suffix.lower() in SUPPORTED_DOC_EXTENSIONS:
+            total += 1
+    return total
+
+
+def _get_source_document_total(source_path: str) -> int:
+    now = time.time()
+    with PDF_LOCK:
+        cached_source = str(PDF_SOURCE_SCAN_CACHE.get("source_path", ""))
+        cached_total = int(PDF_SOURCE_SCAN_CACHE.get(
+            "total_documents", 0) or 0)
+        cached_at = float(PDF_SOURCE_SCAN_CACHE.get("scanned_at", 0.0) or 0.0)
+        if (
+            cached_source == str(source_path)
+            and (now - cached_at) <= PDF_SOURCE_SCAN_CACHE_TTL_SECONDS
+        ):
+            return cached_total
+
+    total = _count_source_documents(source_path)
+
+    with PDF_LOCK:
+        PDF_SOURCE_SCAN_CACHE["source_path"] = str(source_path)
+        PDF_SOURCE_SCAN_CACHE["total_documents"] = int(total)
+        PDF_SOURCE_SCAN_CACHE["scanned_at"] = float(now)
+    return int(total)
 
 
 def get_pdf_status():
@@ -1158,19 +1518,47 @@ def get_pdf_status():
 
     with PDF_LOCK:
         state = dict(PDF_INDEX_STATE)
+
+    indexed_documents = max(0, int(status.get("documents", 0) or 0))
+    source_path = get_pdf_source_path()
+    total_documents = _get_source_document_total(source_path)
+    remaining_documents = max(0, total_documents - indexed_documents)
+    completion_pct = 0
+    if total_documents > 0:
+        completion_pct = max(
+            0,
+            min(100, int(round((indexed_documents / float(total_documents)) * 100))),
+        )
+
     status["index_job"] = state
-    status["source_path"] = PDF_SOURCE
+    status["source_path"] = source_path
+    status["indexed_documents"] = indexed_documents
+    status["total_documents"] = int(total_documents)
+    status["remaining_documents"] = int(remaining_documents)
+    status["completion_pct"] = int(completion_pct)
+    status["adaptive_throttle"] = {
+        "enabled": bool(PDF_DYNAMIC_THROTTLE),
+        "target_embed_ms": int(PDF_DYNAMIC_TARGET_EMBED_MS),
+        "max_delay_ms": int(PDF_DYNAMIC_MAX_DELAY_MS),
+        "delay_step_ms": int(PDF_DYNAMIC_DELAY_STEP_MS),
+        "min_threads": int(PDF_DYNAMIC_MIN_THREADS),
+        "max_threads": int(PDF_DYNAMIC_MAX_THREADS),
+    }
     return status
 
 
 def _index_worker():
+    global PDF_INDEX_PROCESS
     with PDF_LOCK:
         PDF_INDEX_STATE["running"] = True
         PDF_INDEX_STATE["last_started_at"] = int(time.time())
         PDF_INDEX_STATE["last_error"] = None
+        PDF_INDEX_STATE["pause_requested"] = False
+        PDF_INDEX_STATE["active_pid"] = None
     try:
+        source_path = get_pdf_source_path()
         index_args = ["index", "--source",
-                      PDF_SOURCE, "--prune", "--json-summary"]
+                      source_path, "--prune", "--json-summary"]
         if PDF_OCR_ON_SYNC:
             index_args.extend([
                 "--ocr-missing",
@@ -1181,19 +1569,50 @@ def _index_worker():
                 "--ocr-timeout",
                 str(PDF_OCR_TIMEOUT),
             ])
-            raw = run_pdf_rag(
-                index_args,
-                timeout=7200,
-            )
-            parsed = json.loads(raw) if raw else {"ok": True}
+        cmd, env = _build_pdf_rag_command(index_args)
+        popen_kwargs = {
+            "args": cmd,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": True,
+            "env": env,
+        }
+        if platform.system().lower() != "windows":
+            popen_kwargs["start_new_session"] = True
+        proc = subprocess.Popen(**popen_kwargs)
+        with PDF_LOCK:
+            PDF_INDEX_PROCESS = proc
+            PDF_INDEX_STATE["active_pid"] = int(proc.pid or 0)
+
+        out, err = proc.communicate()
+        if proc.returncode != 0:
+            detail = (err or out or "").strip()
+            paused = False
             with PDF_LOCK:
-                PDF_INDEX_STATE["last_result"] = parsed
+                paused = bool(PDF_INDEX_STATE.get("pause_requested"))
+            if paused:
+                with PDF_LOCK:
+                    PDF_INDEX_STATE["last_result"] = {
+                        "ok": True,
+                        "paused": True,
+                        "message": "Paused by user",
+                    }
+                    PDF_INDEX_STATE["last_error"] = None
+                return
+            raise RuntimeError(detail or f"Command failed: {' '.join(cmd)}")
+
+        raw = (out or "").strip()
+        parsed = json.loads(raw) if raw else {"ok": True}
+        with PDF_LOCK:
+            PDF_INDEX_STATE["last_result"] = parsed
     except Exception as exc:
         with PDF_LOCK:
             PDF_INDEX_STATE["last_error"] = str(exc)
     finally:
         with PDF_LOCK:
+            PDF_INDEX_PROCESS = None
             PDF_INDEX_STATE["running"] = False
+            PDF_INDEX_STATE["active_pid"] = None
             PDF_INDEX_STATE["last_finished_at"] = int(time.time())
 
 
@@ -1370,7 +1789,7 @@ def list_library_docs() -> dict:
     finally:
         conn.close()
 
-    source_root = os.path.realpath(os.path.expanduser(PDF_SOURCE))
+    source_root = os.path.realpath(os.path.expanduser(get_pdf_source_path()))
     real_paths = [
         os.path.realpath(os.path.expanduser(str(path)))
         for path, _, _ in rows
@@ -1418,7 +1837,7 @@ def list_library_docs() -> dict:
     return {
         "ok": True,
         "count": len(docs),
-        "source_path": PDF_SOURCE,
+        "source_path": get_pdf_source_path(),
         "documents": docs,
         "groups": group_list,
     }
@@ -1644,7 +2063,8 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(requested_path, str) or not requested_path.strip():
             return None, "path is required", 400
 
-        resolved_root = os.path.realpath(os.path.expanduser(PDF_SOURCE))
+        resolved_root = os.path.realpath(
+            os.path.expanduser(get_pdf_source_path()))
         resolved_path = os.path.realpath(os.path.expanduser(requested_path))
 
         if not resolved_path.startswith(resolved_root + os.sep):
@@ -1680,7 +2100,7 @@ class Handler(BaseHTTPRequestHandler):
                 "unsupported file extension (allowed: .pdf, .txt, .md, .html, .htm, .epub)"
             ), 400
 
-        root = Path(os.path.expanduser(PDF_SOURCE)).resolve()
+        root = Path(os.path.expanduser(get_pdf_source_path())).resolve()
         root.mkdir(parents=True, exist_ok=True)
 
         base_name = Path(cleaned).stem.strip().strip(". ") or "document"
@@ -2146,6 +2566,58 @@ class Handler(BaseHTTPRequestHandler):
             "application/json; charset=utf-8",
         )
 
+    def _handle_post_pdf_index_pause(self):
+        result = pause_pdf_index_job()
+        code = 200 if result.get("ok") else 500
+        return self._send(
+            code,
+            json.dumps(result, ensure_ascii=True),
+            "application/json; charset=utf-8",
+        )
+
+    def _handle_post_pdf_source(self):
+        payload = self._read_json_body()
+        if payload is None:
+            return
+
+        source_path = payload.get("source_path", "")
+        if not isinstance(source_path, str):
+            return self._send(
+                400,
+                json.dumps(
+                    {"ok": False, "error": "source_path must be a string"}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        try:
+            result = set_pdf_source_path(source_path)
+            return self._send(
+                200,
+                json.dumps(result, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        except ValueError as exc:
+            return self._send(
+                400,
+                json.dumps({"ok": False, "error": str(exc)},
+                           ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        except RuntimeError as exc:
+            return self._send(
+                409,
+                json.dumps({"ok": False, "error": str(exc)},
+                           ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        except Exception as exc:
+            return self._send(
+                500,
+                json.dumps({"ok": False, "error": str(exc)},
+                           ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
     def _handle_post_update_apply(self):
         payload = self._read_json_body()
         if payload is None:
@@ -2405,6 +2877,62 @@ class Handler(BaseHTTPRequestHandler):
                 "application/json; charset=utf-8",
             )
 
+    def _handle_post_pdf_source_pick(self):
+        try:
+            selected = _pick_directory_with_native_dialog()
+        except RuntimeError as exc:
+            return self._send(
+                200,
+                json.dumps({"ok": False, "error": str(exc), "recoverable": True},
+                           ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        except Exception as exc:
+            return self._send(
+                500,
+                json.dumps({"ok": False, "error": str(exc)},
+                           ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        if not selected:
+            return self._send(
+                200,
+                json.dumps({"ok": True, "canceled": True}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        try:
+            result = set_pdf_source_path(selected)
+        except ValueError as exc:
+            return self._send(
+                400,
+                json.dumps({"ok": False, "error": str(exc)},
+                           ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        except RuntimeError as exc:
+            return self._send(
+                409,
+                json.dumps({"ok": False, "error": str(exc)},
+                           ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        except Exception as exc:
+            return self._send(
+                500,
+                json.dumps({"ok": False, "error": str(exc)},
+                           ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        result["canceled"] = False
+        return self._send(
+            200,
+            json.dumps(result, ensure_ascii=True),
+            "application/json; charset=utf-8",
+        )
+
     def _handle_delete_bibliography(self, parsed_url):
         params = parse_qs(parsed_url.query)
         if params.get("all", [""])[0] == "1":
@@ -2479,6 +3007,9 @@ class Handler(BaseHTTPRequestHandler):
             "/api/history": lambda: self._handle_post_history(),
             "/api/instructions": lambda: self._handle_post_instructions(),
             "/api/pdf/index": lambda: self._handle_post_pdf_index(),
+            "/api/pdf/index/pause": lambda: self._handle_post_pdf_index_pause(),
+            "/api/pdf/source": lambda: self._handle_post_pdf_source(),
+            "/api/pdf/source/pick": lambda: self._handle_post_pdf_source_pick(),
             "/api/update/apply": lambda: self._handle_post_update_apply(),
             "/api/update/check": lambda: self._handle_post_update_check(),
             "/api/pdf/ask": lambda: self._handle_post_pdf_ask(),

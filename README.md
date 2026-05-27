@@ -48,6 +48,11 @@ For non-technical users, use:
 - Math rendering is fully offline via vendored KaTeX files served from `/assets`.
 - EPUB citations open in an in-app EPUB reader at section-level locations (EPUB does not have universal PDF-style page numbers).
 - You can upload supported documents directly from the sidebar with `Upload Documents`, then sync/index from the same UI.
+- PDF indexing controls, document upload, Library Docs, and the processing dashboard are grouped under a `PDF Processing` sidebar section.
+- You can set or change the library directory directly in the `PDF Processing` section; the app creates the folder if needed and remembers it for future runs.
+- Use `Browse...` to open a folder picker dialog and set the library directory without typing full paths.
+- On Linux, the folder picker requires one of: `zenity`, `kdialog`, or `yad`. If none are installed, use the path field and click `Set Directory`.
+- `App Updates` is in a collapsed-by-default sidebar section for less frequent use.
 - The sidebar includes an `Abstract Screener` that scores an abstract against your research need and recommends whether to download/index the paper.
 
 ## Release Status
@@ -92,6 +97,15 @@ Content/index paths and OCR:
 - `OLLAMA_WEB_PDF_OCR_LANG`
 - `OLLAMA_WEB_PDF_OCR_JOBS`
 - `OLLAMA_WEB_PDF_OCR_TIMEOUT`
+- `OLLAMA_WEB_PDF_EMBED_NUM_THREAD` (default: `2`; lower values reduce CPU/heat during indexing)
+- `OLLAMA_WEB_PDF_EMBED_DELAY_MS` (default: `200`; inserts a delay between embedding calls to lower sustained heat)
+- `OLLAMA_WEB_PDF_DOC_COOLDOWN_SECONDS` (default: `10`; sleeps between indexed documents to cool the system)
+- `OLLAMA_WEB_PDF_DYNAMIC_THROTTLE` (default: `1`; adaptive throttle that auto-adjusts embed thread count and delay)
+- `OLLAMA_WEB_PDF_DYNAMIC_TARGET_EMBED_MS` (default: `1400`; target average embed latency used by adaptive control)
+- `OLLAMA_WEB_PDF_DYNAMIC_MAX_DELAY_MS` (default: `2000`; upper bound for adaptive inter-embed delay)
+- `OLLAMA_WEB_PDF_DYNAMIC_DELAY_STEP_MS` (default: `50`; adaptive delay adjustment increment)
+- `OLLAMA_WEB_PDF_DYNAMIC_MIN_THREADS` (default: `1`; lower bound for adaptive embed threads)
+- `OLLAMA_WEB_PDF_DYNAMIC_MAX_THREADS` (default: `3`; upper bound for adaptive embed threads)
 
 Updater behavior:
 

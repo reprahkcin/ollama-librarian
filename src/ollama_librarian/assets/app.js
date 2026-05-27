@@ -49,6 +49,9 @@ const abstractTextEl = document.getElementById("abstractText");
 const evaluateAbstractEl = document.getElementById("evaluateAbstract");
 const clearAbstractEl = document.getElementById("clearAbstract");
 const abstractResultEl = document.getElementById("abstractResult");
+const pdfSourcePathEl = document.getElementById("pdfSourcePath");
+const browsePdfSourceEl = document.getElementById("browsePdfSource");
+const savePdfSourceEl = document.getElementById("savePdfSource");
 const usePdfLibraryEl = document.getElementById("usePdfLibrary");
 const syncPdfLibraryEl = document.getElementById("syncPdfLibrary");
 const uploadLibraryDocsEl = document.getElementById("uploadLibraryDocs");
@@ -65,6 +68,11 @@ const promptUseSelectedEl = document.getElementById("promptUseSelected");
 const promptPinSelectedEl = document.getElementById("promptPinSelected");
 const promptClearHistoryEl = document.getElementById("promptClearHistory");
 const pdfStatusEl = document.getElementById("pdfStatus");
+const pdfStatusSummaryEl = document.getElementById("pdfStatusSummary");
+const pdfStatusCountsEl = document.getElementById("pdfStatusCounts");
+const pdfStatusTimingEl = document.getElementById("pdfStatusTiming");
+const pdfStatusAdaptiveEl = document.getElementById("pdfStatusAdaptive");
+const pdfStatusErrorEl = document.getElementById("pdfStatusError");
 const messagesEl = document.getElementById("messages");
 const statusDotEl = document.getElementById("statusDot");
 const statusTextEl = document.getElementById("statusText");
@@ -1772,6 +1780,36 @@ function compactSourceLabel(p) {
   return `${base.slice(0, maxLen - 1)}...`;
 }
 
+function sourceConfidenceInfo(scoreRaw) {
+  const score = Number(scoreRaw);
+  if (!Number.isFinite(score)) {
+    return {
+      label: "Unknown",
+      className: "conf-unknown",
+      title: "Retrieval score unavailable",
+    };
+  }
+  if (score >= 0.95) {
+    return {
+      label: "High",
+      className: "conf-high",
+      title: `Retrieval score: ${score.toFixed(3)}`,
+    };
+  }
+  if (score >= 0.8) {
+    return {
+      label: "Medium",
+      className: "conf-medium",
+      title: `Retrieval score: ${score.toFixed(3)}`,
+    };
+  }
+  return {
+    label: "Low",
+    className: "conf-low",
+    title: `Retrieval score: ${score.toFixed(3)}`,
+  };
+}
+
 function buildApaCitationEntries(sources) {
   const seen = new Set();
   const entries = [];
@@ -1801,10 +1839,12 @@ function buildApaCitationEntries(sources) {
       : `${titlePart}. (${year}). (${locator}).`;
     entries.push({
       citation,
+      confidence: sourceConfidenceInfo(s.score),
       source: {
         path,
         page: loc,
         location: loc,
+        score: Number(s.score),
         title,
         authors: Array.isArray(s.authors) ? s.authors : [],
         year,
@@ -1833,9 +1873,16 @@ function renderCitationActions(citationEntries, queryText = "") {
 
     const text = document.createElement("div");
     text.className = "citation-text md";
+    const confidence = entry.confidence || sourceConfidenceInfo();
     text.innerHTML = renderInlineMarkdown(
       escapeHtml(String(entry.citation || "")),
     );
+    const badge = document.createElement("span");
+    badge.className = `source-confidence-badge ${confidence.className}`;
+    badge.title = String(confidence.title || "");
+    badge.textContent = `${String(confidence.label || "Unknown")} confidence`;
+    text.prepend(document.createTextNode(" "));
+    text.prepend(badge);
 
     const stashBtn = document.createElement("button");
     stashBtn.className = "stash-btn";
@@ -1944,24 +1991,139 @@ function summarizeIndexError(rawError) {
   return best;
 }
 
+function buildAdaptiveThrottleLine(data) {
+  const adaptive = data && data.adaptive_throttle ? data.adaptive_throttle : {};
+  const enabled = Boolean(adaptive.enabled);
+  if (!enabled) return "Adaptive throttle: off";
+
+  const minThreads = Number(adaptive.min_threads || 1);
+  const maxThreads = Number(adaptive.max_threads || minThreads);
+  const targetMs = Number(adaptive.target_embed_ms || 0);
+  const maxDelayMs = Number(adaptive.max_delay_ms || 0);
+
+  const job =
+    data && data.index_job && data.index_job.last_result
+      ? data.index_job.last_result
+      : {};
+  const avgEmbedMs = Number(job.dynamic_avg_embed_ms || 0);
+  const finalThreads = Number(job.dynamic_final_embed_num_thread || 0);
+  const finalDelayMs = Number(job.dynamic_final_embed_delay_ms || 0);
+  const adjustments = Number(job.dynamic_adjustments || 0);
+
+  const base = `Adaptive throttle: on | threads ${minThreads}-${maxThreads} | target ${targetMs}ms | max delay ${maxDelayMs}ms`;
+  if (!Number.isFinite(adjustments) || adjustments <= 0) {
+    return base;
+  }
+  return `${base} | last run avg ${Math.round(avgEmbedMs)}ms, final ${finalThreads} thread(s), ${finalDelayMs}ms delay, ${adjustments} adjustment(s)`;
+}
+
+function confirmSyncSafety() {
+  return window.confirm(
+    "Large library sync can run for a long time and should be planned carefully.\n\n" +
+      "Tips for safer overnight processing:\n" +
+      "- Avoid heavy multitasking while syncing.\n" +
+      "- Turn off extra monitors to reduce display/GPU load.\n" +
+      "- Low-and-slow settings reduce thermal spikes and improve stability over long runs.\n\n" +
+      "IMPORTANT WORST-CASE WARNING:\n" +
+      "If the GPU/display stack crashes, your screen can go black and you may need a hard reset.\n" +
+      "Save everything before you start the syncing process, so a hard reset is safe with no unsaved work loss.\n\n" +
+      "Start sync now?",
+  );
+}
+
+function renderPdfStatusPanel(
+  summary,
+  counts,
+  timing,
+  adaptive,
+  errorText = "",
+) {
+  if (
+    pdfStatusSummaryEl &&
+    pdfStatusCountsEl &&
+    pdfStatusTimingEl &&
+    pdfStatusAdaptiveEl &&
+    pdfStatusErrorEl
+  ) {
+    pdfStatusSummaryEl.textContent = summary;
+    pdfStatusCountsEl.textContent = counts;
+    pdfStatusTimingEl.textContent = timing;
+    pdfStatusAdaptiveEl.textContent = adaptive;
+    if (errorText) {
+      pdfStatusErrorEl.textContent = `Last error: ${errorText}`;
+      pdfStatusErrorEl.hidden = false;
+    } else {
+      pdfStatusErrorEl.textContent = "";
+      pdfStatusErrorEl.hidden = true;
+    }
+    return;
+  }
+
+  const parts = [summary, counts, timing, adaptive];
+  if (errorText) parts.push(`Last error: ${errorText}`);
+  pdfStatusEl.textContent = parts.filter(Boolean).join("\n");
+}
+
 async function refreshPdfStatus() {
   try {
     const res = await fetch("/api/pdf/status");
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     const job = data.index_job || {};
-    const docs = data.documents ?? 0;
+    const docs = Number(data.documents ?? 0);
+    const indexedDocs = Number(data.indexed_documents ?? docs);
+    const totalDocs = Number(data.total_documents ?? 0);
+    const remainingDocs = Number(
+      data.remaining_documents ?? Math.max(0, totalDocs - indexedDocs),
+    );
+    const hasDocTotal = Number.isFinite(totalDocs) && totalDocs > 0;
+    const completionPctFromApi = Number(data.completion_pct);
+    const completionPct = hasDocTotal
+      ? Math.max(
+          0,
+          Math.min(
+            100,
+            Number.isFinite(completionPctFromApi)
+              ? Math.round(completionPctFromApi)
+              : Math.round((indexedDocs / totalDocs) * 100),
+          ),
+        )
+      : 0;
     const chunks = data.chunks ?? 0;
     const idx = formatEpoch(data.last_indexed_at);
     const running = job.running ? "running" : "idle";
+    const pauseRequested = Boolean(job.pause_requested);
+    const throttleLine = buildAdaptiveThrottleLine(data);
+
+    if (pdfSourcePathEl && document.activeElement !== pdfSourcePathEl) {
+      pdfSourcePathEl.value = String(data.source_path || "");
+    }
+
+    if (syncPdfLibraryEl) {
+      if (job.running) {
+        syncPdfLibraryEl.dataset.indexAction = "pause";
+        syncPdfLibraryEl.disabled = pauseRequested;
+        syncPdfLibraryEl.textContent = pauseRequested
+          ? "Pause Requested"
+          : "Pause Processing";
+      } else {
+        syncPdfLibraryEl.dataset.indexAction = "sync";
+        syncPdfLibraryEl.disabled = false;
+        syncPdfLibraryEl.textContent = "Sync New PDFs";
+      }
+    }
 
     if (job.running) {
-      if (!syncSnapshot) {
+      const jobStartedAt = Number(
+        job.last_started_at || Math.floor(Date.now() / 1000),
+      );
+      if (
+        !syncSnapshot ||
+        Number(syncSnapshot.startedAt || 0) !== jobStartedAt
+      ) {
         syncSnapshot = {
-          startedAt: Number(
-            job.last_started_at || Math.floor(Date.now() / 1000),
-          ),
-          startDocs: Number(docs || 0),
+          startedAt: jobStartedAt,
+          startDocs: Number(indexedDocs || 0),
           startChunks: Number(chunks || 0),
         };
       }
@@ -1974,59 +2136,74 @@ async function refreshPdfStatus() {
         0,
         Number(chunks || 0) - Number(syncSnapshot.startChunks || 0),
       );
+      const docDelta = Math.max(
+        0,
+        Number(indexedDocs || 0) - Number(syncSnapshot.startDocs || 0),
+      );
       const chunksPerMin = Math.round((chunkDelta / elapsedSec) * 60);
 
-      const result =
-        job.last_result && typeof job.last_result === "object"
-          ? job.last_result
-          : {};
-      const processed = Number(
-        result.processed || result.updated || result.indexed || 0,
-      );
-      const total = Number(
-        result.total || result.discovered || result.candidates || 0,
-      );
-      let progressPct = 0;
       let etaText = "ETA: estimating";
 
-      if (
-        Number.isFinite(total) &&
-        total > 0 &&
-        Number.isFinite(processed) &&
-        processed >= 0
-      ) {
-        progressPct = Math.max(
-          0,
-          Math.min(100, Math.round((processed / total) * 100)),
-        );
-        const remaining = Math.max(0, total - processed);
-        const perSec = processed > 0 ? processed / elapsedSec : 0;
+      if (hasDocTotal) {
+        const etaStable = elapsedSec >= 120 && docDelta >= 3;
+        const perSec = etaStable ? docDelta / elapsedSec : 0;
         if (perSec > 0) {
-          const etaSec = Math.round(remaining / perSec);
+          const etaSec = Math.round(remainingDocs / perSec);
           etaText = `ETA: ~${Math.max(0, Math.ceil(etaSec / 60))} min`;
         }
-      } else {
-        progressPct = Math.max(
-          8,
-          Math.min(92, 12 + Math.round(Math.min(80, elapsedSec / 3))),
-        );
       }
 
       pdfProgressEl.classList.remove("hidden");
-      pdfProgressBarEl.style.width = `${progressPct}%`;
-      pdfStatusEl.textContent = `PDF index: running (${progressPct}%)\nDocs: ${docs} | Chunks: ${chunks} | +${chunkDelta} this run\nElapsed: ${Math.ceil(elapsedSec / 60)} min | ${etaText} | ${chunksPerMin}/min`;
+      pdfProgressBarEl.style.width = `${completionPct}%`;
+      const stateLabel = pauseRequested ? "pausing" : "running";
+      if (hasDocTotal) {
+        renderPdfStatusPanel(
+          `PDF index: ${stateLabel} (${completionPct}%)`,
+          `Docs: ${indexedDocs}/${totalDocs} | Remaining: ${remainingDocs} | Chunks: ${chunks} | +${chunkDelta} chunks this run`,
+          `Elapsed: ${Math.ceil(elapsedSec / 60)} min | ${etaText} | ${chunksPerMin}/min`,
+          throttleLine,
+        );
+      } else {
+        renderPdfStatusPanel(
+          `PDF index: ${stateLabel}`,
+          `Docs indexed: ${indexedDocs} (total unknown) | Chunks: ${chunks} | +${chunkDelta} chunks this run`,
+          `Elapsed: ${Math.ceil(elapsedSec / 60)} min | ${chunksPerMin}/min`,
+          throttleLine,
+        );
+      }
     } else {
       syncSnapshot = null;
       pdfProgressEl.classList.add("hidden");
       pdfProgressBarEl.style.width = "0%";
       const compactError = summarizeIndexError(job.last_error);
-      const statusTail = compactError ? `\nLast error: ${compactError}` : "";
-      pdfStatusEl.textContent = `PDF index: ${running}\nDocs: ${docs} | Chunks: ${chunks}\nLast indexed: ${idx}${statusTail}`;
+      if (hasDocTotal) {
+        renderPdfStatusPanel(
+          `PDF index: ${running} (${completionPct}%)`,
+          `Docs: ${indexedDocs}/${totalDocs} | Remaining: ${remainingDocs} | Chunks: ${chunks}`,
+          `Last indexed: ${idx}`,
+          throttleLine,
+          compactError,
+        );
+      } else {
+        renderPdfStatusPanel(
+          `PDF index: ${running}`,
+          `Docs: ${indexedDocs} | Chunks: ${chunks}`,
+          `Last indexed: ${idx}`,
+          throttleLine,
+          compactError,
+        );
+      }
     }
   } catch (err) {
     pdfProgressEl.classList.add("hidden");
     pdfProgressBarEl.style.width = "0%";
-    pdfStatusEl.textContent = `PDF index status error: ${err.message}`;
+    renderPdfStatusPanel(
+      "PDF index: status error",
+      "",
+      "",
+      "Adaptive throttle: unknown",
+      err.message,
+    );
   }
 }
 
@@ -2135,16 +2312,16 @@ async function applyUpdate() {
 }
 
 async function syncPdfLibrary() {
+  if (!confirmSyncSafety()) {
+    metaEl.textContent = "Sync canceled";
+    return;
+  }
   syncPdfLibraryEl.disabled = true;
-  syncPdfLibraryEl.textContent = "Syncing...";
+  syncPdfLibraryEl.textContent = "Starting Sync";
   try {
     const res = await fetch("/api/pdf/index", { method: "POST" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    syncSnapshot = {
-      startedAt: Math.floor(Date.now() / 1000),
-      startDocs: 0,
-      startChunks: 0,
-    };
+    syncSnapshot = null;
     pdfProgressEl.classList.remove("hidden");
     pdfProgressBarEl.style.width = "8%";
     metaEl.textContent = "PDF index sync started";
@@ -2152,9 +2329,130 @@ async function syncPdfLibrary() {
     addMessage("system", `Failed to start PDF sync: ${err.message}`);
   } finally {
     syncPdfLibraryEl.disabled = false;
-    syncPdfLibraryEl.textContent = "Sync New PDFs";
     refreshPdfStatus();
   }
+}
+
+async function savePdfSourcePath() {
+  if (!pdfSourcePathEl || !savePdfSourceEl) return;
+
+  const requestedPath = String(pdfSourcePathEl.value || "").trim();
+  if (!requestedPath) {
+    metaEl.textContent = "Library directory is required";
+    pdfSourcePathEl.focus();
+    return;
+  }
+
+  savePdfSourceEl.disabled = true;
+  const originalText = savePdfSourceEl.textContent;
+  savePdfSourceEl.textContent = "Saving...";
+  try {
+    const res = await fetch("/api/pdf/source", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source_path: requestedPath }),
+    });
+    const data = await res.json();
+    if (!res.ok || data.ok === false) {
+      throw new Error((data && data.error) || `HTTP ${res.status}`);
+    }
+
+    const normalizedPath = String(data.source_path || requestedPath);
+    pdfSourcePathEl.value = normalizedPath;
+    excludedDocPaths = new Set();
+    persistDocFilterState();
+    libraryDocs = [];
+    libraryGroups = [];
+    metaEl.textContent = data.changed
+      ? `Library directory set to: ${normalizedPath}`
+      : "Library directory unchanged";
+
+    await refreshPdfStatus();
+    if (!docsModalEl.classList.contains("docs-hidden")) {
+      await loadLibraryDocs();
+    }
+  } catch (err) {
+    metaEl.textContent = `Failed to set library directory: ${err.message}`;
+  } finally {
+    savePdfSourceEl.disabled = false;
+    savePdfSourceEl.textContent = originalText;
+  }
+}
+
+async function browsePdfSourcePath() {
+  if (!browsePdfSourceEl) return;
+
+  browsePdfSourceEl.disabled = true;
+  const originalText = browsePdfSourceEl.textContent;
+  browsePdfSourceEl.textContent = "Opening...";
+
+  try {
+    const res = await fetch("/api/pdf/source/pick", { method: "POST" });
+    const data = await res.json();
+    if (!res.ok || data.ok === false) {
+      throw new Error((data && data.error) || `HTTP ${res.status}`);
+    }
+
+    if (data.canceled) {
+      metaEl.textContent = "Library directory selection canceled";
+      return;
+    }
+
+    const normalizedPath = String(data.source_path || "").trim();
+    if (!normalizedPath) {
+      throw new Error("No directory selected");
+    }
+
+    pdfSourcePathEl.value = normalizedPath;
+    excludedDocPaths = new Set();
+    persistDocFilterState();
+    libraryDocs = [];
+    libraryGroups = [];
+    metaEl.textContent = data.changed
+      ? `Library directory set to: ${normalizedPath}`
+      : "Library directory unchanged";
+
+    await refreshPdfStatus();
+    if (!docsModalEl.classList.contains("docs-hidden")) {
+      await loadLibraryDocs();
+    }
+  } catch (err) {
+    metaEl.textContent = `Failed to open directory picker: ${err.message}`;
+  } finally {
+    browsePdfSourceEl.disabled = false;
+    browsePdfSourceEl.textContent = originalText;
+  }
+}
+
+async function pausePdfLibrary() {
+  if (!syncPdfLibraryEl) return;
+  syncPdfLibraryEl.disabled = true;
+  syncPdfLibraryEl.textContent = "Pause Requested";
+  try {
+    const res = await fetch("/api/pdf/index/pause", { method: "POST" });
+    const data = await res.json();
+    if (!res.ok || data.ok === false) {
+      throw new Error((data && data.error) || `HTTP ${res.status}`);
+    }
+    if (data.paused) {
+      metaEl.textContent = "Pause requested for PDF indexing";
+    } else {
+      metaEl.textContent = data.message || "Indexing is not currently running";
+    }
+  } catch (err) {
+    addMessage("system", `Failed to pause PDF sync: ${err.message}`);
+  } finally {
+    refreshPdfStatus();
+  }
+}
+
+async function togglePdfLibrarySyncPause() {
+  const action = String(syncPdfLibraryEl.dataset.indexAction || "sync");
+  if (action === "pause") {
+    await pausePdfLibrary();
+    return;
+  }
+  await syncPdfLibrary();
 }
 
 function setBusy(isBusy) {
@@ -2169,6 +2467,9 @@ function setBusy(isBusy) {
   instructionsEl.disabled = isBusy;
   saveInstructionsEl.disabled = isBusy;
   usePdfLibraryEl.disabled = isBusy;
+  pdfSourcePathEl.disabled = isBusy;
+  browsePdfSourceEl.disabled = isBusy;
+  savePdfSourceEl.disabled = isBusy;
   syncPdfLibraryEl.disabled = isBusy;
   uploadLibraryDocsEl.disabled = isBusy;
   openLibraryDocsEl.disabled = isBusy;
@@ -2441,11 +2742,19 @@ abstractTextEl.addEventListener("keydown", (e) => {
     evaluateAbstract();
   }
 });
-syncPdfLibraryEl.addEventListener("click", syncPdfLibrary);
+syncPdfLibraryEl.addEventListener("click", togglePdfLibrarySyncPause);
 checkUpdatesEl.addEventListener("click", checkForUpdates);
 applyUpdateEl.addEventListener("click", applyUpdate);
 uploadLibraryDocsEl.addEventListener("click", () => {
   pickLibraryFilesAndUpload();
+});
+browsePdfSourceEl.addEventListener("click", browsePdfSourcePath);
+savePdfSourceEl.addEventListener("click", savePdfSourcePath);
+pdfSourcePathEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    savePdfSourcePath();
+  }
 });
 usePdfLibraryEl.addEventListener("change", () => {
   if (usePdfLibraryEl.checked) {

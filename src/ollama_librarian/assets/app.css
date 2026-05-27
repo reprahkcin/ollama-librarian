@@ -124,6 +124,7 @@ label {
 }
 select,
 textarea,
+input.path-input,
 button {
   width: 100%;
   font: inherit;
@@ -375,6 +376,37 @@ button:disabled {
   color: var(--ink);
   word-break: break-word;
 }
+.source-confidence-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  padding: 0.08rem 0.4rem;
+  margin-right: 0.4rem;
+  margin-bottom: 0.2rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+.source-confidence-badge.conf-high {
+  background: color-mix(in srgb, var(--ok) 22%, var(--surface));
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--border));
+  color: var(--osu-dark-bg);
+}
+.source-confidence-badge.conf-medium {
+  background: color-mix(in srgb, var(--accent) 34%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 52%, var(--border));
+  color: var(--osu-dark-bg);
+}
+.source-confidence-badge.conf-low,
+.source-confidence-badge.conf-unknown {
+  background: color-mix(in srgb, var(--danger) 18%, var(--surface));
+  border-color: color-mix(in srgb, var(--danger) 42%, var(--border));
+  color: var(--osu-dark-bg);
+}
 .citation-row .stash-btn {
   margin-right: 0;
   min-width: 58px;
@@ -559,6 +591,27 @@ textarea {
   font-size: 0.86rem;
   color: var(--ink);
 }
+.sidebar-section {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: linear-gradient(180deg, var(--surface), var(--surface-inset));
+  padding: 0.6rem;
+  display: grid;
+  gap: 0.48rem;
+}
+.sidebar-section-title {
+  margin: 0;
+  font-size: 0.77rem;
+  font-weight: 800;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+.path-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.4rem;
+}
 .checkrow input[type="checkbox"] {
   width: 1rem;
   height: 1rem;
@@ -653,10 +706,29 @@ textarea {
   max-height: 13rem;
   overflow: auto;
 }
-#pdfStatus {
-  white-space: pre-line;
+.pdf-status-panel {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-inset);
+  padding: 0.55rem 0.6rem;
+  display: grid;
+  gap: 0.3rem;
+}
+#pdfStatusSummary {
+  font-weight: 700;
+  color: var(--ink);
+}
+#pdfStatusCounts,
+#pdfStatusTiming,
+#pdfStatusAdaptive,
+#pdfStatusError {
+  white-space: normal;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+.pdf-status-error {
+  color: var(--danger);
+  font-weight: 600;
 }
 .stash-item-actions {
   display: flex;

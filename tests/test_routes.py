@@ -226,6 +226,108 @@ class RouteBaselineTests(unittest.TestCase):
         self.assertIn("ok", payload)
         self.assertIn("source_path", payload)
 
+    def test_post_pdf_index_pause_is_stable_when_not_running(self):
+        with running_server() as (_, base_url):
+            status, payload, _ = _request_json(
+                "POST", f"{base_url}/api/pdf/index/pause", {}
+            )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload.get("ok"))
+        self.assertFalse(payload.get("paused"))
+        self.assertIn("message", payload)
+
+    def test_post_pdf_source_updates_runtime_source_path(self):
+        with running_server() as (app, base_url):
+            target = Path(app.DEFAULT_STATE_DIR) / "custom-library"
+            status, payload, _ = _request_json(
+                "POST",
+                f"{base_url}/api/pdf/source",
+                {"source_path": str(target)},
+            )
+            self.assertEqual(status, 200)
+            self.assertTrue(payload.get("ok"))
+
+            status, status_payload, _ = _request_json(
+                "GET", f"{base_url}/api/pdf/status")
+
+        self.assertEqual(status, 200)
+        self.assertTrue(Path(target).is_dir())
+        self.assertEqual(
+            str(Path(target).resolve()),
+            str(status_payload.get("source_path", "")),
+        )
+
+    def test_post_pdf_source_rejects_empty_path(self):
+        with running_server() as (_, base_url):
+            status, payload, _ = _request_json(
+                "POST",
+                f"{base_url}/api/pdf/source",
+                {"source_path": "   "},
+            )
+
+        self.assertEqual(status, 400)
+        self.assertFalse(payload.get("ok", True))
+        self.assertIn("source_path", str(payload.get("error", "")))
+
+    def test_post_pdf_source_pick_sets_selected_directory(self):
+        with running_server() as (app, base_url):
+            target = Path(app.DEFAULT_STATE_DIR) / "picked-library"
+            original_picker = app._pick_directory_with_native_dialog
+            app._pick_directory_with_native_dialog = lambda: str(target)
+            try:
+                status, payload, _ = _request_json(
+                    "POST",
+                    f"{base_url}/api/pdf/source/pick",
+                    {},
+                )
+            finally:
+                app._pick_directory_with_native_dialog = original_picker
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload.get("ok"))
+        self.assertFalse(payload.get("canceled", True))
+        self.assertEqual(str(target.resolve()), payload.get("source_path"))
+
+    def test_post_pdf_source_pick_handles_cancel(self):
+        with running_server() as (app, base_url):
+            original_picker = app._pick_directory_with_native_dialog
+            app._pick_directory_with_native_dialog = lambda: None
+            try:
+                status, payload, _ = _request_json(
+                    "POST",
+                    f"{base_url}/api/pdf/source/pick",
+                    {},
+                )
+            finally:
+                app._pick_directory_with_native_dialog = original_picker
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload.get("ok"))
+        self.assertTrue(payload.get("canceled"))
+
+    def test_post_pdf_source_pick_handles_runtime_error_as_recoverable(self):
+        with running_server() as (app, base_url):
+            original_picker = app._pick_directory_with_native_dialog
+
+            def _raise_runtime_error():
+                raise RuntimeError("picker timed out")
+
+            app._pick_directory_with_native_dialog = _raise_runtime_error
+            try:
+                status, payload, _ = _request_json(
+                    "POST",
+                    f"{base_url}/api/pdf/source/pick",
+                    {},
+                )
+            finally:
+                app._pick_directory_with_native_dialog = original_picker
+
+        self.assertEqual(status, 200)
+        self.assertFalse(payload.get("ok", True))
+        self.assertTrue(payload.get("recoverable"))
+        self.assertIn("timed out", str(payload.get("error", "")))
+
     def test_get_pdf_file_serves_inline_content(self):
         with running_server() as (app, base_url):
             pdf_dir = Path(app.PDF_SOURCE)
