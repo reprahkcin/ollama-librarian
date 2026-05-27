@@ -30,6 +30,29 @@ Linux deep search (Deep Study Mode) instability.
 - Keep this file as historical context for why Deep Study was removed.
 - Re-evaluate reintroduction only after upstream runtime stability is demonstrated cross-platform.
 
+## Resolved Issue
+
+Directory picker could leave the UI stuck on `Opening...`.
+
+- Status: Resolved on 2026-05-27 with recoverable timeout handling in native picker calls.
+- Severity: Medium (primary UX path impaired, but manual path fallback remained available).
+
+### Summary
+
+- Native folder picker calls could block long enough that the web route never returned promptly.
+- The frontend would remain in `Opening...` until service restart in bad cases.
+
+### User-Facing Resolution
+
+- Native picker subprocess calls now enforce bounded timeout windows.
+- Timeout/errors return recoverable responses so UI restores from `Opening...`.
+- Manual path entry (`Set Directory`) continues to work as explicit fallback.
+
+### Current Follow-Up
+
+- Validate interactive native picker behavior on Windows and Linux desktop sessions.
+- Keep treating headless picker timeout as non-blocking when UI recovery + manual fallback pass.
+
 ## Fixes for the Coding Agent
 
 The items below are discrete and actionable, with enough context that an agent can pick any one up without re-deriving the situation.

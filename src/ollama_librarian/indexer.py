@@ -1121,28 +1121,89 @@ def index_command(args) -> int:
 def load_all_chunks(conn: sqlite3.Connection):
     return conn.execute(
         """
-        SELECT d.path, c.page_num, c.text, c.embedding_json
+        SELECT d.path, d.title, c.page_num, c.text, c.embedding_json
         FROM chunks c
         JOIN documents d ON c.doc_id = d.id
         """
     ).fetchall()
 
 
+def _normalize_for_match(value: object) -> str:
+    text = str(value or "").lower()
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _tokenize_for_match(value: object) -> set[str]:
+    normalized = _normalize_for_match(value)
+    if not normalized:
+        return set()
+    stop = {
+        "the",
+        "and",
+        "for",
+        "with",
+        "this",
+        "that",
+        "from",
+        "what",
+        "your",
+        "into",
+        "about",
+        "one",
+        "sentence",
+    }
+    return {t for t in normalized.split(" ") if len(t) >= 3 and t not in stop}
+
+
+def _lexical_path_title_boost(query_text: str, path: str, title: str) -> float:
+    q_norm = _normalize_for_match(query_text)
+    if not q_norm:
+        return 0.0
+
+    descriptor = _normalize_for_match(f"{title} {path}")
+    if not descriptor:
+        return 0.0
+
+    boost = 0.0
+    if q_norm in descriptor:
+        boost += 0.28
+
+    q_tokens = _tokenize_for_match(query_text)
+    if not q_tokens:
+        return boost
+
+    d_tokens = _tokenize_for_match(descriptor)
+    if not d_tokens:
+        return boost
+
+    overlap = len(q_tokens & d_tokens)
+    ratio = overlap / float(len(q_tokens))
+    boost += min(0.22, ratio * 0.22)
+
+    if overlap >= 3 and ratio >= 0.75:
+        boost += 0.12
+
+    return boost
+
+
 def retrieve_top_chunks(conn: sqlite3.Connection, query_embedding: list[float], top_k: int):
-    return retrieve_top_chunks_filtered(conn, query_embedding, top_k, None, None)
+    return retrieve_top_chunks_filtered(conn, query_embedding, top_k, "", None, None)
 
 
 def retrieve_top_chunks_filtered(
     conn: sqlite3.Connection,
     query_embedding: list[float],
     top_k: int,
+    query_text: str,
     include_paths: set[str] | None,
     exclude_paths: set[str] | None,
 ):
     rows = load_all_chunks(conn)
     scored = []
-    for path, page_num, text, emb_json in rows:
+    for path, title, page_num, text, emb_json in rows:
         path = str(path)
+        title = normalize_text(title)
         if include_paths and path not in include_paths:
             continue
         if exclude_paths and path in exclude_paths:
@@ -1152,6 +1213,7 @@ def retrieve_top_chunks_filtered(
             score = cosine_similarity(query_embedding, emb)
         except Exception:
             continue
+        score += _lexical_path_title_boost(query_text, path, title)
         scored.append((score, path, int(page_num), str(text)))
     scored.sort(key=lambda x: x[0], reverse=True)
     return scored[:top_k]
@@ -1225,6 +1287,7 @@ def ask_command(args) -> int:
         conn,
         q_emb,
         args.top_k,
+        args.query,
         include_paths if include_paths else None,
         exclude_paths if exclude_paths else None,
     )
@@ -1234,8 +1297,9 @@ def ask_command(args) -> int:
                       _ in top[: max(1, args.deep_seed_docs)]}
         seen = {(path, page, text) for _, path, page, text in top}
         expanded = []
-        for path, page_num, text, emb_json in load_all_chunks(conn):
+        for path, title, page_num, text, emb_json in load_all_chunks(conn):
             path = str(path)
+            title = normalize_text(title)
             page_num = int(page_num)
             text = str(text)
             key = (path, page_num, text)
@@ -1250,6 +1314,7 @@ def ask_command(args) -> int:
                 score = cosine_similarity(q_emb, emb)
             except Exception:
                 continue
+            score += _lexical_path_title_boost(args.query, path, title)
             expanded.append((score, path, page_num, text))
 
         expanded.sort(key=lambda x: x[0], reverse=True)

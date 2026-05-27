@@ -376,6 +376,37 @@ button:disabled {
   color: var(--ink);
   word-break: break-word;
 }
+.source-confidence-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  padding: 0.08rem 0.4rem;
+  margin-right: 0.4rem;
+  margin-bottom: 0.2rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+.source-confidence-badge.conf-high {
+  background: color-mix(in srgb, var(--ok) 22%, var(--surface));
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--border));
+  color: var(--osu-dark-bg);
+}
+.source-confidence-badge.conf-medium {
+  background: color-mix(in srgb, var(--accent) 34%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 52%, var(--border));
+  color: var(--osu-dark-bg);
+}
+.source-confidence-badge.conf-low,
+.source-confidence-badge.conf-unknown {
+  background: color-mix(in srgb, var(--danger) 18%, var(--surface));
+  border-color: color-mix(in srgb, var(--danger) 42%, var(--border));
+  color: var(--osu-dark-bg);
+}
 .citation-row .stash-btn {
   margin-right: 0;
   min-width: 58px;

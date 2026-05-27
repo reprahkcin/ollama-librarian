@@ -1780,6 +1780,36 @@ function compactSourceLabel(p) {
   return `${base.slice(0, maxLen - 1)}...`;
 }
 
+function sourceConfidenceInfo(scoreRaw) {
+  const score = Number(scoreRaw);
+  if (!Number.isFinite(score)) {
+    return {
+      label: "Unknown",
+      className: "conf-unknown",
+      title: "Retrieval score unavailable",
+    };
+  }
+  if (score >= 0.95) {
+    return {
+      label: "High",
+      className: "conf-high",
+      title: `Retrieval score: ${score.toFixed(3)}`,
+    };
+  }
+  if (score >= 0.8) {
+    return {
+      label: "Medium",
+      className: "conf-medium",
+      title: `Retrieval score: ${score.toFixed(3)}`,
+    };
+  }
+  return {
+    label: "Low",
+    className: "conf-low",
+    title: `Retrieval score: ${score.toFixed(3)}`,
+  };
+}
+
 function buildApaCitationEntries(sources) {
   const seen = new Set();
   const entries = [];
@@ -1809,10 +1839,12 @@ function buildApaCitationEntries(sources) {
       : `${titlePart}. (${year}). (${locator}).`;
     entries.push({
       citation,
+      confidence: sourceConfidenceInfo(s.score),
       source: {
         path,
         page: loc,
         location: loc,
+        score: Number(s.score),
         title,
         authors: Array.isArray(s.authors) ? s.authors : [],
         year,
@@ -1841,9 +1873,10 @@ function renderCitationActions(citationEntries, queryText = "") {
 
     const text = document.createElement("div");
     text.className = "citation-text md";
-    text.innerHTML = renderInlineMarkdown(
-      escapeHtml(String(entry.citation || "")),
-    );
+    const confidence = entry.confidence || sourceConfidenceInfo();
+    text.innerHTML =
+      `<span class="source-confidence-badge ${confidence.className}" title="${escapeHtml(confidence.title)}">${escapeHtml(confidence.label)} confidence</span> ` +
+      renderInlineMarkdown(escapeHtml(String(entry.citation || "")));
 
     const stashBtn = document.createElement("button");
     stashBtn.className = "stash-btn";

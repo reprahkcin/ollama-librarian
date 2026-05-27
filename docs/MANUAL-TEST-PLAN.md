@@ -249,6 +249,17 @@ Windows-specific checks:
 
 - Path handling in status/update output is valid on Windows.
 - PowerShell scripts handle reruns cleanly (no orphan processes).
+- Directory picker behavior: clicking `Browse...` must not leave the button stuck in `Opening...`.
+- If picker cannot open, UI should recover and show a recoverable message; manual `Set Directory` must still work.
+
+## 7) Current Handoff Notes (2026-05-27)
+
+- macOS focused fix landed for native directory picker hangs:
+  - picker subprocess calls now time out safely instead of hanging indefinitely
+  - timeout/failure returns recoverable JSON so UI resets from `Opening...`
+  - manual `Set Directory` remains the required fallback path
+- In headless/automated environments, native dialogs may still time out; this is expected and should be treated as non-blocking if UI recovery + manual fallback pass.
+- Next machine is Windows: prioritize validating that `Browse...` opens a native folder dialog in an interactive desktop session and that cancel/timeout never wedges the UI.
 
 ## 6) Linux Test Sequence
 

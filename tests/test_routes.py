@@ -295,6 +295,28 @@ class RouteBaselineTests(unittest.TestCase):
         self.assertTrue(payload.get("ok"))
         self.assertTrue(payload.get("canceled"))
 
+    def test_post_pdf_source_pick_handles_runtime_error_as_recoverable(self):
+        with running_server() as (app, base_url):
+            original_picker = app._pick_directory_with_native_dialog
+
+            def _raise_runtime_error():
+                raise RuntimeError("picker timed out")
+
+            app._pick_directory_with_native_dialog = _raise_runtime_error
+            try:
+                status, payload, _ = _request_json(
+                    "POST",
+                    f"{base_url}/api/pdf/source/pick",
+                    {},
+                )
+            finally:
+                app._pick_directory_with_native_dialog = original_picker
+
+        self.assertEqual(status, 200)
+        self.assertFalse(payload.get("ok", True))
+        self.assertTrue(payload.get("recoverable"))
+        self.assertIn("timed out", str(payload.get("error", "")))
+
     def test_get_pdf_file_serves_inline_content(self):
         with running_server() as (app, base_url):
             pdf_dir = Path(app.PDF_SOURCE)

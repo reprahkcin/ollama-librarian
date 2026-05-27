@@ -429,6 +429,7 @@ def set_pdf_source_path(raw_path: str) -> dict:
 
 
 def _pick_directory_with_native_dialog() -> str | None:
+    picker_timeout_seconds = 60
     system = platform.system().lower()
 
     if system == "windows":
@@ -447,7 +448,17 @@ def _pick_directory_with_native_dialog() -> str | None:
                 "Write-Output $dialog.SelectedPath }"
             ),
         ]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=picker_timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"Windows folder dialog timed out after {picker_timeout_seconds}s. You can set the path manually."
+            ) from exc
         if proc.returncode != 0:
             detail = (proc.stderr or proc.stdout or "").strip()
             raise RuntimeError(detail or "Windows folder dialog failed")
@@ -458,11 +469,27 @@ def _pick_directory_with_native_dialog() -> str | None:
         cmd = [
             "osascript",
             "-e",
-            'set chosenFolder to choose folder with prompt "Select Library Directory"',
-            "-e",
-            "POSIX path of chosenFolder",
+            (
+                'tell application "Finder"\n'
+                "activate\n"
+                'set chosenFolder to choose folder with prompt "Select Library Directory" '
+                "default location (path to home folder)\n"
+                "set posixPath to POSIX path of chosenFolder\n"
+                "return posixPath\n"
+                "end tell"
+            ),
         ]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=picker_timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"macOS folder dialog timed out after {picker_timeout_seconds}s. You can set the path manually."
+            ) from exc
         if proc.returncode != 0:
             detail = (proc.stderr or proc.stdout or "").strip()
             if "User canceled" in detail:
@@ -502,7 +529,17 @@ def _pick_directory_with_native_dialog() -> str | None:
 
     last_error = ""
     for cmd in linux_pick_cmds:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=picker_timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"Linux folder dialog timed out after {picker_timeout_seconds}s. You can set the path manually."
+            ) from exc
         if proc.returncode == 0:
             selected = (proc.stdout or "").strip()
             return selected or None
@@ -2840,8 +2877,8 @@ class Handler(BaseHTTPRequestHandler):
             selected = _pick_directory_with_native_dialog()
         except RuntimeError as exc:
             return self._send(
-                500,
-                json.dumps({"ok": False, "error": str(exc)},
+                200,
+                json.dumps({"ok": False, "error": str(exc), "recoverable": True},
                            ensure_ascii=True),
                 "application/json; charset=utf-8",
             )
