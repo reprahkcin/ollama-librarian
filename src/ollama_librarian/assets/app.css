@@ -124,6 +124,7 @@ label {
 }
 select,
 textarea,
+input.path-input,
 button {
   width: 100%;
   font: inherit;
@@ -574,6 +575,11 @@ textarea {
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.07em;
+}
+.path-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.4rem;
 }
 .checkrow input[type="checkbox"] {
   width: 1rem;

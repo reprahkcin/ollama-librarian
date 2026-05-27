@@ -49,6 +49,9 @@ const abstractTextEl = document.getElementById("abstractText");
 const evaluateAbstractEl = document.getElementById("evaluateAbstract");
 const clearAbstractEl = document.getElementById("clearAbstract");
 const abstractResultEl = document.getElementById("abstractResult");
+const pdfSourcePathEl = document.getElementById("pdfSourcePath");
+const browsePdfSourceEl = document.getElementById("browsePdfSource");
+const savePdfSourceEl = document.getElementById("savePdfSource");
 const usePdfLibraryEl = document.getElementById("usePdfLibrary");
 const syncPdfLibraryEl = document.getElementById("syncPdfLibrary");
 const uploadLibraryDocsEl = document.getElementById("uploadLibraryDocs");
@@ -2053,6 +2056,10 @@ async function refreshPdfStatus() {
     const pauseRequested = Boolean(job.pause_requested);
     const throttleLine = buildAdaptiveThrottleLine(data);
 
+    if (pdfSourcePathEl && document.activeElement !== pdfSourcePathEl) {
+      pdfSourcePathEl.value = String(data.source_path || "");
+    }
+
     if (syncPdfLibraryEl) {
       if (job.running) {
         syncPdfLibraryEl.dataset.indexAction = "pause";
@@ -2068,12 +2075,16 @@ async function refreshPdfStatus() {
     }
 
     if (job.running) {
-      if (!syncSnapshot) {
+      const jobStartedAt = Number(
+        job.last_started_at || Math.floor(Date.now() / 1000),
+      );
+      if (
+        !syncSnapshot ||
+        Number(syncSnapshot.startedAt || 0) !== jobStartedAt
+      ) {
         syncSnapshot = {
-          startedAt: Number(
-            job.last_started_at || Math.floor(Date.now() / 1000),
-          ),
-          startDocs: Number(docs || 0),
+          startedAt: jobStartedAt,
+          startDocs: Number(indexedDocs || 0),
           startChunks: Number(chunks || 0),
         };
       }
@@ -2095,7 +2106,8 @@ async function refreshPdfStatus() {
       let etaText = "ETA: estimating";
 
       if (hasDocTotal) {
-        const perSec = docDelta > 0 ? docDelta / elapsedSec : 0;
+        const etaStable = elapsedSec >= 120 && docDelta >= 3;
+        const perSec = etaStable ? docDelta / elapsedSec : 0;
         if (perSec > 0) {
           const etaSec = Math.round(remainingDocs / perSec);
           etaText = `ETA: ~${Math.max(0, Math.ceil(etaSec / 60))} min`;
@@ -2270,11 +2282,7 @@ async function syncPdfLibrary() {
   try {
     const res = await fetch("/api/pdf/index", { method: "POST" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    syncSnapshot = {
-      startedAt: Math.floor(Date.now() / 1000),
-      startDocs: 0,
-      startChunks: 0,
-    };
+    syncSnapshot = null;
     pdfProgressEl.classList.remove("hidden");
     pdfProgressBarEl.style.width = "8%";
     metaEl.textContent = "PDF index sync started";
@@ -2283,6 +2291,97 @@ async function syncPdfLibrary() {
   } finally {
     syncPdfLibraryEl.disabled = false;
     refreshPdfStatus();
+  }
+}
+
+async function savePdfSourcePath() {
+  if (!pdfSourcePathEl || !savePdfSourceEl) return;
+
+  const requestedPath = String(pdfSourcePathEl.value || "").trim();
+  if (!requestedPath) {
+    metaEl.textContent = "Library directory is required";
+    pdfSourcePathEl.focus();
+    return;
+  }
+
+  savePdfSourceEl.disabled = true;
+  const originalText = savePdfSourceEl.textContent;
+  savePdfSourceEl.textContent = "Saving...";
+  try {
+    const res = await fetch("/api/pdf/source", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source_path: requestedPath }),
+    });
+    const data = await res.json();
+    if (!res.ok || data.ok === false) {
+      throw new Error((data && data.error) || `HTTP ${res.status}`);
+    }
+
+    const normalizedPath = String(data.source_path || requestedPath);
+    pdfSourcePathEl.value = normalizedPath;
+    excludedDocPaths = new Set();
+    persistDocFilterState();
+    libraryDocs = [];
+    libraryGroups = [];
+    metaEl.textContent = data.changed
+      ? `Library directory set to: ${normalizedPath}`
+      : "Library directory unchanged";
+
+    await refreshPdfStatus();
+    if (!docsModalEl.classList.contains("docs-hidden")) {
+      await loadLibraryDocs();
+    }
+  } catch (err) {
+    metaEl.textContent = `Failed to set library directory: ${err.message}`;
+  } finally {
+    savePdfSourceEl.disabled = false;
+    savePdfSourceEl.textContent = originalText;
+  }
+}
+
+async function browsePdfSourcePath() {
+  if (!browsePdfSourceEl) return;
+
+  browsePdfSourceEl.disabled = true;
+  const originalText = browsePdfSourceEl.textContent;
+  browsePdfSourceEl.textContent = "Opening...";
+
+  try {
+    const res = await fetch("/api/pdf/source/pick", { method: "POST" });
+    const data = await res.json();
+    if (!res.ok || data.ok === false) {
+      throw new Error((data && data.error) || `HTTP ${res.status}`);
+    }
+
+    if (data.canceled) {
+      metaEl.textContent = "Library directory selection canceled";
+      return;
+    }
+
+    const normalizedPath = String(data.source_path || "").trim();
+    if (!normalizedPath) {
+      throw new Error("No directory selected");
+    }
+
+    pdfSourcePathEl.value = normalizedPath;
+    excludedDocPaths = new Set();
+    persistDocFilterState();
+    libraryDocs = [];
+    libraryGroups = [];
+    metaEl.textContent = data.changed
+      ? `Library directory set to: ${normalizedPath}`
+      : "Library directory unchanged";
+
+    await refreshPdfStatus();
+    if (!docsModalEl.classList.contains("docs-hidden")) {
+      await loadLibraryDocs();
+    }
+  } catch (err) {
+    metaEl.textContent = `Failed to open directory picker: ${err.message}`;
+  } finally {
+    browsePdfSourceEl.disabled = false;
+    browsePdfSourceEl.textContent = originalText;
   }
 }
 
@@ -2329,6 +2428,9 @@ function setBusy(isBusy) {
   instructionsEl.disabled = isBusy;
   saveInstructionsEl.disabled = isBusy;
   usePdfLibraryEl.disabled = isBusy;
+  pdfSourcePathEl.disabled = isBusy;
+  browsePdfSourceEl.disabled = isBusy;
+  savePdfSourceEl.disabled = isBusy;
   syncPdfLibraryEl.disabled = isBusy;
   uploadLibraryDocsEl.disabled = isBusy;
   openLibraryDocsEl.disabled = isBusy;
@@ -2606,6 +2708,14 @@ checkUpdatesEl.addEventListener("click", checkForUpdates);
 applyUpdateEl.addEventListener("click", applyUpdate);
 uploadLibraryDocsEl.addEventListener("click", () => {
   pickLibraryFilesAndUpload();
+});
+browsePdfSourceEl.addEventListener("click", browsePdfSourcePath);
+savePdfSourceEl.addEventListener("click", savePdfSourcePath);
+pdfSourcePathEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    savePdfSourcePath();
+  }
 });
 usePdfLibraryEl.addEventListener("change", () => {
   if (usePdfLibraryEl.checked) {

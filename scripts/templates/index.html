@@ -89,6 +89,23 @@
 
         <section class="sidebar-section" aria-label="PDF processing section">
           <h3 class="sidebar-section-title">PDF Processing</h3>
+          <div class="tiny">Library Directory</div>
+          <input
+            id="pdfSourcePath"
+            class="path-input"
+            type="text"
+            spellcheck="false"
+            placeholder="/path/to/your/library"
+            title="Directory containing your PDF and document library"
+          />
+          <div class="path-actions">
+            <button id="browsePdfSource" class="btn-soft" type="button">
+              Browse...
+            </button>
+            <button id="savePdfSource" class="btn-soft" type="button">
+              Set Directory
+            </button>
+          </div>
           <label
             class="checkrow"
             for="usePdfLibrary"

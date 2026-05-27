@@ -8,6 +8,7 @@ import os
 import platform
 import re
 import signal
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -260,6 +261,7 @@ HISTORY_PATH = CONFIG.history_path
 HISTORY_LOCK = threading.Lock()
 PDF_LOCK = threading.Lock()
 STASH_LOCK = threading.Lock()
+PDF_SOURCE_OVERRIDE_PATH = DEFAULT_STATE_DIR / "ui-config.json"
 
 
 PDF_SOURCE = CONFIG.pdf_source
@@ -338,6 +340,180 @@ UPDATE_STATE = {
     "last_error": None,
 }
 UPDATE_EVENTS: list[dict] = []
+
+
+def _normalize_pdf_source_path(raw_path: str) -> str:
+    return str(Path(os.path.expanduser(str(raw_path))).resolve())
+
+
+def _load_pdf_source_override() -> str | None:
+    if not PDF_SOURCE_OVERRIDE_PATH.is_file():
+        return None
+    try:
+        parsed = json.loads(
+            PDF_SOURCE_OVERRIDE_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:
+        LOGGER.warning("Failed to parse %s: %s", PDF_SOURCE_OVERRIDE_PATH, exc)
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    raw = parsed.get("pdf_source")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return _normalize_pdf_source_path(raw)
+
+
+def _persist_pdf_source_override_unlocked(source_path: str) -> None:
+    PDF_SOURCE_OVERRIDE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = PDF_SOURCE_OVERRIDE_PATH.with_suffix(".tmp")
+    tmp_path.write_text(
+        json.dumps({"pdf_source": source_path}, ensure_ascii=True, indent=2),
+        encoding="utf-8",
+    )
+    os.replace(tmp_path, PDF_SOURCE_OVERRIDE_PATH)
+
+
+def _bootstrap_pdf_source_override() -> None:
+    global PDF_SOURCE
+
+    override = _load_pdf_source_override()
+    if not override:
+        return
+
+    try:
+        resolved = Path(override)
+        resolved.mkdir(parents=True, exist_ok=True)
+        if not resolved.is_dir():
+            raise RuntimeError("configured path is not a directory")
+        PDF_SOURCE = str(resolved)
+    except Exception as exc:
+        LOGGER.warning(
+            "Ignoring invalid PDF source override %r: %s", override, exc)
+
+
+def get_pdf_source_path() -> str:
+    with PDF_LOCK:
+        return str(PDF_SOURCE)
+
+
+def set_pdf_source_path(raw_path: str) -> dict:
+    global PDF_SOURCE
+
+    requested = str(raw_path or "").strip()
+    if not requested:
+        raise ValueError("source_path is required")
+
+    resolved = Path(os.path.expanduser(requested)).resolve()
+    resolved.mkdir(parents=True, exist_ok=True)
+    if not resolved.is_dir():
+        raise ValueError("source_path must resolve to a directory")
+    normalized = str(resolved)
+
+    with PDF_LOCK:
+        if PDF_INDEX_STATE.get("running"):
+            raise RuntimeError(
+                "Cannot change library directory while indexing is running")
+
+        changed = normalized != str(PDF_SOURCE)
+        PDF_SOURCE = normalized
+        PDF_SOURCE_SCAN_CACHE["source_path"] = ""
+        PDF_SOURCE_SCAN_CACHE["total_documents"] = 0
+        PDF_SOURCE_SCAN_CACHE["scanned_at"] = 0.0
+        _persist_pdf_source_override_unlocked(normalized)
+
+    return {
+        "ok": True,
+        "changed": bool(changed),
+        "source_path": normalized,
+    }
+
+
+def _pick_directory_with_native_dialog() -> str | None:
+    system = platform.system().lower()
+
+    if system == "windows":
+        cmd = [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            (
+                "Add-Type -AssemblyName System.Windows.Forms; "
+                "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog; "
+                "$dialog.Description = 'Select Library Directory'; "
+                "$dialog.ShowNewFolderButton = $true; "
+                "$result = $dialog.ShowDialog(); "
+                "if ($result -eq [System.Windows.Forms.DialogResult]::OK) { "
+                "Write-Output $dialog.SelectedPath }"
+            ),
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "").strip()
+            raise RuntimeError(detail or "Windows folder dialog failed")
+        selected = (proc.stdout or "").strip()
+        return selected or None
+
+    if system == "darwin":
+        cmd = [
+            "osascript",
+            "-e",
+            'set chosenFolder to choose folder with prompt "Select Library Directory"',
+            "-e",
+            "POSIX path of chosenFolder",
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "").strip()
+            if "User canceled" in detail:
+                return None
+            raise RuntimeError(detail or "macOS folder dialog failed")
+        selected = (proc.stdout or "").strip()
+        return selected or None
+
+    linux_pick_cmds = []
+    if shutil.which("zenity"):
+        linux_pick_cmds.append([
+            "zenity",
+            "--file-selection",
+            "--directory",
+            "--title=Select Library Directory",
+        ])
+    if shutil.which("kdialog"):
+        linux_pick_cmds.append([
+            "kdialog",
+            "--getexistingdirectory",
+            str(Path.home()),
+            "--title",
+            "Select Library Directory",
+        ])
+    if shutil.which("yad"):
+        linux_pick_cmds.append([
+            "yad",
+            "--file-selection",
+            "--directory",
+            "--title=Select Library Directory",
+        ])
+
+    if not linux_pick_cmds:
+        raise RuntimeError(
+            "No native folder picker found. Install zenity/kdialog/yad, or set the path manually."
+        )
+
+    last_error = ""
+    for cmd in linux_pick_cmds:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        if proc.returncode == 0:
+            selected = (proc.stdout or "").strip()
+            return selected or None
+        if proc.returncode == 1:
+            return None
+        last_error = (proc.stderr or proc.stdout or "").strip()
+
+    raise RuntimeError(last_error or "Linux folder dialog failed")
+
+
+_bootstrap_pdf_source_override()
 
 
 def _append_update_event_unlocked() -> None:
@@ -1302,7 +1478,8 @@ def get_pdf_status():
         state = dict(PDF_INDEX_STATE)
 
     indexed_documents = max(0, int(status.get("documents", 0) or 0))
-    total_documents = _get_source_document_total(PDF_SOURCE)
+    source_path = get_pdf_source_path()
+    total_documents = _get_source_document_total(source_path)
     remaining_documents = max(0, total_documents - indexed_documents)
     completion_pct = 0
     if total_documents > 0:
@@ -1312,7 +1489,7 @@ def get_pdf_status():
         )
 
     status["index_job"] = state
-    status["source_path"] = PDF_SOURCE
+    status["source_path"] = source_path
     status["indexed_documents"] = indexed_documents
     status["total_documents"] = int(total_documents)
     status["remaining_documents"] = int(remaining_documents)
@@ -1337,8 +1514,9 @@ def _index_worker():
         PDF_INDEX_STATE["pause_requested"] = False
         PDF_INDEX_STATE["active_pid"] = None
     try:
+        source_path = get_pdf_source_path()
         index_args = ["index", "--source",
-                      PDF_SOURCE, "--prune", "--json-summary"]
+                      source_path, "--prune", "--json-summary"]
         if PDF_OCR_ON_SYNC:
             index_args.extend([
                 "--ocr-missing",
@@ -1569,7 +1747,7 @@ def list_library_docs() -> dict:
     finally:
         conn.close()
 
-    source_root = os.path.realpath(os.path.expanduser(PDF_SOURCE))
+    source_root = os.path.realpath(os.path.expanduser(get_pdf_source_path()))
     real_paths = [
         os.path.realpath(os.path.expanduser(str(path)))
         for path, _, _ in rows
@@ -1617,7 +1795,7 @@ def list_library_docs() -> dict:
     return {
         "ok": True,
         "count": len(docs),
-        "source_path": PDF_SOURCE,
+        "source_path": get_pdf_source_path(),
         "documents": docs,
         "groups": group_list,
     }
@@ -1843,7 +2021,8 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(requested_path, str) or not requested_path.strip():
             return None, "path is required", 400
 
-        resolved_root = os.path.realpath(os.path.expanduser(PDF_SOURCE))
+        resolved_root = os.path.realpath(
+            os.path.expanduser(get_pdf_source_path()))
         resolved_path = os.path.realpath(os.path.expanduser(requested_path))
 
         if not resolved_path.startswith(resolved_root + os.sep):
@@ -1879,7 +2058,7 @@ class Handler(BaseHTTPRequestHandler):
                 "unsupported file extension (allowed: .pdf, .txt, .md, .html, .htm, .epub)"
             ), 400
 
-        root = Path(os.path.expanduser(PDF_SOURCE)).resolve()
+        root = Path(os.path.expanduser(get_pdf_source_path())).resolve()
         root.mkdir(parents=True, exist_ok=True)
 
         base_name = Path(cleaned).stem.strip().strip(". ") or "document"
@@ -2354,6 +2533,49 @@ class Handler(BaseHTTPRequestHandler):
             "application/json; charset=utf-8",
         )
 
+    def _handle_post_pdf_source(self):
+        payload = self._read_json_body()
+        if payload is None:
+            return
+
+        source_path = payload.get("source_path", "")
+        if not isinstance(source_path, str):
+            return self._send(
+                400,
+                json.dumps(
+                    {"ok": False, "error": "source_path must be a string"}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        try:
+            result = set_pdf_source_path(source_path)
+            return self._send(
+                200,
+                json.dumps(result, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        except ValueError as exc:
+            return self._send(
+                400,
+                json.dumps({"ok": False, "error": str(exc)},
+                           ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        except RuntimeError as exc:
+            return self._send(
+                409,
+                json.dumps({"ok": False, "error": str(exc)},
+                           ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        except Exception as exc:
+            return self._send(
+                500,
+                json.dumps({"ok": False, "error": str(exc)},
+                           ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
     def _handle_post_update_apply(self):
         payload = self._read_json_body()
         if payload is None:
@@ -2613,6 +2835,62 @@ class Handler(BaseHTTPRequestHandler):
                 "application/json; charset=utf-8",
             )
 
+    def _handle_post_pdf_source_pick(self):
+        try:
+            selected = _pick_directory_with_native_dialog()
+        except RuntimeError as exc:
+            return self._send(
+                500,
+                json.dumps({"ok": False, "error": str(exc)},
+                           ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        except Exception as exc:
+            return self._send(
+                500,
+                json.dumps({"ok": False, "error": str(exc)},
+                           ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        if not selected:
+            return self._send(
+                200,
+                json.dumps({"ok": True, "canceled": True}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        try:
+            result = set_pdf_source_path(selected)
+        except ValueError as exc:
+            return self._send(
+                400,
+                json.dumps({"ok": False, "error": str(exc)},
+                           ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        except RuntimeError as exc:
+            return self._send(
+                409,
+                json.dumps({"ok": False, "error": str(exc)},
+                           ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        except Exception as exc:
+            return self._send(
+                500,
+                json.dumps({"ok": False, "error": str(exc)},
+                           ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        result["canceled"] = False
+        return self._send(
+            200,
+            json.dumps(result, ensure_ascii=True),
+            "application/json; charset=utf-8",
+        )
+
     def _handle_delete_bibliography(self, parsed_url):
         params = parse_qs(parsed_url.query)
         if params.get("all", [""])[0] == "1":
@@ -2688,6 +2966,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/instructions": lambda: self._handle_post_instructions(),
             "/api/pdf/index": lambda: self._handle_post_pdf_index(),
             "/api/pdf/index/pause": lambda: self._handle_post_pdf_index_pause(),
+            "/api/pdf/source": lambda: self._handle_post_pdf_source(),
+            "/api/pdf/source/pick": lambda: self._handle_post_pdf_source_pick(),
             "/api/update/apply": lambda: self._handle_post_update_apply(),
             "/api/update/check": lambda: self._handle_post_update_check(),
             "/api/pdf/ask": lambda: self._handle_post_pdf_ask(),
