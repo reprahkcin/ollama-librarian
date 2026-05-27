@@ -24,5 +24,7 @@ stop_pid_file "$OLLAMA_PID_FILE"
 
 pkill -f "scripts/ollama-web-chat.py" >/dev/null 2>&1 || true
 pkill -f "ollama serve" >/dev/null 2>&1 || true
+pkill -f "ollama_librarian.indexer" >/dev/null 2>&1 || true
+pkill -f "scripts/pdf_library_rag.py.* index" >/dev/null 2>&1 || true
 
 echo "Stopped."
