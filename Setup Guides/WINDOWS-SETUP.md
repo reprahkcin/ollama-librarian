@@ -130,8 +130,11 @@ $env:OLLAMA_WEB_HISTORY_PATH="$env:APPDATA\ollama-librarian\ollama-web-chat-hist
 $env:OLLAMA_WEB_STASH_PATH="$env:APPDATA\ollama-librarian\ollama-response-stash.json"
 $env:OLLAMA_WEB_PDF_OCR_ON_SYNC="1"
 $env:OLLAMA_WEB_PDF_OCR_LANG="eng"
-$env:OLLAMA_WEB_PDF_OCR_JOBS="4"
+$env:OLLAMA_WEB_PDF_OCR_JOBS="1"
 $env:OLLAMA_WEB_PDF_OCR_TIMEOUT="3600"
+$env:OLLAMA_WEB_PDF_EMBED_NUM_THREAD="2"
+$env:OLLAMA_WEB_PDF_EMBED_DELAY_MS="200"
+$env:OLLAMA_WEB_PDF_DOC_COOLDOWN_SECONDS="10"
 
 python scripts\ollama-web-chat.py
 ```
@@ -152,7 +155,7 @@ From the UI:
 - Copying files into your library folder, or
 - Clicking Upload Documents in the sidebar
 
-3. Click Sync New PDFs
+1. Click Sync New PDFs
 
 Optional CLI sync with prune:
 
