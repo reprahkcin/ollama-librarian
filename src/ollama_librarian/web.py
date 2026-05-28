@@ -1661,6 +1661,70 @@ def ask_pdf_library(
     return parsed
 
 
+def _safe_int(value):
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def _safe_float(value):
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _build_structured_citations(sources: list[dict]) -> list[dict]:
+    citations = []
+    for idx, source in enumerate(sources, start=1):
+        path = str(source.get("path", "") or "")
+        location = source.get("location", source.get(
+            "page", source.get("section", 0)))
+        location_int = _safe_int(location)
+        citation = {
+            "citation_id": f"c{idx}",
+            "path": path,
+            "title": str(source.get("title", "") or ""),
+            "location": location_int if location_int is not None else location,
+            "location_type": str(source.get("location_type", "") or ""),
+            "page": _safe_int(source.get("page")),
+            "section": _safe_int(source.get("section")),
+            "score": _safe_float(source.get("score")),
+        }
+        if not citation["location_type"]:
+            suffix = Path(path).suffix.lower()
+            citation["location_type"] = "page" if suffix == ".pdf" else "section"
+        citations.append(citation)
+    return citations
+
+
+def normalize_pdf_ask_response_contract(result: dict) -> dict:
+    answer = str(result.get("answer", "") or "")
+    answer_text_raw = result.get("answer_text", answer)
+    answer_text = str(answer_text_raw or "")
+
+    sources_raw = result.get("sources", [])
+    sources = [s for s in sources_raw if isinstance(
+        s, dict)] if isinstance(sources_raw, list) else []
+
+    citations_raw = result.get("citations", None)
+    if isinstance(citations_raw, list):
+        citations = [c for c in citations_raw if isinstance(c, dict)]
+    else:
+        citations = _build_structured_citations(sources)
+
+    normalized = dict(result)
+    # Backward-compatible fields retained for existing clients.
+    normalized["answer"] = answer
+    normalized["sources"] = sources
+
+    # Structured contract fields for Phase 2+ clients.
+    normalized["answer_text"] = answer_text
+    normalized["citations"] = citations
+    return normalized
+
+
 def append_stash_entry(entry: dict):
     with STASH_LOCK:
         entries = _read_stash_entries_unlocked()
@@ -2695,9 +2759,10 @@ class Handler(BaseHTTPRequestHandler):
                                for x in exclude_paths if isinstance(x, str)],
                 debug_trace=debug_trace,
             )
+            normalized = normalize_pdf_ask_response_contract(result)
             return self._send(
                 200,
-                json.dumps(result, ensure_ascii=True),
+                json.dumps(normalized, ensure_ascii=True),
                 "application/json; charset=utf-8",
             )
         except Exception as exc:

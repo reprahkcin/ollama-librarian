@@ -481,6 +481,93 @@ class RouteBaselineTests(unittest.TestCase):
         self.assertIn("debug_trace", payload)
         self.assertTrue(payload["debug_trace"].get("enabled"))
 
+    def test_post_pdf_ask_contract_includes_structured_fields(self):
+        with running_server() as (app, base_url):
+            original_ask = app.ask_pdf_library
+
+            def fake_ask(query, model, top_k, include_paths=None, exclude_paths=None, debug_trace=False):
+                return {
+                    "ok": True,
+                    "answer": "Herbert Hoover was president during the onset of the Great Depression.",
+                    "sources": [
+                        {
+                            "path": "C:/library/us-history.pdf",
+                            "title": "US History",
+                            "location": 12,
+                            "location_type": "page",
+                            "page": 12,
+                            "score": 2.345,
+                        }
+                    ],
+                }
+
+            app.ask_pdf_library = fake_ask
+            try:
+                status, payload, _ = _request_json(
+                    "POST",
+                    f"{base_url}/api/pdf/ask",
+                    {
+                        "query": "Who was Herbert Hoover?",
+                        "model": "qwen2.5:14b",
+                        "top_k": 6,
+                    },
+                )
+            finally:
+                app.ask_pdf_library = original_ask
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload.get("ok"))
+        self.assertIn("answer", payload)
+        self.assertIn("answer_text", payload)
+        self.assertIn("sources", payload)
+        self.assertIn("citations", payload)
+        self.assertEqual(payload.get("answer_text"), payload.get("answer"))
+        self.assertIsInstance(payload.get("citations"), list)
+        self.assertEqual(len(payload.get("citations")), 1)
+        self.assertEqual(payload["citations"][0].get("citation_id"), "c1")
+        self.assertEqual(payload["citations"][0].get(
+            "path"), "C:/library/us-history.pdf")
+
+    def test_post_pdf_ask_contract_preserves_existing_structured_payload(self):
+        with running_server() as (app, base_url):
+            original_ask = app.ask_pdf_library
+
+            def fake_ask(query, model, top_k, include_paths=None, exclude_paths=None, debug_trace=False):
+                return {
+                    "ok": True,
+                    "answer": "legacy answer",
+                    "answer_text": "structured answer",
+                    "sources": [],
+                    "citations": [
+                        {
+                            "citation_id": "existing-c1",
+                            "path": "C:/library/doc.pdf",
+                            "location": 9,
+                        }
+                    ],
+                }
+
+            app.ask_pdf_library = fake_ask
+            try:
+                status, payload, _ = _request_json(
+                    "POST",
+                    f"{base_url}/api/pdf/ask",
+                    {
+                        "query": "test query",
+                        "model": "qwen2.5:14b",
+                        "top_k": 6,
+                    },
+                )
+            finally:
+                app.ask_pdf_library = original_ask
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload.get("ok"))
+        self.assertEqual(payload.get("answer"), "legacy answer")
+        self.assertEqual(payload.get("answer_text"), "structured answer")
+        self.assertEqual(payload.get("citations", [])[
+                         0].get("citation_id"), "existing-c1")
+
     def test_api_routes_require_key_when_configured(self):
         with running_server(api_key="secret-key") as (_, base_url):
             status, payload, _ = _request_json(
