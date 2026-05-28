@@ -72,12 +72,16 @@ class RetrievalTraceTests(unittest.TestCase):
         self.assertIn("vector_score", first)
         self.assertIn("lexical_path_title_score", first)
         self.assertIn("lexical_chunk_score", first)
+        self.assertIn("entity_alignment_score", first)
+        self.assertIn("semantic_drift_penalty", first)
         self.assertIn("final_score", first)
 
         expected_final = (
             first["vector_score"]
             + first["lexical_path_title_score"]
             + first["lexical_chunk_score"]
+            + first["entity_alignment_score"]
+            + first["semantic_drift_penalty"]
         )
         self.assertAlmostEqual(first["final_score"], expected_final, places=6)
 

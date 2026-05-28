@@ -1243,6 +1243,102 @@ def _lexical_chunk_text_boost(query_text: str, chunk_text: str) -> float:
     return boost
 
 
+def _extract_entity_phrases(query_text: str) -> list[str]:
+    text = str(query_text or "")
+    if not text:
+        return []
+
+    candidates: list[str] = []
+    # Capture multi-token capitalized spans such as "Reconstruction Finance Corporation".
+    for match in re.finditer(r"\b(?:[A-Z][A-Za-z0-9.-]*\s+){1,}[A-Z][A-Za-z0-9.-]*\b", text):
+        phrase = normalize_text(match.group(0)).strip(" .,:;()[]{}\"'")
+        if not phrase:
+            continue
+        if len(phrase.split()) < 2:
+            continue
+        candidates.append(phrase)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for phrase in candidates:
+        key = phrase.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(phrase)
+    return deduped
+
+
+def _entity_alignment_boost(query_text: str, path: str, title: str, chunk_text: str) -> float:
+    phrases = _extract_entity_phrases(query_text)
+    if not phrases:
+        return 0.0
+
+    descriptor_norm = _normalize_for_match(f"{path} {title}")
+    chunk_norm = _normalize_for_match(chunk_text)
+    descriptor_tokens = _tokenize_for_match(descriptor_norm)
+    chunk_tokens = _tokenize_for_match(chunk_norm)
+
+    boost = 0.0
+    for phrase in phrases:
+        phrase_norm = _normalize_for_match(phrase)
+        if not phrase_norm:
+            continue
+        phrase_tokens = _tokenize_for_match(phrase_norm)
+        if not phrase_tokens:
+            continue
+
+        if phrase_norm in chunk_norm:
+            boost += 0.65
+            continue
+        if phrase_norm in descriptor_norm:
+            boost += 0.50
+            continue
+
+        if phrase_tokens.issubset(chunk_tokens):
+            boost += 0.30
+            continue
+        if phrase_tokens.issubset(descriptor_tokens):
+            boost += 0.20
+
+    return min(0.95, boost)
+
+
+def _semantic_drift_penalty(query_text: str, chunk_text: str, vector_score: float) -> float:
+    q_tokens = _tokenize_for_match(query_text)
+    if len(q_tokens) < 3:
+        return 0.0
+
+    c_tokens = _tokenize_for_match(chunk_text)
+    overlap = len(q_tokens & c_tokens)
+    ratio = overlap / float(len(q_tokens)) if q_tokens else 0.0
+
+    if vector_score >= 0.90 and overlap <= 1 and ratio < 0.30:
+        return -0.28
+    return 0.0
+
+
+def _score_chunk_for_query(
+    query_text: str,
+    path: str,
+    title: str,
+    chunk_text: str,
+    vector_score: float,
+) -> tuple[float, float, float, float, float]:
+    path_title_boost = _lexical_path_title_boost(query_text, path, title)
+    chunk_text_boost = _lexical_chunk_text_boost(query_text, str(chunk_text))
+    entity_boost = _entity_alignment_boost(query_text, path, title, str(chunk_text))
+    drift_penalty = _semantic_drift_penalty(query_text, str(chunk_text), vector_score)
+    final_score = (
+        vector_score
+        + path_title_boost
+        + chunk_text_boost
+        + entity_boost
+        + drift_penalty
+    )
+    return final_score, path_title_boost, chunk_text_boost, entity_boost, drift_penalty
+
+
 def retrieve_top_chunks(conn: sqlite3.Connection, query_embedding: list[float], top_k: int):
     return retrieve_top_chunks_filtered(conn, query_embedding, top_k, "", None, None)
 
@@ -1270,9 +1366,13 @@ def retrieve_top_chunks_filtered(
             vector_score = cosine_similarity(query_embedding, emb)
         except Exception:
             continue
-        path_title_boost = _lexical_path_title_boost(query_text, path, title)
-        chunk_text_boost = _lexical_chunk_text_boost(query_text, str(text))
-        final_score = vector_score + path_title_boost + chunk_text_boost
+        final_score, path_title_boost, chunk_text_boost, entity_boost, drift_penalty = _score_chunk_for_query(
+            query_text,
+            path,
+            title,
+            str(text),
+            vector_score,
+        )
         scored.append(
             (
                 final_score,
@@ -1282,6 +1382,8 @@ def retrieve_top_chunks_filtered(
                 vector_score,
                 path_title_boost,
                 chunk_text_boost,
+                entity_boost,
+                drift_penalty,
             )
         )
     scored.sort(key=lambda x: x[0], reverse=True)
@@ -1297,6 +1399,8 @@ def retrieve_top_chunks_filtered(
                 vector_score,
                 path_title_boost,
                 chunk_text_boost,
+                entity_boost,
+                drift_penalty,
             ) = item
             trace_out.append(
                 {
@@ -1306,6 +1410,8 @@ def retrieve_top_chunks_filtered(
                     "vector_score": vector_score,
                     "lexical_path_title_score": path_title_boost,
                     "lexical_chunk_score": chunk_text_boost,
+                    "entity_alignment_score": entity_boost,
+                    "semantic_drift_penalty": drift_penalty,
                     "final_score": final_score,
                 }
             )
@@ -1410,8 +1516,13 @@ def ask_command(args) -> int:
                 score = cosine_similarity(q_emb, emb)
             except Exception:
                 continue
-            score += _lexical_path_title_boost(args.query, path, title)
-            score += _lexical_chunk_text_boost(args.query, text)
+            score, _, _, _, _ = _score_chunk_for_query(
+                args.query,
+                path,
+                title,
+                text,
+                score,
+            )
             expanded.append((score, path, page_num, text))
 
         expanded.sort(key=lambda x: x[0], reverse=True)
