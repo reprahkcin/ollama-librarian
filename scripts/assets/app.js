@@ -1917,6 +1917,36 @@ function buildApaCitationEntries(sources) {
   return entries;
 }
 
+function sourceRowsFromStructuredCitations(citations) {
+  const rows = [];
+  const input = Array.isArray(citations) ? citations : [];
+  for (const c of input) {
+    if (!c || typeof c !== "object") continue;
+    const path = String(c.path || "").trim();
+    if (!path) continue;
+    const location = Number(c.location || c.page || c.section || 1);
+    rows.push({
+      path,
+      page: Number.isFinite(location) && location > 0 ? location : 1,
+      location: Number.isFinite(location) && location > 0 ? location : 1,
+      score: Number(c.score),
+      title: String(c.title || "").trim(),
+      authors: Array.isArray(c.authors) ? c.authors : [],
+      year: String(c.year || "").trim(),
+    });
+  }
+  return rows;
+}
+
+function citationSourceRowsFromAskPayload(payload) {
+  const structuredRows = sourceRowsFromStructuredCitations(payload.citations);
+  if (structuredRows.length) {
+    return structuredRows;
+  }
+  const legacyRows = Array.isArray(payload.sources) ? payload.sources : [];
+  return legacyRows;
+}
+
 function formatApaSources(sources) {
   return buildApaCitationEntries(sources).map((entry) => `- ${entry.citation}`);
 }
@@ -2682,10 +2712,13 @@ async function sendPrompt() {
       if (data.ok === false && data.error) {
         throw new Error(data.error);
       }
-      const sourceRows = Array.isArray(data.sources) ? data.sources : [];
-      const citationEntries = buildApaCitationEntries(sourceRows);
-      answer = data.answer || "[no answer field]";
-      lastPdfSources = sourceRows;
+      const citationSourceRows = citationSourceRowsFromAskPayload(data);
+      const citationEntries = buildApaCitationEntries(citationSourceRows);
+      answer =
+        typeof data.answer_text === "string" && data.answer_text.trim()
+          ? data.answer_text
+          : data.answer || "[no answer field]";
+      lastPdfSources = citationSourceRows;
       lastCitationQuery = prompt;
       await addMessageAndStore("assistant", answer, {
         citationEntries,
