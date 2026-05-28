@@ -414,6 +414,73 @@ class RouteBaselineTests(unittest.TestCase):
         self.assertEqual(payload.get("recommendation"), "download_and_index")
         self.assertEqual(payload.get("confidence"), 88)
 
+    def test_post_pdf_ask_default_hides_debug_trace(self):
+        with running_server() as (app, base_url):
+            original_ask = app.ask_pdf_library
+
+            def fake_ask(query, model, top_k, include_paths=None, exclude_paths=None, debug_trace=False):
+                self.assertFalse(debug_trace)
+                return {
+                    "ok": True,
+                    "answer": "grounded answer",
+                    "sources": [],
+                }
+
+            app.ask_pdf_library = fake_ask
+            try:
+                status, payload, _ = _request_json(
+                    "POST",
+                    f"{base_url}/api/pdf/ask",
+                    {
+                        "query": "Who was Herbert Hoover?",
+                        "model": "qwen2.5:14b",
+                        "top_k": 6,
+                    },
+                )
+            finally:
+                app.ask_pdf_library = original_ask
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload.get("ok"))
+        self.assertNotIn("debug_trace", payload)
+
+    def test_post_pdf_ask_debug_trace_opt_in(self):
+        with running_server() as (app, base_url):
+            original_ask = app.ask_pdf_library
+
+            def fake_ask(query, model, top_k, include_paths=None, exclude_paths=None, debug_trace=False):
+                self.assertTrue(debug_trace)
+                return {
+                    "ok": True,
+                    "answer": "grounded answer",
+                    "sources": [],
+                    "debug_trace": {
+                        "enabled": True,
+                        "top_k": top_k,
+                        "retrieval": [],
+                    },
+                }
+
+            app.ask_pdf_library = fake_ask
+            try:
+                status, payload, _ = _request_json(
+                    "POST",
+                    f"{base_url}/api/pdf/ask",
+                    {
+                        "query": "Who was Herbert Hoover?",
+                        "model": "qwen2.5:14b",
+                        "top_k": 6,
+                        "debug_trace": True,
+                    },
+                )
+            finally:
+                app.ask_pdf_library = original_ask
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload.get("ok"))
+        self.assertIn("debug_trace", payload)
+        self.assertTrue(payload["debug_trace"].get("enabled"))
+
     def test_api_routes_require_key_when_configured(self):
         with running_server(api_key="secret-key") as (_, base_url):
             status, payload, _ = _request_json(

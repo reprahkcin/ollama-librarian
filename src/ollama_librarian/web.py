@@ -1631,6 +1631,7 @@ def ask_pdf_library(
     top_k: int,
     include_paths: list[str] | None = None,
     exclude_paths: list[str] | None = None,
+    debug_trace: bool = False,
 ):
     args = [
         "ask",
@@ -1650,6 +1651,8 @@ def ask_pdf_library(
     for path in exclude_paths or []:
         if isinstance(path, str) and path.strip():
             args.extend(["--exclude-path", path.strip()])
+    if debug_trace:
+        args.append("--debug-trace")
 
     raw = run_pdf_rag(args, timeout=max(600, int(PDF_ANSWER_TIMEOUT) + 120))
     parsed = json.loads(raw) if raw else {}
@@ -2668,6 +2671,7 @@ class Handler(BaseHTTPRequestHandler):
         top_k = max(1, min(100, top_k))
         include_paths = payload.get("include_paths", [])
         exclude_paths = payload.get("exclude_paths", [])
+        debug_trace = bool(payload.get("debug_trace", False))
         if not isinstance(include_paths, list):
             include_paths = []
         if not isinstance(exclude_paths, list):
@@ -2689,6 +2693,7 @@ class Handler(BaseHTTPRequestHandler):
                                for x in include_paths if isinstance(x, str)],
                 exclude_paths=[str(x)
                                for x in exclude_paths if isinstance(x, str)],
+                debug_trace=debug_trace,
             )
             return self._send(
                 200,

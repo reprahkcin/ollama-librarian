@@ -1254,6 +1254,7 @@ def retrieve_top_chunks_filtered(
     query_text: str,
     include_paths: set[str] | None,
     exclude_paths: set[str] | None,
+    trace_out: list[dict] | None = None,
 ):
     rows = load_all_chunks(conn)
     scored = []
@@ -1266,14 +1267,49 @@ def retrieve_top_chunks_filtered(
             continue
         try:
             emb = json.loads(emb_json)
-            score = cosine_similarity(query_embedding, emb)
+            vector_score = cosine_similarity(query_embedding, emb)
         except Exception:
             continue
-        score += _lexical_path_title_boost(query_text, path, title)
-        score += _lexical_chunk_text_boost(query_text, str(text))
-        scored.append((score, path, int(page_num), str(text)))
+        path_title_boost = _lexical_path_title_boost(query_text, path, title)
+        chunk_text_boost = _lexical_chunk_text_boost(query_text, str(text))
+        final_score = vector_score + path_title_boost + chunk_text_boost
+        scored.append(
+            (
+                final_score,
+                path,
+                int(page_num),
+                str(text),
+                vector_score,
+                path_title_boost,
+                chunk_text_boost,
+            )
+        )
     scored.sort(key=lambda x: x[0], reverse=True)
-    return scored[:top_k]
+    top_scored = scored[:top_k]
+    if trace_out is not None:
+        trace_out.clear()
+        for rank, item in enumerate(top_scored, start=1):
+            (
+                final_score,
+                path,
+                page,
+                _,
+                vector_score,
+                path_title_boost,
+                chunk_text_boost,
+            ) = item
+            trace_out.append(
+                {
+                    "rank": rank,
+                    "path": path,
+                    "location": page,
+                    "vector_score": vector_score,
+                    "lexical_path_title_score": path_title_boost,
+                    "lexical_chunk_score": chunk_text_boost,
+                    "final_score": final_score,
+                }
+            )
+    return [(score, path, page, text) for score, path, page, text, *_ in top_scored]
 
 
 def format_context(chunks) -> str:
@@ -1340,6 +1376,8 @@ def ask_command(args) -> int:
         for path in getattr(args, "exclude_path", [])
         if isinstance(path, str) and str(path).strip()
     }
+    retrieval_trace_rows: list[dict] | None = [] if getattr(
+        args, "debug_trace", False) else None
     top = retrieve_top_chunks_filtered(
         conn,
         q_emb,
@@ -1347,6 +1385,7 @@ def ask_command(args) -> int:
         args.query,
         include_paths if include_paths else None,
         exclude_paths if exclude_paths else None,
+        trace_out=retrieval_trace_rows,
     )
 
     if args.deepen and top:
@@ -1423,8 +1462,18 @@ def ask_command(args) -> int:
     ]
 
     if getattr(args, "json_output", False):
-        print(json.dumps({"ok": True, "answer": answer,
-              "sources": sources}, ensure_ascii=True))
+        payload = {
+            "ok": True,
+            "answer": answer,
+            "sources": sources,
+        }
+        if retrieval_trace_rows is not None:
+            payload["debug_trace"] = {
+                "enabled": True,
+                "top_k": int(args.top_k),
+                "retrieval": retrieval_trace_rows,
+            }
+        print(json.dumps(payload, ensure_ascii=True))
         return 0
 
     print(answer)
@@ -1989,6 +2038,11 @@ def build_parser(config: RagCliConfig | None = None):
                        help="Additional chunks to add during deepen mode")
     p_ask.add_argument("--json-output", action="store_true",
                        help="Print JSON answer payload")
+    p_ask.add_argument(
+        "--debug-trace",
+        action="store_true",
+        help="Include retrieval score-component trace in JSON output",
+    )
 
     sub.add_parser("status", help="Print JSON index status")
 
