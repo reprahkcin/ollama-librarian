@@ -1147,9 +1147,31 @@ def _tokenize_for_match(value: object) -> set[str]:
         "that",
         "from",
         "what",
-        "your",
-        "into",
+        "who",
+        "when",
+        "where",
+        "which",
+        "why",
+        "how",
+        "tell",
         "about",
+        "explain",
+        "describe",
+        "summarize",
+        "your",
+        "you",
+        "me",
+        "was",
+        "were",
+        "are",
+        "is",
+        "did",
+        "does",
+        "can",
+        "could",
+        "would",
+        "should",
+        "into",
         "one",
         "sentence",
     }
@@ -1187,6 +1209,40 @@ def _lexical_path_title_boost(query_text: str, path: str, title: str) -> float:
     return boost
 
 
+def _lexical_chunk_text_boost(query_text: str, chunk_text: str) -> float:
+    q_tokens = _tokenize_for_match(query_text)
+    if not q_tokens:
+        return 0.0
+
+    chunk_norm = _normalize_for_match(chunk_text)
+    if not chunk_norm:
+        return 0.0
+
+    boost = 0.0
+    q_norm = _normalize_for_match(query_text)
+    if q_norm and q_norm in chunk_norm:
+        boost += 1.40
+
+    c_tokens = _tokenize_for_match(chunk_norm)
+    if not c_tokens:
+        return boost
+
+    overlap = len(q_tokens & c_tokens)
+    if overlap <= 0:
+        return boost
+
+    # Strongly reward chunks that contain every meaningful query token.
+    if len(q_tokens) >= 2 and q_tokens.issubset(c_tokens):
+        boost += 1.00
+
+    ratio = overlap / float(len(q_tokens))
+    boost += min(0.55, ratio * 0.55)
+    if overlap >= 2 and ratio >= 0.8:
+        boost += 0.40
+
+    return boost
+
+
 def retrieve_top_chunks(conn: sqlite3.Connection, query_embedding: list[float], top_k: int):
     return retrieve_top_chunks_filtered(conn, query_embedding, top_k, "", None, None)
 
@@ -1214,6 +1270,7 @@ def retrieve_top_chunks_filtered(
         except Exception:
             continue
         score += _lexical_path_title_boost(query_text, path, title)
+        score += _lexical_chunk_text_boost(query_text, str(text))
         scored.append((score, path, int(page_num), str(text)))
     scored.sort(key=lambda x: x[0], reverse=True)
     return scored[:top_k]
@@ -1315,6 +1372,7 @@ def ask_command(args) -> int:
             except Exception:
                 continue
             score += _lexical_path_title_boost(args.query, path, title)
+            score += _lexical_chunk_text_boost(args.query, text)
             expanded.append((score, path, page_num, text))
 
         expanded.sort(key=lambda x: x[0], reverse=True)

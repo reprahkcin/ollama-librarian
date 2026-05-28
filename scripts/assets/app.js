@@ -629,7 +629,7 @@ function sourceLinkFromDescriptor(rawDescriptor) {
   );
   if (sourcePathExplicit) {
     const path = String(sourcePathExplicit[1] || "").trim();
-    const locMatch = raw.match(/(?:location|page)\s*=\s*(\d+)/i);
+    const locMatch = raw.match(/(?:location|page)\s*(?:=|:)?\s*(\d+)/i);
     const loc = Number(locMatch && locMatch[1] ? locMatch[1] : 1);
     if (path) {
       const href = buildDocHref(path, Math.max(1, loc));
@@ -641,7 +641,19 @@ function sourceLinkFromDescriptor(rawDescriptor) {
   const explicitSource = raw.match(/source\s*=\s*(.+?\.(?:pdf|epub))\b/i);
   if (explicitSource) {
     const path = String(explicitSource[1] || "").trim();
-    const locMatch = raw.match(/(?:location|page)\s*=\s*(\d+)/i);
+    const locMatch = raw.match(/(?:location|page)\s*(?:=|:)?\s*(\d+)/i);
+    const loc = Number(locMatch && locMatch[1] ? locMatch[1] : 1);
+    if (path) {
+      const href = buildDocHref(path, Math.max(1, loc));
+      if (!href) return null;
+      return { href, title: raw, label: "source" };
+    }
+  }
+
+  const looseSourcePath = raw.match(/source\s+(.+?\.(?:pdf|epub))\b/i);
+  if (looseSourcePath) {
+    const path = String(looseSourcePath[1] || "").trim();
+    const locMatch = raw.match(/(?:location|page|p\.)\s*(?:=|:)?\s*(\d+)/i);
     const loc = Number(locMatch && locMatch[1] ? locMatch[1] : 1);
     if (path) {
       const href = buildDocHref(path, Math.max(1, loc));
@@ -658,6 +670,12 @@ function sourceLinkFromDescriptor(rawDescriptor) {
     const href = buildDocHref(path, Math.max(1, page));
     if (!href) return null;
     return { href, title: raw, label: "source" };
+  }
+
+  // Index-only source references can appear when loading history without
+  // source metadata in memory; skip warning noise and avoid placeholder text.
+  if (/source\s+path\s*\d+/i.test(raw)) {
+    return null;
   }
 
   if (/(?:source\s*=|source\s+path|\.pdf\b|\.epub\b)/i.test(raw)) {
@@ -681,9 +699,29 @@ function protectMathSegments(text) {
   return { out, segments };
 }
 
+function normalizeSourceDescriptorText(text) {
+  return String(text || "")
+    .replace(
+      /\[\s*source\s*:\s*\[(\d+)\]\s*,?\s*(?:location|page)\s*[:=]\s*(\d+)\s*\]/gi,
+      "[source path $1, location $2]",
+    )
+    .replace(/\[\s*source\s*:?\s*\[(\d+)\]\s*\]/gi, "[source path $1]")
+    .replace(
+      /\[\s*source\s*:\s*(\d+)\s*,?\s*(?:location|page)\s*[:=]\s*(\d+)\s*\]/gi,
+      "[source path $1, location $2]",
+    )
+    .replace(
+      /\bsource\s*:\s*\[(\d+)\]\s*,?\s*(?:location|page)\s*[:=]\s*(\d+)\b/gi,
+      "source path $1, location $2",
+    )
+    .replace(/([A-Za-z0-9)])\[(\d{1,2})\](?=[\s.,;:]|$)/g, "$1[source path $2]")
+    .replace(/\(\s*\)/g, "")
+    .replace(/\s{2,}/g, " ");
+}
+
 function renderInlineMarkdown(text) {
   const protectedMath = protectMathSegments(text);
-  let out = protectedMath.out;
+  let out = normalizeSourceDescriptorText(protectedMath.out);
   const replaceOutsideTags = (input, pattern, replacer) =>
     input
       .split(/(<[^>]+>)/g)
@@ -707,7 +745,7 @@ function renderInlineMarkdown(text) {
       if (!raw) return "";
       const descriptorMatches = Array.from(
         raw.matchAll(
-          /source\s+path\s*\d+(?:\s*,?\s*(?:location|page)\s*\d+)?|source\s+path\s*=\s*.+?\.(?:pdf|epub)(?:\s*,?\s*(?:location|page)\s*=\s*\d+)?|source\s*=\s*.+?\.(?:pdf|epub)(?:\s+(?:location|page)\s*=\s*\d+)?/gi,
+          /source\s+path\s*\d+(?:\s*,?\s*(?:location|page)\s*\d+)?|source\s+path\s*=\s*.+?\.(?:pdf|epub)(?:\s*,?\s*(?:location|page)\s*(?:=|:)?\s*\d+)?|source\s*=\s*.+?\.(?:pdf|epub)(?:\s+(?:location|page)\s*(?:=|:)?\s*\d+)?|source\s+.+?\.(?:pdf|epub)(?:\s+(?:location|page|p\.)\s*(?:=|:)?\s*\d+)?/gi,
         ),
       );
       const descriptors = descriptorMatches.length
@@ -727,10 +765,6 @@ function renderInlineMarkdown(text) {
           links.push(
             `<a class="source-inline" href="${link.href}" target="_blank" rel="noopener noreferrer" title="${title}">source</a>`,
           );
-        } else {
-          links.push(
-            `<span class="source-inline" title="${title}">source</span>`,
-          );
         }
       }
       return links.length ? ` ${links.join(" ")}` : "";
@@ -745,31 +779,43 @@ function renderInlineMarkdown(text) {
       if (link && link.href) {
         return `<a class="source-inline" href="${link.href}" target="_blank" rel="noopener noreferrer" title="${title}">source</a>`;
       }
-      return `<span class="source-inline" title="${title}">source</span>`;
+      return "";
     },
   );
   out = replaceOutsideTags(
     out,
-    /\bsource\s+path\s*=\s*.+?\.(?:pdf|epub)(?:\s*,?\s*(?:location|page)\s*=\s*\d+)?/gi,
+    /\bsource\s+path\s*=\s*.+?\.(?:pdf|epub)(?:\s*,?\s*(?:location|page)\s*(?:=|:)?\s*\d+)?/gi,
     (match) => {
       const link = sourceLinkFromDescriptor(match);
       const title = String(match).replace(/"/g, "&quot;");
       if (link && link.href) {
         return `<a class="source-inline" href="${link.href}" target="_blank" rel="noopener noreferrer" title="${title}">source</a>`;
       }
-      return `<span class="source-inline" title="${title}">source</span>`;
+      return "";
     },
   );
   out = replaceOutsideTags(
     out,
-    /\bsource\s*=\s*.+?\.(?:pdf|epub)(?:\s+(?:location|page)\s*=\s*\d+)?/gi,
+    /\bsource\s*=\s*.+?\.(?:pdf|epub)(?:\s+(?:location|page)\s*(?:=|:)?\s*\d+)?/gi,
     (match) => {
       const link = sourceLinkFromDescriptor(match);
       const title = String(match).replace(/"/g, "&quot;");
       if (link && link.href) {
         return `<a class="source-inline" href="${link.href}" target="_blank" rel="noopener noreferrer" title="${title}">source</a>`;
       }
-      return `<span class="source-inline" title="${title}">source</span>`;
+      return "";
+    },
+  );
+  out = replaceOutsideTags(
+    out,
+    /\bsource\s+.+?\.(?:pdf|epub)(?:\s+(?:location|page|p\.)\s*(?:=|:)?\s*\d+)?/gi,
+    (match) => {
+      const link = sourceLinkFromDescriptor(match);
+      const title = String(match).replace(/"/g, "&quot;");
+      if (link && link.href) {
+        return `<a class="source-inline" href="${link.href}" target="_blank" rel="noopener noreferrer" title="${title}">source</a>`;
+      }
+      return "";
     },
   );
   out = out.replace(
@@ -796,10 +842,6 @@ function renderBracketSourceLinks(text) {
     if (link && link.href) {
       links.push(
         `<a class="source-link" href="${link.href}" target="_blank" rel="noopener noreferrer" title="${title}">Source</a>`,
-      );
-    } else {
-      links.push(
-        `<span class="source-link-static" title="${title}">Source</span>`,
       );
     }
   }
@@ -1780,8 +1822,12 @@ function compactSourceLabel(p) {
   return `${base.slice(0, maxLen - 1)}...`;
 }
 
-function sourceConfidenceInfo(scoreRaw) {
+function sourceConfidenceInfo(scoreRaw, maxScoreRaw = NaN) {
   const score = Number(scoreRaw);
+  const maxScore = Number(maxScoreRaw);
+  const hasMax = Number.isFinite(maxScore) && maxScore > 0;
+  const relative = hasMax ? Math.max(0, Math.min(1, score / maxScore)) : NaN;
+  const gapFromTop = hasMax ? Math.max(0, maxScore - score) : NaN;
   if (!Number.isFinite(score)) {
     return {
       label: "Unknown",
@@ -1789,31 +1835,48 @@ function sourceConfidenceInfo(scoreRaw) {
       title: "Retrieval score unavailable",
     };
   }
-  if (score >= 0.95) {
+  if (
+    (hasMax && relative >= 0.9 && gapFromTop <= 0.2) ||
+    (!hasMax && score >= 0.95)
+  ) {
     return {
       label: "High",
       className: "conf-high",
-      title: `Retrieval score: ${score.toFixed(3)}`,
+      title: hasMax
+        ? `Retrieval score: ${score.toFixed(3)} (relative ${(relative * 100).toFixed(0)}% of top, gap ${gapFromTop.toFixed(3)})`
+        : `Retrieval score: ${score.toFixed(3)}`,
     };
   }
-  if (score >= 0.8) {
+  if (
+    (hasMax && relative >= 0.55 && gapFromTop <= 1.25) ||
+    (!hasMax && score >= 0.8)
+  ) {
     return {
       label: "Medium",
       className: "conf-medium",
-      title: `Retrieval score: ${score.toFixed(3)}`,
+      title: hasMax
+        ? `Retrieval score: ${score.toFixed(3)} (relative ${(relative * 100).toFixed(0)}% of top, gap ${gapFromTop.toFixed(3)})`
+        : `Retrieval score: ${score.toFixed(3)}`,
     };
   }
   return {
     label: "Low",
     className: "conf-low",
-    title: `Retrieval score: ${score.toFixed(3)}`,
+    title: hasMax
+      ? `Retrieval score: ${score.toFixed(3)} (relative ${(relative * 100).toFixed(0)}% of top, gap ${gapFromTop.toFixed(3)})`
+      : `Retrieval score: ${score.toFixed(3)}`,
   };
 }
 
 function buildApaCitationEntries(sources) {
   const seen = new Set();
   const entries = [];
-  for (const s of (Array.isArray(sources) ? sources : []).slice(0, 24)) {
+  const sourceList = (Array.isArray(sources) ? sources : []).slice(0, 24);
+  const scoreValues = sourceList
+    .map((s) => Number(s && s.score))
+    .filter((n) => Number.isFinite(n));
+  const maxScore = scoreValues.length ? Math.max(...scoreValues) : NaN;
+  for (const s of sourceList) {
     const path = String(s.path || "").trim();
     const loc = Number(s.page || s.location || 1);
     const key = `${path}#${loc}`;
@@ -1839,7 +1902,7 @@ function buildApaCitationEntries(sources) {
       : `${titlePart}. (${year}). (${locator}).`;
     entries.push({
       citation,
-      confidence: sourceConfidenceInfo(s.score),
+      confidence: sourceConfidenceInfo(s.score, maxScore),
       source: {
         path,
         page: loc,

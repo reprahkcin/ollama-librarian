@@ -83,6 +83,22 @@ class RagUnitTests(unittest.TestCase):
         self.assertEqual(small, ["a b"])
         self.assertEqual(self.rag.chunk_text("", chunk_size=5, overlap=1), [])
 
+    def test_lexical_chunk_text_boost_prefers_entity_match(self):
+        query = "Tell me about Herbert Hoover"
+        matching_chunk = (
+            "Herbert Hoover became president in 1929 and faced the early Great Depression."
+        )
+        unrelated_chunk = (
+            "The New Deal expanded federal programs during Franklin Roosevelt's presidency."
+        )
+
+        match_boost = self.rag._lexical_chunk_text_boost(query, matching_chunk)
+        unrelated_boost = self.rag._lexical_chunk_text_boost(
+            query, unrelated_chunk)
+
+        self.assertGreater(match_boost, unrelated_boost)
+        self.assertGreater(match_boost, 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

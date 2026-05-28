@@ -2,6 +2,10 @@
 
 This file is the single source of truth for the suggested fixes in docs/Fixes Needed.md.
 
+Related plan for answer and citation quality stabilization:
+
+- docs/RESPONSE-QUALITY-PHASE-PLAN.md
+
 Purpose:
 
 - Keep scope stable while we implement.
