@@ -1,0 +1,330 @@
+{
+  "version": "1.0",
+  "description": "Phase 0 expanded benchmark for answer and source quality evaluation.",
+  "prompts": [
+    {
+      "id": "bf_001",
+      "category": "broad_factual",
+      "prompt": "I need to know the general timeline of the Great Depression.",
+      "expected_intent": "Summarize major timeline milestones for the Great Depression with approximate years.",
+      "expected_signals": ["1929", "Hoover", "1933", "New Deal"],
+      "requires_citation": true
+    },
+    {
+      "id": "bf_002",
+      "category": "broad_factual",
+      "prompt": "Give me a short grounded summary of what Herbert Hoover did during the early Great Depression.",
+      "expected_intent": "Describe Hoover's response and policy posture in early Depression years.",
+      "expected_signals": ["Hoover", "policy", "Depression"],
+      "requires_citation": true
+    },
+    {
+      "id": "bf_003",
+      "category": "broad_factual",
+      "prompt": "In one grounded paragraph, explain why Hoover lost the 1932 election.",
+      "expected_intent": "Summarize major factors in electoral loss with contextual grounding.",
+      "expected_signals": ["1932", "public dissatisfaction", "Depression"],
+      "requires_citation": true
+    },
+    {
+      "id": "bf_004",
+      "category": "broad_factual",
+      "prompt": "Summarize the biggest economic shifts between 1929 and 1933 in the United States.",
+      "expected_intent": "Outline major U.S. economic shifts during the early Depression years.",
+      "expected_signals": ["1929", "bank", "unemployment"],
+      "requires_citation": true
+    },
+    {
+      "id": "bf_005",
+      "category": "broad_factual",
+      "prompt": "What policy themes defined federal response before the New Deal fully began?",
+      "expected_intent": "Describe pre-New Deal federal response themes and constraints.",
+      "expected_signals": ["federal", "relief", "Hoover"],
+      "requires_citation": true
+    },
+    {
+      "id": "bf_006",
+      "category": "broad_factual",
+      "prompt": "Give a grounded overview of how banking instability affected everyday life in the Depression.",
+      "expected_intent": "Connect banking instability to broad social and economic effects.",
+      "expected_signals": ["bank", "failure", "savings"],
+      "requires_citation": true
+    },
+    {
+      "id": "bf_007",
+      "category": "broad_factual",
+      "prompt": "How did public trust in government change during the first years of the Great Depression?",
+      "expected_intent": "Summarize shifts in public trust linked to policy outcomes.",
+      "expected_signals": ["public", "trust", "government"],
+      "requires_citation": true
+    },
+    {
+      "id": "bf_008",
+      "category": "broad_factual",
+      "prompt": "Describe the relationship between unemployment and political pressure in the early 1930s.",
+      "expected_intent": "Explain how unemployment trends influenced political pressure.",
+      "expected_signals": ["unemployment", "pressure", "political"],
+      "requires_citation": true
+    },
+    {
+      "id": "bf_009",
+      "category": "broad_factual",
+      "prompt": "What were the main criticisms of federal economic policy during Hoover's presidency?",
+      "expected_intent": "Identify prominent criticisms and contextual rationale.",
+      "expected_signals": ["criticism", "Hoover", "federal"],
+      "requires_citation": true
+    },
+    {
+      "id": "bf_010",
+      "category": "broad_factual",
+      "prompt": "Provide a concise, source-grounded narrative of the U.S. downturn from crash to transition in leadership.",
+      "expected_intent": "Offer a concise timeline from crash through leadership transition.",
+      "expected_signals": ["crash", "transition", "leadership"],
+      "requires_citation": true
+    },
+    {
+      "id": "ne_001",
+      "category": "narrow_entity",
+      "prompt": "Who was Herbert Hoover in the context of the Great Depression?",
+      "expected_intent": "Identify Hoover's role and relevance to the period.",
+      "expected_signals": ["president", "Great Depression"],
+      "requires_citation": true
+    },
+    {
+      "id": "ne_002",
+      "category": "narrow_entity",
+      "prompt": "What did the Smoot-Hawley Tariff do, and why is it criticized?",
+      "expected_intent": "Explain tariff purpose and criticism in context.",
+      "expected_signals": ["tariff", "trade", "criticism"],
+      "requires_citation": true
+    },
+    {
+      "id": "ne_003",
+      "category": "narrow_entity",
+      "prompt": "What is the Reconstruction Finance Corporation and what was its purpose?",
+      "expected_intent": "Define RFC and summarize intended economic function.",
+      "expected_signals": ["Reconstruction Finance Corporation", "loans"],
+      "requires_citation": true
+    },
+    {
+      "id": "ne_004",
+      "category": "narrow_entity",
+      "prompt": "What was the Bonus Army and why did it become politically significant?",
+      "expected_intent": "Define the Bonus Army and explain its political significance.",
+      "expected_signals": ["Bonus Army", "veterans", "Washington"],
+      "requires_citation": true
+    },
+    {
+      "id": "ne_005",
+      "category": "narrow_entity",
+      "prompt": "What was the Federal Home Loan Bank Act intended to accomplish?",
+      "expected_intent": "Explain the act's intended housing-finance purpose.",
+      "expected_signals": ["Federal Home Loan Bank", "housing", "credit"],
+      "requires_citation": true
+    },
+    {
+      "id": "ne_006",
+      "category": "narrow_entity",
+      "prompt": "Who was Franklin D. Roosevelt in relation to Hoover-era economic policy debates?",
+      "expected_intent": "Identify Roosevelt's role relative to Hoover-era policy debates.",
+      "expected_signals": ["Roosevelt", "Hoover", "policy"],
+      "requires_citation": true
+    },
+    {
+      "id": "ne_007",
+      "category": "narrow_entity",
+      "prompt": "What role did the Glass-Steagall Act of 1932 play before broader New Deal reforms?",
+      "expected_intent": "Summarize the specific role of the 1932 act in context.",
+      "expected_signals": ["Glass-Steagall", "1932", "bank"],
+      "requires_citation": true
+    },
+    {
+      "id": "ne_008",
+      "category": "narrow_entity",
+      "prompt": "Explain what Hoovervilles were and what they symbolized.",
+      "expected_intent": "Define Hoovervilles and their symbolic meaning.",
+      "expected_signals": ["Hooverville", "homeless", "symbol"],
+      "requires_citation": true
+    },
+    {
+      "id": "ne_009",
+      "category": "narrow_entity",
+      "prompt": "What did the Emergency Relief and Construction Act authorize?",
+      "expected_intent": "Identify key authorizations in the act.",
+      "expected_signals": ["Emergency Relief", "Construction", "authorize"],
+      "requires_citation": true
+    },
+    {
+      "id": "ne_010",
+      "category": "narrow_entity",
+      "prompt": "Who was Andrew Mellon and why does he appear in Depression-era policy discussions?",
+      "expected_intent": "Explain Mellon's role in policy discourse.",
+      "expected_signals": ["Andrew Mellon", "policy", "Depression"],
+      "requires_citation": true
+    },
+    {
+      "id": "amb_001",
+      "category": "ambiguous_multi_doc",
+      "prompt": "Compare how U.S. and world history sources describe the economic turmoil of the early 1930s.",
+      "expected_intent": "Provide a comparative summary and clearly indicate source scope.",
+      "expected_signals": ["compare", "U.S.", "world"],
+      "requires_citation": true
+    },
+    {
+      "id": "amb_002",
+      "category": "ambiguous_multi_doc",
+      "prompt": "Tell me about global consequences of U.S. Depression-era policies.",
+      "expected_intent": "Discuss cross-national effects while staying grounded in available documents.",
+      "expected_signals": ["global", "policy", "consequences"],
+      "requires_citation": true
+    },
+    {
+      "id": "amb_003",
+      "category": "ambiguous_multi_doc",
+      "prompt": "If two sources disagree on causes of recovery, summarize both views and note uncertainty.",
+      "expected_intent": "Present differing source views and explicitly note uncertainty.",
+      "expected_signals": ["disagree", "recovery", "uncertainty"],
+      "requires_citation": true
+    },
+    {
+      "id": "amb_004",
+      "category": "ambiguous_multi_doc",
+      "prompt": "What seems to be consensus versus debate in the library about Hoover's policy effectiveness?",
+      "expected_intent": "Differentiate consensus claims from debated claims.",
+      "expected_signals": ["consensus", "debate", "effectiveness"],
+      "requires_citation": true
+    },
+    {
+      "id": "amb_005",
+      "category": "ambiguous_multi_doc",
+      "prompt": "Combine relevant U.S. and non-U.S. context for trade policy impacts and make limits explicit.",
+      "expected_intent": "Synthesize multi-scope evidence while marking evidence limits.",
+      "expected_signals": ["trade", "U.S.", "limits"],
+      "requires_citation": true
+    },
+    {
+      "id": "amb_006",
+      "category": "ambiguous_multi_doc",
+      "prompt": "What can we infer about public sentiment trends when sources differ in tone?",
+      "expected_intent": "Infer cautiously and reconcile differing source tone.",
+      "expected_signals": ["infer", "sentiment", "tone"],
+      "requires_citation": true
+    },
+    {
+      "id": "amb_007",
+      "category": "ambiguous_multi_doc",
+      "prompt": "Give the strongest evidence for and against the claim that tariff policy worsened the downturn.",
+      "expected_intent": "Present balanced evidence with explicit for/against structure.",
+      "expected_signals": ["for", "against", "tariff"],
+      "requires_citation": true
+    },
+    {
+      "id": "amb_008",
+      "category": "ambiguous_multi_doc",
+      "prompt": "Reconcile conflicting descriptions of federal relief speed in early Depression years.",
+      "expected_intent": "Reconcile conflict and note unresolved tension.",
+      "expected_signals": ["conflicting", "relief", "speed"],
+      "requires_citation": true
+    },
+    {
+      "id": "amb_009",
+      "category": "ambiguous_multi_doc",
+      "prompt": "Compare policy framing in domestic-focused versus international-focused documents.",
+      "expected_intent": "Contrast framing differences across document scopes.",
+      "expected_signals": ["domestic", "international", "framing"],
+      "requires_citation": true
+    },
+    {
+      "id": "amb_010",
+      "category": "ambiguous_multi_doc",
+      "prompt": "What are the most defensible claims we can make when the evidence base is mixed?",
+      "expected_intent": "Prioritize defensible claims and acknowledge mixed evidence.",
+      "expected_signals": ["defensible", "mixed", "evidence"],
+      "requires_citation": true
+    },
+    {
+      "id": "ins_001",
+      "category": "insufficient_evidence",
+      "prompt": "What exact unemployment percentage did every U.S. state have in 1931?",
+      "expected_intent": "Acknowledge insufficient evidence if exact state-by-state values are unavailable.",
+      "expected_signals": ["insufficient", "not available", "cannot determine"],
+      "requires_citation": false
+    },
+    {
+      "id": "ins_002",
+      "category": "insufficient_evidence",
+      "prompt": "Quote a primary-source letter from Herbert Hoover dated January 1930 from this library.",
+      "expected_intent": "Refuse fabrication and state whether source is unavailable in indexed content.",
+      "expected_signals": ["not in context", "cannot verify"],
+      "requires_citation": false
+    },
+    {
+      "id": "ins_003",
+      "category": "insufficient_evidence",
+      "prompt": "List every speech Hoover gave in 1931 with exact dates and full quotations from this library.",
+      "expected_intent": "Avoid fabrication and state evidence limits.",
+      "expected_signals": ["insufficient", "cannot", "not available"],
+      "requires_citation": false
+    },
+    {
+      "id": "ins_004",
+      "category": "insufficient_evidence",
+      "prompt": "Provide the exact stock prices for 50 named companies on October 30, 1929 from these documents.",
+      "expected_intent": "Decline unsupported exact numerical extraction when absent.",
+      "expected_signals": [
+        "cannot determine",
+        "not in context",
+        "insufficient"
+      ],
+      "requires_citation": false
+    },
+    {
+      "id": "ins_005",
+      "category": "insufficient_evidence",
+      "prompt": "Give me verbatim minutes from closed federal meetings in February 1932 contained in this library.",
+      "expected_intent": "State unavailable evidence and avoid fabrication.",
+      "expected_signals": ["cannot verify", "not available", "insufficient"],
+      "requires_citation": false
+    },
+    {
+      "id": "ins_006",
+      "category": "insufficient_evidence",
+      "prompt": "Which exact county-level unemployment rates can you report for all U.S. counties in 1930 from this corpus?",
+      "expected_intent": "Acknowledge scope limits for exact county-level coverage.",
+      "expected_signals": ["cannot", "insufficient", "not available"],
+      "requires_citation": false
+    },
+    {
+      "id": "ins_007",
+      "category": "insufficient_evidence",
+      "prompt": "Quote a full transcript of a private Hoover-Roosevelt call from 1932 in this collection.",
+      "expected_intent": "Refuse to fabricate private transcript content not present in evidence.",
+      "expected_signals": ["not in context", "cannot verify", "insufficient"],
+      "requires_citation": false
+    },
+    {
+      "id": "ins_008",
+      "category": "insufficient_evidence",
+      "prompt": "Provide exact monthly GDP values for 1929 through 1933 with citations from this library only.",
+      "expected_intent": "Identify missing exact monthly GDP data if unavailable.",
+      "expected_signals": ["not available", "cannot determine", "insufficient"],
+      "requires_citation": false
+    },
+    {
+      "id": "ins_009",
+      "category": "insufficient_evidence",
+      "prompt": "Name all unpublished diary entries by Hoover referenced in the indexed files and quote each one fully.",
+      "expected_intent": "State limitations and avoid invented quotations.",
+      "expected_signals": ["cannot verify", "insufficient", "not in context"],
+      "requires_citation": false
+    },
+    {
+      "id": "ins_010",
+      "category": "insufficient_evidence",
+      "prompt": "What were exact inflation values for every month and every state between 1930 and 1932 from this corpus?",
+      "expected_intent": "Indicate that exhaustive exact values are unavailable when unsupported.",
+      "expected_signals": ["insufficient", "cannot", "not available"],
+      "requires_citation": false
+    }
+  ]
+}

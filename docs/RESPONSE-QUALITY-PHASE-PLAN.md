@@ -29,6 +29,15 @@ Every phase must meet all active gates before moving forward:
 
 ## Phase 0 - Benchmark and Rubric Baseline
 
+Status: COMPLETE
+
+Current artifacts:
+
+- Baseline report: `docs/QUALITY-BASELINE-REPORT.md`
+- Raw baseline data: `tests/quality/results/baseline_v1_results.json`
+- Expanded baseline report: `docs/QUALITY-BASELINE-REPORT-EXPANDED.md`
+- Expanded raw baseline data: `tests/quality/results/baseline_v1_expanded_results.json`
+
 Objective:
 
 - Define exactly how quality is measured before behavior changes.
@@ -215,7 +224,16 @@ Do not skip phases. Each phase requires explicit pass/fail sign-off.
 
 ## Start-Here Checklist (Phase 0 Kickoff)
 
-1. Confirm benchmark categories and prompt count.
-2. Freeze rubric definitions for answer and source pass/fail.
-3. Add fixture schema and first 10 benchmark prompts.
-4. Run baseline capture and record current metrics.
+1. [DONE] Confirm benchmark categories and prompt count.
+2. [DONE] Freeze rubric definitions for answer and source pass/fail.
+3. [DONE] Add fixture schema and first 10 benchmark prompts.
+4. [DONE] Run baseline capture and record current metrics.
+
+Remaining to complete Phase 0:
+
+1. [DONE] Run expanded (40-prompt) baseline capture and record metrics snapshot.
+2. [DONE] Confirm Phase 0 sign-off against acceptance checks.
+
+Next:
+
+1. Begin Phase 1 (Retrieval Observability and Diagnostics).
