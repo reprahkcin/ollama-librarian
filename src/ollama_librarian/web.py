@@ -1675,6 +1675,130 @@ def _safe_float(value):
         return None
 
 
+def _source_confidence_class_from_label(label: str) -> str:
+    raw = str(label or "").strip().lower()
+    if raw == "high":
+        return "conf-high"
+    if raw == "medium":
+        return "conf-medium"
+    if raw == "low":
+        return "conf-low"
+    return "conf-unknown"
+
+
+def _score_bucket_by_rank(rank: int, total: int) -> str:
+    if total <= 0:
+        return "Unknown"
+    if total == 1:
+        return "Medium"
+    if rank <= max(1, int(round(total * 0.30))):
+        return "High"
+    if rank <= max(2, int(round(total * 0.70))):
+        return "Medium"
+    return "Low"
+
+
+def _source_confidence_from_scores(
+    score: float | None,
+    max_score: float | None,
+    min_score: float | None,
+    rank: int,
+    total: int,
+) -> dict:
+    if score is None:
+        return {
+            "confidence_label": "Unknown",
+            "confidence_class": "conf-unknown",
+            "confidence_title": "Retrieval score unavailable",
+        }
+
+    if max_score is None or total <= 0:
+        label = "High" if score >= 0.95 else ("Medium" if score >= 0.75 else "Low")
+        return {
+            "confidence_label": label,
+            "confidence_class": _source_confidence_class_from_label(label),
+            "confidence_title": f"Retrieval score: {score:.3f}",
+        }
+
+    min_value = min_score if min_score is not None else max_score
+    spread = max(0.0, max_score - min_value)
+    relative = max(0.0, min(1.0, score / max_score)) if max_score > 0 else 0.0
+
+    if spread <= 0.18 and total >= 3:
+        label = _score_bucket_by_rank(rank, total)
+        title = (
+            f"Retrieval score: {score:.3f} "
+            f"(rank {rank}/{total}, tight score range {spread:.3f})"
+        )
+        return {
+            "confidence_label": label,
+            "confidence_class": _source_confidence_class_from_label(label),
+            "confidence_title": title,
+        }
+
+    if relative >= 0.86:
+        label = "High"
+    elif relative >= 0.62:
+        label = "Medium"
+    else:
+        label = "Low"
+
+    title = (
+        f"Retrieval score: {score:.3f} "
+        f"(relative {(relative * 100):.0f}% of top, rank {rank}/{total})"
+    )
+    return {
+        "confidence_label": label,
+        "confidence_class": _source_confidence_class_from_label(label),
+        "confidence_title": title,
+    }
+
+
+def _annotate_citation_confidence(citations: list[dict]) -> list[dict]:
+    out = [dict(c) for c in citations]
+    scored: list[tuple[int, float]] = []
+    for idx, citation in enumerate(out):
+        score = _safe_float(citation.get("score"))
+        if score is not None:
+            scored.append((idx, score))
+
+    if not scored:
+        for citation in out:
+            citation.setdefault("confidence_label", "Unknown")
+            citation.setdefault("confidence_class", "conf-unknown")
+            citation.setdefault("confidence_title", "Retrieval score unavailable")
+        return out
+
+    scores_only = [score for _, score in scored]
+    max_score = max(scores_only)
+    min_score = min(scores_only)
+    ranked = sorted(scored, key=lambda pair: pair[1], reverse=True)
+    rank_lookup = {idx: rank for rank, (idx, _) in enumerate(ranked, start=1)}
+
+    for idx, citation in enumerate(out):
+        if (
+            citation.get("confidence_label")
+            and citation.get("confidence_class")
+            and citation.get("confidence_title")
+        ):
+            continue
+
+        score = _safe_float(citation.get("score"))
+        rank = rank_lookup.get(idx, len(rank_lookup) + 1)
+        metadata = _source_confidence_from_scores(
+            score,
+            max_score,
+            min_score,
+            rank,
+            len(ranked),
+        )
+        citation.setdefault("confidence_label", metadata["confidence_label"])
+        citation.setdefault("confidence_class", metadata["confidence_class"])
+        citation.setdefault("confidence_title", metadata["confidence_title"])
+
+    return out
+
+
 def _build_structured_citations(sources: list[dict]) -> list[dict]:
     citations = []
     for idx, source in enumerate(sources, start=1):
@@ -1696,7 +1820,7 @@ def _build_structured_citations(sources: list[dict]) -> list[dict]:
             suffix = Path(path).suffix.lower()
             citation["location_type"] = "page" if suffix == ".pdf" else "section"
         citations.append(citation)
-    return citations
+    return _annotate_citation_confidence(citations)
 
 
 def normalize_pdf_ask_response_contract(result: dict) -> dict:
@@ -1710,7 +1834,9 @@ def normalize_pdf_ask_response_contract(result: dict) -> dict:
 
     citations_raw = result.get("citations", None)
     if isinstance(citations_raw, list):
-        citations = [c for c in citations_raw if isinstance(c, dict)]
+        citations = _annotate_citation_confidence(
+            [c for c in citations_raw if isinstance(c, dict)]
+        )
     else:
         citations = _build_structured_citations(sources)
 

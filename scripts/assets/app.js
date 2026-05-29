@@ -1868,6 +1868,45 @@ function sourceConfidenceInfo(scoreRaw, maxScoreRaw = NaN) {
   };
 }
 
+function sourceConfidenceFromStructured(source) {
+  if (!source || typeof source !== "object") {
+    return null;
+  }
+  const labelRaw = String(source.confidence_label || "")
+    .trim()
+    .toLowerCase();
+  const title = String(source.confidence_title || "").trim();
+  const classRaw = String(source.confidence_class || "").trim();
+
+  if (!labelRaw && !classRaw && !title) {
+    return null;
+  }
+
+  const label =
+    labelRaw === "high"
+      ? "High"
+      : labelRaw === "medium"
+        ? "Medium"
+        : labelRaw === "low"
+          ? "Low"
+          : "Unknown";
+  const className =
+    classRaw ||
+    (label === "High"
+      ? "conf-high"
+      : label === "Medium"
+        ? "conf-medium"
+        : label === "Low"
+          ? "conf-low"
+          : "conf-unknown");
+
+  return {
+    label,
+    className,
+    title: title || "Retrieval confidence from calibrated citation scores",
+  };
+}
+
 function buildApaCitationEntries(sources) {
   const seen = new Set();
   const entries = [];
@@ -1900,9 +1939,10 @@ function buildApaCitationEntries(sources) {
     const citation = author
       ? `${author}. (${year}). ${titlePart}. (${locator}).`
       : `${titlePart}. (${year}). (${locator}).`;
+    const structuredConfidence = sourceConfidenceFromStructured(s);
     entries.push({
       citation,
-      confidence: sourceConfidenceInfo(s.score, maxScore),
+      confidence: structuredConfidence || sourceConfidenceInfo(s.score, maxScore),
       source: {
         path,
         page: loc,
@@ -1933,6 +1973,9 @@ function sourceRowsFromStructuredCitations(citations) {
       title: String(c.title || "").trim(),
       authors: Array.isArray(c.authors) ? c.authors : [],
       year: String(c.year || "").trim(),
+      confidence_label: String(c.confidence_label || "").trim(),
+      confidence_class: String(c.confidence_class || "").trim(),
+      confidence_title: String(c.confidence_title || "").trim(),
     });
   }
   return rows;

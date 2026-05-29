@@ -527,6 +527,69 @@ class RouteBaselineTests(unittest.TestCase):
         self.assertEqual(payload["citations"][0].get("citation_id"), "c1")
         self.assertEqual(payload["citations"][0].get(
             "path"), "C:/library/us-history.pdf")
+        self.assertIn("confidence_label", payload["citations"][0])
+        self.assertIn("confidence_class", payload["citations"][0])
+        self.assertIn("confidence_title", payload["citations"][0])
+
+    def test_post_pdf_ask_contract_calibrates_confidence_distribution(self):
+        with running_server() as (app, base_url):
+            original_ask = app.ask_pdf_library
+
+            def fake_ask(query, model, top_k, include_paths=None, exclude_paths=None, debug_trace=False):
+                return {
+                    "ok": True,
+                    "answer": "Calibrated confidence response.",
+                    "sources": [
+                        {
+                            "path": "C:/library/a.pdf",
+                            "title": "Doc A",
+                            "location": 3,
+                            "location_type": "page",
+                            "page": 3,
+                            "score": 2.0,
+                        },
+                        {
+                            "path": "C:/library/b.pdf",
+                            "title": "Doc B",
+                            "location": 4,
+                            "location_type": "page",
+                            "page": 4,
+                            "score": 1.45,
+                        },
+                        {
+                            "path": "C:/library/c.pdf",
+                            "title": "Doc C",
+                            "location": 7,
+                            "location_type": "page",
+                            "page": 7,
+                            "score": 1.05,
+                        },
+                    ],
+                }
+
+            app.ask_pdf_library = fake_ask
+            try:
+                status, payload, _ = _request_json(
+                    "POST",
+                    f"{base_url}/api/pdf/ask",
+                    {
+                        "query": "confidence distribution test",
+                        "model": "qwen2.5:14b",
+                        "top_k": 6,
+                    },
+                )
+            finally:
+                app.ask_pdf_library = original_ask
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload.get("ok"))
+        labels = [
+            str(c.get("confidence_label", ""))
+            for c in payload.get("citations", [])
+        ]
+        self.assertIn("High", labels)
+        self.assertIn("Medium", labels)
+        self.assertIn("Low", labels)
 
     def test_post_pdf_ask_contract_preserves_existing_structured_payload(self):
         with running_server() as (app, base_url):
@@ -543,6 +606,9 @@ class RouteBaselineTests(unittest.TestCase):
                             "citation_id": "existing-c1",
                             "path": "C:/library/doc.pdf",
                             "location": 9,
+                            "confidence_label": "High",
+                            "confidence_class": "conf-high",
+                            "confidence_title": "Existing confidence metadata",
                         }
                     ],
                 }
@@ -567,6 +633,8 @@ class RouteBaselineTests(unittest.TestCase):
         self.assertEqual(payload.get("answer_text"), "structured answer")
         self.assertEqual(payload.get("citations", [])[
                          0].get("citation_id"), "existing-c1")
+        self.assertEqual(payload.get("citations", [])[ 
+                 0].get("confidence_label"), "High")
 
     def test_api_routes_require_key_when_configured(self):
         with running_server(api_key="secret-key") as (_, base_url):
