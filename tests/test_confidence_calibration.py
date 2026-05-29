@@ -80,6 +80,29 @@ class ConfidenceCalibrationTests(unittest.TestCase):
         self.assertIn("Medium", labels)
         self.assertIn("Low", labels)
 
+    def test_annotate_citation_confidence_non_tight_spread_emits_low(self):
+        citations = [
+            {"path": "a.pdf", "location": 1, "score": 1.00},
+            {"path": "b.pdf", "location": 2, "score": 0.74},
+            {"path": "c.pdf", "location": 3, "score": 0.40},
+        ]
+
+        annotated = self.app._annotate_citation_confidence(citations)
+        by_path = {item.get("path"): item for item in annotated}
+
+        self.assertEqual(
+            by_path["a.pdf"].get("confidence_label"),
+            "High",
+        )
+        self.assertEqual(
+            by_path["b.pdf"].get("confidence_label"),
+            "Medium",
+        )
+        self.assertEqual(
+            by_path["c.pdf"].get("confidence_label"),
+            "Low",
+        )
+
     def test_annotate_citation_confidence_preserves_existing_values(self):
         citations = [
             {
