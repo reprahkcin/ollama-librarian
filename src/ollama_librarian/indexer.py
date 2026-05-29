@@ -1327,8 +1327,10 @@ def _score_chunk_for_query(
 ) -> tuple[float, float, float, float, float]:
     path_title_boost = _lexical_path_title_boost(query_text, path, title)
     chunk_text_boost = _lexical_chunk_text_boost(query_text, str(chunk_text))
-    entity_boost = _entity_alignment_boost(query_text, path, title, str(chunk_text))
-    drift_penalty = _semantic_drift_penalty(query_text, str(chunk_text), vector_score)
+    entity_boost = _entity_alignment_boost(
+        query_text, path, title, str(chunk_text))
+    drift_penalty = _semantic_drift_penalty(
+        query_text, str(chunk_text), vector_score)
     final_score = (
         vector_score
         + path_title_boost
