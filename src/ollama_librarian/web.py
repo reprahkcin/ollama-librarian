@@ -1713,7 +1713,8 @@ def _source_confidence_from_scores(
         }
 
     if max_score is None or total <= 0:
-        label = "High" if score >= 0.95 else ("Medium" if score >= 0.75 else "Low")
+        label = "High" if score >= 0.95 else (
+            "Medium" if score >= 0.75 else "Low")
         return {
             "confidence_label": label,
             "confidence_class": _source_confidence_class_from_label(label),
@@ -1766,7 +1767,8 @@ def _annotate_citation_confidence(citations: list[dict]) -> list[dict]:
         for citation in out:
             citation.setdefault("confidence_label", "Unknown")
             citation.setdefault("confidence_class", "conf-unknown")
-            citation.setdefault("confidence_title", "Retrieval score unavailable")
+            citation.setdefault("confidence_title",
+                                "Retrieval score unavailable")
         return out
 
     scores_only = [score for _, score in scored]

@@ -633,8 +633,8 @@ class RouteBaselineTests(unittest.TestCase):
         self.assertEqual(payload.get("answer_text"), "structured answer")
         self.assertEqual(payload.get("citations", [])[
                          0].get("citation_id"), "existing-c1")
-        self.assertEqual(payload.get("citations", [])[ 
-                 0].get("confidence_label"), "High")
+        self.assertEqual(payload.get("citations", [])[
+            0].get("confidence_label"), "High")
 
     def test_api_routes_require_key_when_configured(self):
         with running_server(api_key="secret-key") as (_, base_url):

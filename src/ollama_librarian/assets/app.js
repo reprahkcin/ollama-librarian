@@ -1942,7 +1942,8 @@ function buildApaCitationEntries(sources) {
     const structuredConfidence = sourceConfidenceFromStructured(s);
     entries.push({
       citation,
-      confidence: structuredConfidence || sourceConfidenceInfo(s.score, maxScore),
+      confidence:
+        structuredConfidence || sourceConfidenceInfo(s.score, maxScore),
       source: {
         path,
         page: loc,
