@@ -1,0 +1,12 @@
+{
+  "state": "completed",
+  "started_at_utc": "2026-05-29T02:15:30+00:00",
+  "updated_at_utc": "2026-05-29T02:16:36+00:00",
+  "fixture": "tests\\quality\\fixtures\\phase6_narrow_entity_focus.json",
+  "completed_prompts": 3,
+  "total_prompts": 3,
+  "percent_complete": 100.0,
+  "last_prompt_id": "ne_010",
+  "last_latency_ms": 14621,
+  "last_error": null
+}

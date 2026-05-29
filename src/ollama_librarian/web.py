@@ -1631,6 +1631,7 @@ def ask_pdf_library(
     top_k: int,
     include_paths: list[str] | None = None,
     exclude_paths: list[str] | None = None,
+    debug_trace: bool = False,
 ):
     args = [
         "ask",
@@ -1650,12 +1651,206 @@ def ask_pdf_library(
     for path in exclude_paths or []:
         if isinstance(path, str) and path.strip():
             args.extend(["--exclude-path", path.strip()])
+    if debug_trace:
+        args.append("--debug-trace")
 
     raw = run_pdf_rag(args, timeout=max(600, int(PDF_ANSWER_TIMEOUT) + 120))
     parsed = json.loads(raw) if raw else {}
     if not isinstance(parsed, dict):
         raise RuntimeError("Unexpected PDF ask response")
     return parsed
+
+
+def _safe_int(value):
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def _safe_float(value):
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _source_confidence_class_from_label(label: str) -> str:
+    raw = str(label or "").strip().lower()
+    if raw == "high":
+        return "conf-high"
+    if raw == "medium":
+        return "conf-medium"
+    if raw == "low":
+        return "conf-low"
+    return "conf-unknown"
+
+
+def _score_bucket_by_rank(rank: int, total: int) -> str:
+    if total <= 0:
+        return "Unknown"
+    if total == 1:
+        return "Medium"
+    if rank <= max(1, int(round(total * 0.30))):
+        return "High"
+    if rank <= max(2, int(round(total * 0.70))):
+        return "Medium"
+    return "Low"
+
+
+def _source_confidence_from_scores(
+    score: float | None,
+    max_score: float | None,
+    min_score: float | None,
+    rank: int,
+    total: int,
+) -> dict:
+    if score is None:
+        return {
+            "confidence_label": "Unknown",
+            "confidence_class": "conf-unknown",
+            "confidence_title": "Retrieval score unavailable",
+        }
+
+    if max_score is None or total <= 0:
+        label = "High" if score >= 0.95 else (
+            "Medium" if score >= 0.75 else "Low")
+        return {
+            "confidence_label": label,
+            "confidence_class": _source_confidence_class_from_label(label),
+            "confidence_title": f"Retrieval score: {score:.3f}",
+        }
+
+    min_value = min_score if min_score is not None else max_score
+    spread = max(0.0, max_score - min_value)
+    relative = max(0.0, min(1.0, score / max_score)) if max_score > 0 else 0.0
+
+    if spread <= 0.18 and total >= 3:
+        label = _score_bucket_by_rank(rank, total)
+        title = (
+            f"Retrieval score: {score:.3f} "
+            f"(rank {rank}/{total}, tight score range {spread:.3f})"
+        )
+        return {
+            "confidence_label": label,
+            "confidence_class": _source_confidence_class_from_label(label),
+            "confidence_title": title,
+        }
+
+    if relative >= 0.86:
+        label = "High"
+    elif relative >= 0.62:
+        label = "Medium"
+    else:
+        label = "Low"
+
+    title = (
+        f"Retrieval score: {score:.3f} "
+        f"(relative {(relative * 100):.0f}% of top, rank {rank}/{total})"
+    )
+    return {
+        "confidence_label": label,
+        "confidence_class": _source_confidence_class_from_label(label),
+        "confidence_title": title,
+    }
+
+
+def _annotate_citation_confidence(citations: list[dict]) -> list[dict]:
+    out = [dict(c) for c in citations]
+    scored: list[tuple[int, float]] = []
+    for idx, citation in enumerate(out):
+        score = _safe_float(citation.get("score"))
+        if score is not None:
+            scored.append((idx, score))
+
+    if not scored:
+        for citation in out:
+            citation.setdefault("confidence_label", "Unknown")
+            citation.setdefault("confidence_class", "conf-unknown")
+            citation.setdefault("confidence_title",
+                                "Retrieval score unavailable")
+        return out
+
+    scores_only = [score for _, score in scored]
+    max_score = max(scores_only)
+    min_score = min(scores_only)
+    ranked = sorted(scored, key=lambda pair: pair[1], reverse=True)
+    rank_lookup = {idx: rank for rank, (idx, _) in enumerate(ranked, start=1)}
+
+    for idx, citation in enumerate(out):
+        if (
+            citation.get("confidence_label")
+            and citation.get("confidence_class")
+            and citation.get("confidence_title")
+        ):
+            continue
+
+        score = _safe_float(citation.get("score"))
+        rank = rank_lookup.get(idx, len(rank_lookup) + 1)
+        metadata = _source_confidence_from_scores(
+            score,
+            max_score,
+            min_score,
+            rank,
+            len(ranked),
+        )
+        citation.setdefault("confidence_label", metadata["confidence_label"])
+        citation.setdefault("confidence_class", metadata["confidence_class"])
+        citation.setdefault("confidence_title", metadata["confidence_title"])
+
+    return out
+
+
+def _build_structured_citations(sources: list[dict]) -> list[dict]:
+    citations = []
+    for idx, source in enumerate(sources, start=1):
+        path = str(source.get("path", "") or "")
+        location = source.get("location", source.get(
+            "page", source.get("section", 0)))
+        location_int = _safe_int(location)
+        citation = {
+            "citation_id": f"c{idx}",
+            "path": path,
+            "title": str(source.get("title", "") or ""),
+            "location": location_int if location_int is not None else location,
+            "location_type": str(source.get("location_type", "") or ""),
+            "page": _safe_int(source.get("page")),
+            "section": _safe_int(source.get("section")),
+            "score": _safe_float(source.get("score")),
+        }
+        if not citation["location_type"]:
+            suffix = Path(path).suffix.lower()
+            citation["location_type"] = "page" if suffix == ".pdf" else "section"
+        citations.append(citation)
+    return _annotate_citation_confidence(citations)
+
+
+def normalize_pdf_ask_response_contract(result: dict) -> dict:
+    answer = str(result.get("answer", "") or "")
+    answer_text_raw = result.get("answer_text", answer)
+    answer_text = str(answer_text_raw or "")
+
+    sources_raw = result.get("sources", [])
+    sources = [s for s in sources_raw if isinstance(
+        s, dict)] if isinstance(sources_raw, list) else []
+
+    citations_raw = result.get("citations", None)
+    if isinstance(citations_raw, list):
+        citations = _annotate_citation_confidence(
+            [c for c in citations_raw if isinstance(c, dict)]
+        )
+    else:
+        citations = _build_structured_citations(sources)
+
+    normalized = dict(result)
+    # Backward-compatible fields retained for existing clients.
+    normalized["answer"] = answer
+    normalized["sources"] = sources
+
+    # Structured contract fields for Phase 2+ clients.
+    normalized["answer_text"] = answer_text
+    normalized["citations"] = citations
+    return normalized
 
 
 def append_stash_entry(entry: dict):
@@ -2668,6 +2863,7 @@ class Handler(BaseHTTPRequestHandler):
         top_k = max(1, min(100, top_k))
         include_paths = payload.get("include_paths", [])
         exclude_paths = payload.get("exclude_paths", [])
+        debug_trace = bool(payload.get("debug_trace", False))
         if not isinstance(include_paths, list):
             include_paths = []
         if not isinstance(exclude_paths, list):
@@ -2689,10 +2885,12 @@ class Handler(BaseHTTPRequestHandler):
                                for x in include_paths if isinstance(x, str)],
                 exclude_paths=[str(x)
                                for x in exclude_paths if isinstance(x, str)],
+                debug_trace=debug_trace,
             )
+            normalized = normalize_pdf_ask_response_contract(result)
             return self._send(
                 200,
-                json.dumps(result, ensure_ascii=True),
+                json.dumps(normalized, ensure_ascii=True),
                 "application/json; charset=utf-8",
             )
         except Exception as exc:

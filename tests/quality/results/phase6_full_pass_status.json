@@ -1,0 +1,12 @@
+{
+  "state": "completed",
+  "started_at_utc": "2026-05-29T01:42:39+00:00",
+  "updated_at_utc": "2026-05-29T01:52:14+00:00",
+  "fixture": "tests\\quality\\fixtures\\benchmark_v1.json",
+  "completed_prompts": 40,
+  "total_prompts": 40,
+  "percent_complete": 100.0,
+  "last_prompt_id": "ins_010",
+  "last_latency_ms": 14890,
+  "last_error": null
+}

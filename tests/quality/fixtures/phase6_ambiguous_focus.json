@@ -1,0 +1,43 @@
+{
+  "version": "1.0",
+  "description": "Phase 6 focused subset of ambiguous prompts that failed in the Phase 5 benchmark pass.",
+  "source_run": "tests/quality/results/phase5_pass_results.json",
+  "prompts": [
+    {
+      "id": "amb_003",
+      "category": "ambiguous_multi_doc",
+      "prompt": "If two sources disagree on causes of recovery, summarize both views and note uncertainty.",
+      "expected_intent": "Present differing source views and explicitly note uncertainty.",
+      "expected_signals": ["disagree", "recovery", "uncertainty"],
+      "requires_citation": true,
+      "phase5_failure_reason": "has_source_format_error=true"
+    },
+    {
+      "id": "amb_004",
+      "category": "ambiguous_multi_doc",
+      "prompt": "What seems to be consensus versus debate in the library about Hoover's policy effectiveness?",
+      "expected_intent": "Differentiate consensus claims from debated claims.",
+      "expected_signals": ["consensus", "debate", "effectiveness"],
+      "requires_citation": true,
+      "phase5_failure_reason": "has_source_format_error=true"
+    },
+    {
+      "id": "amb_008",
+      "category": "ambiguous_multi_doc",
+      "prompt": "Reconcile conflicting descriptions of federal relief speed in early Depression years.",
+      "expected_intent": "Reconcile conflict and note unresolved tension.",
+      "expected_signals": ["conflicting", "relief", "speed"],
+      "requires_citation": true,
+      "phase5_failure_reason": "has_source_format_error=true"
+    },
+    {
+      "id": "amb_010",
+      "category": "ambiguous_multi_doc",
+      "prompt": "What are the most defensible claims we can make when the evidence base is mixed?",
+      "expected_intent": "Prioritize defensible claims and acknowledge mixed evidence.",
+      "expected_signals": ["defensible", "mixed", "evidence"],
+      "requires_citation": true,
+      "phase5_failure_reason": "has_source_format_error=true"
+    }
+  ]
+}

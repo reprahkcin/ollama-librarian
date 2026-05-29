@@ -1,0 +1,34 @@
+{
+  "version": "1.0",
+  "description": "Phase 6 focused subset of narrow_entity prompts that failed in the latest full benchmark pass.",
+  "source_run": "tests/quality/results/phase6_full_pass_results.json",
+  "prompts": [
+    {
+      "id": "ne_005",
+      "category": "narrow_entity",
+      "prompt": "What was the Federal Home Loan Bank Act intended to accomplish?",
+      "expected_intent": "Explain the act's intended housing-finance purpose.",
+      "expected_signals": ["Federal Home Loan Bank", "housing", "credit"],
+      "requires_citation": true,
+      "phase6_failure_reason": "has_source_format_error=true"
+    },
+    {
+      "id": "ne_006",
+      "category": "narrow_entity",
+      "prompt": "Who was Franklin D. Roosevelt in relation to Hoover-era economic policy debates?",
+      "expected_intent": "Identify Roosevelt's role relative to Hoover-era policy debates.",
+      "expected_signals": ["Roosevelt", "Hoover", "policy"],
+      "requires_citation": true,
+      "phase6_failure_reason": "has_source_format_error=true"
+    },
+    {
+      "id": "ne_010",
+      "category": "narrow_entity",
+      "prompt": "Who was Andrew Mellon and why does he appear in Depression-era policy discussions?",
+      "expected_intent": "Explain Mellon's role in policy discourse.",
+      "expected_signals": ["Andrew Mellon", "policy", "Depression"],
+      "requires_citation": true,
+      "phase6_failure_reason": "has_source_format_error=true"
+    }
+  ]
+}

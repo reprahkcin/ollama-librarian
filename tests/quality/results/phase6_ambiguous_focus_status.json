@@ -1,0 +1,12 @@
+{
+  "state": "completed",
+  "started_at_utc": "2026-05-29T01:30:09+00:00",
+  "updated_at_utc": "2026-05-29T01:31:08+00:00",
+  "fixture": "tests\\quality\\fixtures\\phase6_ambiguous_focus.json",
+  "completed_prompts": 4,
+  "total_prompts": 4,
+  "percent_complete": 100.0,
+  "last_prompt_id": "amb_010",
+  "last_latency_ms": 10867,
+  "last_error": null
+}
