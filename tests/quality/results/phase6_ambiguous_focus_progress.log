@@ -1,0 +1,6 @@
+[2026-05-29T01:30:09+00:00] START total_prompts=4
+[2026-05-29T01:30:29+00:00] 1/4 id=amb_003 latency_ms=20187 ok=True error=no
+[2026-05-29T01:30:41+00:00] 2/4 id=amb_004 latency_ms=11876 ok=True error=no
+[2026-05-29T01:30:57+00:00] 3/4 id=amb_008 latency_ms=16391 ok=True error=no
+[2026-05-29T01:31:08+00:00] 4/4 id=amb_010 latency_ms=10867 ok=True error=no
+[2026-05-29T01:31:08+00:00] COMPLETE prompts=4
