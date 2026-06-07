@@ -12,6 +12,9 @@ dependencies = [
   "ebooklib>=0.18",
 ]
 
+[project.optional-dependencies]
+fast = ["numpy>=1.24"]
+
 [project.scripts]
 ollama-librarian = "ollama_librarian.web:main"
 ollama-librarian-index = "ollama_librarian.indexer:main"

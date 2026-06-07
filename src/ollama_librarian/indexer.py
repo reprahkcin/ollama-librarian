@@ -32,6 +32,12 @@ except Exception:
     ITEM_DOCUMENT = None
     epub = None
 
+try:
+    import numpy as np
+    _NP = True
+except ImportError:
+    _NP = False
+
 
 SUPPORTED_DOC_EXTENSIONS = {".pdf", ".txt", ".md", ".html", ".htm", ".epub"}
 NOISY_AUTHOR_TOKENS = {
@@ -552,12 +558,32 @@ def generate_answer(base_url: str, model: str, prompt: str, timeout: int = 180) 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
     if len(a) != len(b) or not a:
         return -1.0
+    if _NP:
+        av = np.asarray(a, dtype=np.float32)
+        bv = np.asarray(b, dtype=np.float32)
+        na = float(np.linalg.norm(av))
+        nb = float(np.linalg.norm(bv))
+        if na == 0.0 or nb == 0.0:
+            return -1.0
+        return float(np.dot(av, bv) / (na * nb))
     dot = sum(x * y for x, y in zip(a, b))
     na = math.sqrt(sum(x * x for x in a))
     nb = math.sqrt(sum(y * y for y in b))
     if na == 0.0 or nb == 0.0:
         return -1.0
     return dot / (na * nb)
+
+
+def _batch_cosine_similarities(query: list[float], embeddings: "list[np.ndarray]") -> "np.ndarray":
+    matrix = np.stack(embeddings)  # (N, D) float32
+    q = np.asarray(query, dtype=np.float32)
+    q_norm = float(np.linalg.norm(q))
+    if q_norm == 0.0:
+        return np.full(len(embeddings), -1.0, dtype=np.float32)
+    q_unit = q / q_norm
+    row_norms = np.linalg.norm(matrix, axis=1)  # (N,)
+    row_norms = np.where(row_norms == 0.0, 1.0, row_norms)
+    return (matrix @ q_unit) / row_norms  # (N,)
 
 
 def chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
@@ -1355,39 +1381,39 @@ def retrieve_top_chunks_filtered(
     trace_out: list[dict] | None = None,
 ):
     rows = load_all_chunks(conn)
-    scored = []
+
+    # Decode and filter rows before scoring.
+    candidates = []
     for path, title, page_num, text, emb_json in rows:
         path = str(path)
-        title = normalize_text(title)
         if include_paths and path not in include_paths:
             continue
         if exclude_paths and path in exclude_paths:
             continue
         try:
             emb = json.loads(emb_json)
-            vector_score = cosine_similarity(query_embedding, emb)
         except Exception:
             continue
-        final_score, path_title_boost, chunk_text_boost, entity_boost, drift_penalty = _score_chunk_for_query(
-            query_text,
-            path,
-            title,
-            str(text),
-            vector_score,
-        )
-        scored.append(
-            (
-                final_score,
-                path,
-                int(page_num),
-                str(text),
-                vector_score,
-                path_title_boost,
-                chunk_text_boost,
-                entity_boost,
-                drift_penalty,
+        candidates.append((path, normalize_text(title), int(page_num), str(text), emb))
+
+    scored = []
+    if _NP and candidates:
+        np_embs = [np.asarray(c[4], dtype=np.float32) for c in candidates]
+        vector_scores = _batch_cosine_similarities(query_embedding, np_embs)
+        for (path, title, page_num, text, _), vector_score in zip(candidates, vector_scores):
+            final_score, path_title_boost, chunk_text_boost, entity_boost, drift_penalty = _score_chunk_for_query(
+                query_text, path, title, text, float(vector_score),
             )
-        )
+            scored.append((final_score, path, page_num, text, float(vector_score),
+                           path_title_boost, chunk_text_boost, entity_boost, drift_penalty))
+    else:
+        for path, title, page_num, text, emb in candidates:
+            vector_score = cosine_similarity(query_embedding, emb)
+            final_score, path_title_boost, chunk_text_boost, entity_boost, drift_penalty = _score_chunk_for_query(
+                query_text, path, title, text, vector_score,
+            )
+            scored.append((final_score, path, page_num, text, vector_score,
+                           path_title_boost, chunk_text_boost, entity_boost, drift_penalty))
     scored.sort(key=lambda x: x[0], reverse=True)
     top_scored = scored[:top_k]
     if trace_out is not None:
