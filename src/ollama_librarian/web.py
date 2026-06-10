@@ -770,7 +770,7 @@ def evaluate_abstract_relevance(
         "prompt": prompt,
         "stream": False,
         "format": "json",
-        "keep_alive": "60s",
+        "keep_alive": "0",
     }
     if instructions:
         payload["system"] = instructions

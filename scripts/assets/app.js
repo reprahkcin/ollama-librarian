@@ -2621,6 +2621,23 @@ function cancelPromptRequest() {
   activeRequestController.abort();
 }
 
+function looksGarbled(text) {
+  const t = String(text || "").trim();
+  if (!t || t.length > 800) return false;
+  const words = t.split(/\s+/).filter(Boolean);
+  if (words.length < 3 || words.length > 40) return false;
+  // Count tokens that are a mix of letters and digits (e.g. "Mube3", "6024")
+  // or very short fragments with punctuation — characteristic of bad inference.
+  const suspiciousTokens = words.filter(
+    (w) => /\d/.test(w) && /[a-zA-Z]/.test(w) && w.length < 8,
+  );
+  const fragmentTokens = words.filter((w) => w.length <= 3 && /[a-z]/i.test(w));
+  return (
+    suspiciousTokens.length >= 2 ||
+    (fragmentTokens.length / words.length > 0.55 && words.length > 5)
+  );
+}
+
 async function loadModels() {
   modelEl.innerHTML = "";
   setStatus("", "Checking service...");
@@ -2649,6 +2666,7 @@ async function loadModels() {
       ? "qwen2.5:14b"
       : models[0];
     modelEl.value = preferred;
+    warnIfLowQualityModel(preferred);
     setStatus("ok", `Online (${models.length} models)`);
   } catch (err) {
     setStatus("err", "Service unreachable");
@@ -2706,16 +2724,8 @@ async function sendPrompt() {
 
   rememberPrompt(prompt);
 
-  if (!usePdfLibrary) {
-    const proceedUngrounded = confirm(
-      "Send this query without PDF grounding?\\n\\nThis app is optimized for PDF-grounded answers, and ungrounded queries are usually better handled by general chat tools.",
-    );
-    if (!proceedUngrounded) {
-      usePdfLibraryEl.checked = true;
-      metaEl.textContent = "PDF-grounded mode re-enabled";
-      return;
-    }
-  }
+  // PDF-grounded mode disabled by default due to indexer subprocess freezing
+  // Users can enable it manually if needed
 
   lastUserPrompt = prompt;
   pendingPromptText = prompt;
@@ -2777,12 +2787,18 @@ async function sendPrompt() {
           prompt,
           stream: false,
           system: instructions || undefined,
-          keep_alive: "60s",
+          keep_alive: "0",
         }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       answer = data.response || "[no response field]";
+      if (looksGarbled(answer)) {
+        addMessage(
+          "system",
+          `Warning: the response above looks garbled. This usually means the model ran out of memory or the selected model (${model}) is not well-suited for this task. Try a 7B+ model such as mistral:latest or qwen2.5:7b.`,
+        );
+      }
       await addMessageAndStore("assistant", answer);
     }
 
@@ -2809,6 +2825,30 @@ async function sendPrompt() {
     setBusy(false);
   }
 }
+
+const LOW_QUALITY_MODEL_PATTERNS = [
+  /^orca-mini/i,
+  /^orca:?$/i,
+  /tinyllama/i,
+  /^phi:?$/i,
+];
+
+function isLowQualityModel(name) {
+  return LOW_QUALITY_MODEL_PATTERNS.some((p) => p.test(String(name || "")));
+}
+
+function warnIfLowQualityModel(name) {
+  if (isLowQualityModel(name)) {
+    addMessage(
+      "system",
+      `Note: "${name}" is a low-capability model and may produce incoherent or garbled responses with this application. Consider switching to mistral:latest, qwen2.5:7b, or another 7B+ model for better results.`,
+    );
+  }
+}
+
+modelEl.addEventListener("change", () => {
+  warnIfLowQualityModel(modelEl.value);
+});
 
 refreshEl.addEventListener("click", loadModels);
 openLibraryDocsEl.addEventListener("click", openLibraryDocsModal);
