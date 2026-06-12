@@ -615,7 +615,7 @@ class RouteBaselineTests(unittest.TestCase):
     def test_build_pdf_rag_command_passes_safe_answer_options(self):
         with running_server() as (app, _base_url):
             original_policy = app.get_current_safety_policy
-            app.get_current_safety_policy = lambda: {
+            app.get_current_safety_policy = lambda force_detect=False: {
                 "pressure": "throttled",
                 "embed_num_thread": 1,
                 "embed_delay_ms": 1500,
@@ -649,7 +649,7 @@ class RouteBaselineTests(unittest.TestCase):
                     "application/json; charset=utf-8",
                 )
 
-            app.get_current_safety_policy = lambda: {
+            app.get_current_safety_policy = lambda force_detect=False: {
                 "pressure": "throttled",
                 "allow_new_work": True,
                 "max_generation_slots": 1,
@@ -689,7 +689,7 @@ class RouteBaselineTests(unittest.TestCase):
                 raise AssertionError(
                     "health should not call full system profile")
 
-            app.get_current_safety_policy = lambda: {
+            app.get_current_safety_policy = lambda force_detect=False: {
                 "pressure": "ok",
                 "allow_new_work": True,
                 "max_generation_slots": 1,
@@ -771,7 +771,7 @@ class RouteBaselineTests(unittest.TestCase):
             pause_calls = []
 
             app.RESOURCE_MONITOR_CRITICAL_SAMPLES = 2
-            app.get_current_safety_policy = lambda: {
+            app.get_current_safety_policy = lambda force_detect=False: {
                 "pressure": "critical",
                 "pause_index": True,
                 "message": "System pressure is critical.",
@@ -813,7 +813,7 @@ class RouteBaselineTests(unittest.TestCase):
                 {"pressure": "critical", "pause_index": True},
                 {"pressure": "ok", "pause_index": False},
             ])
-            app.get_current_safety_policy = lambda: next(pressures)
+            app.get_current_safety_policy = lambda force_detect=False: next(pressures)
             with app.RESOURCE_LOCK:
                 app.RESOURCE_STATE["monitor_critical_samples"] = 0
             try:
@@ -833,7 +833,7 @@ class RouteBaselineTests(unittest.TestCase):
             original_validate = app.validate_model_allowed
             original_policy = app.get_current_safety_policy
             app.validate_model_allowed = lambda model: {"ok": True}
-            app.get_current_safety_policy = lambda: {
+            app.get_current_safety_policy = lambda force_detect=False: {
                 "pressure": "ok",
                 "allow_new_work": True,
                 "max_generation_slots": 1,

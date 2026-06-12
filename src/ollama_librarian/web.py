@@ -358,6 +358,7 @@ RESOURCE_MONITOR_POLL_SECONDS = _env_int(
     os.environ, "OLLAMA_WEB_RESOURCE_MONITOR_POLL_SECONDS", 5, min_value=1)
 RESOURCE_MONITOR_CRITICAL_SAMPLES = _env_int(
     os.environ, "OLLAMA_WEB_RESOURCE_MONITOR_CRITICAL_SAMPLES", 2, min_value=1)
+POLICY_CACHE_STALENESS_SECONDS = max(RESOURCE_MONITOR_POLL_SECONDS * 3, 15)
 RESOURCE_MONITOR_THREAD: threading.Thread | None = None
 MODEL_CACHE_LOCK = threading.Lock()
 MODEL_CACHE = {
@@ -1428,23 +1429,34 @@ def start_update_apply(target_version: str) -> dict:
     }
 
 
-def get_current_safety_policy() -> dict:
+def get_current_safety_policy(force_detect: bool = False) -> dict:
+    if FORCE_PRESSURE in {"ok", "warm", "throttled", "critical"}:
+        pressure = FORCE_PRESSURE
+        policy = dict(safety_policy_for_pressure(pressure))
+        policy["forced"] = True
+        policy["message"] = f"Forced pressure override active: {pressure}. {policy.get('message', '')}"
+        with RESOURCE_LOCK:
+            RESOURCE_STATE["last_pressure"] = pressure
+            RESOURCE_STATE["last_policy"] = dict(policy)
+            RESOURCE_STATE["last_checked_at"] = int(time.time())
+        return policy
+
+    if not force_detect:
+        with RESOURCE_LOCK:
+            last_checked = RESOURCE_STATE.get("last_checked_at")
+            last_policy = RESOURCE_STATE.get("last_policy")
+        if last_policy and last_checked is not None:
+            age = time.time() - float(last_checked)
+            if age <= POLICY_CACHE_STALENESS_SECONDS:
+                return dict(last_policy)
+
     try:
-        if FORCE_PRESSURE in {"ok", "warm", "throttled", "critical"}:
-            pressure = FORCE_PRESSURE
-        else:
-            hardware = detect_hardware_profile()
-            pressure = classify_resource_pressure(hardware)
+        hardware = detect_hardware_profile()
+        pressure = classify_resource_pressure(hardware)
         policy = safety_policy_for_pressure(pressure)
-        if FORCE_PRESSURE in {"ok", "warm", "throttled", "critical"}:
-            policy = dict(policy)
-            policy["forced"] = True
-            policy[
-                "message"] = f"Forced pressure override active: {pressure}. {policy.get('message', '')}"
     except Exception as exc:
         pressure = "ok"
-        policy = safety_policy_for_pressure("ok")
-        policy = dict(policy)
+        policy = dict(safety_policy_for_pressure("ok"))
         policy["message"] = f"Safety policy fallback active: {exc}"
 
     with RESOURCE_LOCK:
@@ -1498,7 +1510,7 @@ def get_monitoring_status() -> str:
 
 
 def resource_monitor_tick() -> dict:
-    policy = get_current_safety_policy()
+    policy = get_current_safety_policy(force_detect=True)
     pressure = str(policy.get("pressure") or "ok")
     action = "sampled"
     pause_result: dict | None = None
@@ -1941,7 +1953,7 @@ def get_system_profile(force_refresh: bool = False) -> dict:
         model_error = str(exc)
 
     payload = build_system_profile(models)
-    active_policy = get_current_safety_policy()
+    active_policy = get_current_safety_policy(force_detect=force_refresh)
     payload["resource_state"] = {
         "pressure": active_policy.get("pressure", "ok"),
         "monitoring": get_monitoring_status(),

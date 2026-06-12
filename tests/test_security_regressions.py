@@ -187,7 +187,7 @@ class SecurityRegressionTests(unittest.TestCase):
                     "application/json; charset=utf-8",
                 )
 
-            app.get_current_safety_policy = lambda: {
+            app.get_current_safety_policy = lambda force_detect=False: {
                 "pressure": "throttled",
                 "allow_new_work": True,
                 "max_generation_slots": 1,
