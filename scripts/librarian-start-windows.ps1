@@ -23,6 +23,15 @@ $DynamicMaxDelayMs = if ($env:OLLAMA_WEB_PDF_DYNAMIC_MAX_DELAY_MS) { $env:OLLAMA
 $DynamicDelayStepMs = if ($env:OLLAMA_WEB_PDF_DYNAMIC_DELAY_STEP_MS) { $env:OLLAMA_WEB_PDF_DYNAMIC_DELAY_STEP_MS } else { '50' }
 $DynamicMinThreads = if ($env:OLLAMA_WEB_PDF_DYNAMIC_MIN_THREADS) { $env:OLLAMA_WEB_PDF_DYNAMIC_MIN_THREADS } else { '1' }
 $DynamicMaxThreads = if ($env:OLLAMA_WEB_PDF_DYNAMIC_MAX_THREADS) { $env:OLLAMA_WEB_PDF_DYNAMIC_MAX_THREADS } else { '3' }
+$SafeMode = if ($env:OLLAMA_WEB_SAFE_MODE) { $env:OLLAMA_WEB_SAFE_MODE } else { '1' }
+$AllowUnsafeModel = if ($env:OLLAMA_WEB_ALLOW_UNSAFE_MODEL) { $env:OLLAMA_WEB_ALLOW_UNSAFE_MODEL } else { '0' }
+$MaxConcurrentGenerations = if ($env:OLLAMA_WEB_MAX_CONCURRENT_GENERATIONS) { $env:OLLAMA_WEB_MAX_CONCURRENT_GENERATIONS } else { '1' }
+$ForcePressure = if ($env:OLLAMA_WEB_FORCE_PRESSURE) { $env:OLLAMA_WEB_FORCE_PRESSURE } else { '' }
+$AnswerKeepAlive = if ($env:OLLAMA_WEB_ANSWER_KEEP_ALIVE) { $env:OLLAMA_WEB_ANSWER_KEEP_ALIVE } else { '60s' }
+$SafeAnswerKeepAlive = if ($env:OLLAMA_WEB_SAFE_ANSWER_KEEP_ALIVE) { $env:OLLAMA_WEB_SAFE_ANSWER_KEEP_ALIVE } else { '15s' }
+$ResourceMonitor = if ($env:OLLAMA_WEB_RESOURCE_MONITOR) { $env:OLLAMA_WEB_RESOURCE_MONITOR } else { '1' }
+$ResourceMonitorPollSeconds = if ($env:OLLAMA_WEB_RESOURCE_MONITOR_POLL_SECONDS) { $env:OLLAMA_WEB_RESOURCE_MONITOR_POLL_SECONDS } else { '5' }
+$ResourceMonitorCriticalSamples = if ($env:OLLAMA_WEB_RESOURCE_MONITOR_CRITICAL_SAMPLES) { $env:OLLAMA_WEB_RESOURCE_MONITOR_CRITICAL_SAMPLES } else { '2' }
 
 New-Item -ItemType Directory -Path $LibraryDir -Force | Out-Null
 New-Item -ItemType Directory -Path $RunDir -Force | Out-Null
@@ -79,6 +88,15 @@ if (-not (Test-Http 'http://127.0.0.1:8088/api/pdf/status')) {
   $env:OLLAMA_WEB_PDF_DYNAMIC_DELAY_STEP_MS = $DynamicDelayStepMs
   $env:OLLAMA_WEB_PDF_DYNAMIC_MIN_THREADS = $DynamicMinThreads
   $env:OLLAMA_WEB_PDF_DYNAMIC_MAX_THREADS = $DynamicMaxThreads
+  $env:OLLAMA_WEB_SAFE_MODE = $SafeMode
+  $env:OLLAMA_WEB_ALLOW_UNSAFE_MODEL = $AllowUnsafeModel
+  $env:OLLAMA_WEB_MAX_CONCURRENT_GENERATIONS = $MaxConcurrentGenerations
+  $env:OLLAMA_WEB_FORCE_PRESSURE = $ForcePressure
+  $env:OLLAMA_WEB_ANSWER_KEEP_ALIVE = $AnswerKeepAlive
+  $env:OLLAMA_WEB_SAFE_ANSWER_KEEP_ALIVE = $SafeAnswerKeepAlive
+  $env:OLLAMA_WEB_RESOURCE_MONITOR = $ResourceMonitor
+  $env:OLLAMA_WEB_RESOURCE_MONITOR_POLL_SECONDS = $ResourceMonitorPollSeconds
+  $env:OLLAMA_WEB_RESOURCE_MONITOR_CRITICAL_SAMPLES = $ResourceMonitorCriticalSamples
 
   $webProc = Start-Process -FilePath $PythonBin -ArgumentList @($webScript) -WindowStyle Hidden -PassThru
   $webProc.Id | Out-File -FilePath $WebPidFile -Encoding ascii -Force

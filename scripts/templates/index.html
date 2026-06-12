@@ -27,8 +27,11 @@
         <h1 class="title">Ollama Librarian</h1>
         <div class="meta">Endpoint: %OLLAMA_BASE%</div>
         <div id="status" class="status">
-          <span id="statusDot" class="dot"></span>
-          <span id="statusText">Checking service...</span>
+          <div class="status-bubble">
+            <span id="statusDot" class="dot" aria-hidden="true"></span>
+            <span id="statusMain" class="status-main">Checking service...</span>
+          </div>
+          <span id="statusMeta" class="status-meta-outside"></span>
         </div>
 
         <label for="model">Model</label>

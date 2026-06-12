@@ -21,6 +21,13 @@ from typing import Mapping
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from ollama_librarian.hardware import (
+    classify_resource_pressure,
+    detect_hardware_profile,
+    recommend_model,
+    safety_policy_for_pressure,
+)
+
 try:
     from pypdf import PdfReader
 except Exception:
@@ -352,6 +359,8 @@ class RagCliConfig:
     web_host: str = "127.0.0.1"
     web_port: int = 8088
     ask_answer_timeout: int = 600
+    answer_num_thread: int = 0
+    answer_keep_alive: str = "60s"
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "RagCliConfig":
@@ -395,6 +404,10 @@ class RagCliConfig:
                 env, "OLLAMA_WEB_PDF_DYNAMIC_MAX_THREADS", 3)),
             web_host=str(env.get("OLLAMA_WEB_HOST", "127.0.0.1")).strip(),
             web_port=max(1, _env_int(env, "OLLAMA_WEB_PORT", 8088)),
+            answer_num_thread=max(0, _env_int(
+                env, "OLLAMA_WEB_ANSWER_NUM_THREAD", 0)),
+            answer_keep_alive=str(
+                env.get("OLLAMA_WEB_ANSWER_KEEP_ALIVE", "60s")),
         )
 
 
@@ -534,16 +547,26 @@ def embed_text(base_url: str, model: str, text: str, num_thread: int = 3) -> lis
     raise RuntimeError("Unexpected embedding response format from Ollama")
 
 
-def generate_answer(base_url: str, model: str, prompt: str, timeout: int = 180) -> str:
+def generate_answer(
+    base_url: str,
+    model: str,
+    prompt: str,
+    timeout: int = 180,
+    num_thread: int = 0,
+    keep_alive: str = "60s",
+) -> str:
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        "keep_alive": str(keep_alive or "60s"),
+    }
+    if int(num_thread or 0) > 0:
+        payload["options"] = {"num_thread": max(1, int(num_thread))}
     data = http_post_json(
         base_url,
         "/api/generate",
-        {
-            "model": model,
-            "prompt": prompt,
-            "stream": False,
-            "keep_alive": "60s",
-        },
+        payload,
         timeout=timeout,
     )
     return str(data.get("response", "")).strip()
@@ -1555,6 +1578,8 @@ def ask_command(args) -> int:
         args.answer_model,
         prompt,
         timeout=max(1, int(getattr(args, "answer_timeout", 180))),
+        num_thread=max(0, int(getattr(args, "answer_num_thread", 0) or 0)),
+        keep_alive=str(getattr(args, "answer_keep_alive", "60s") or "60s"),
     )
     metadata_map = load_document_metadata_map(
         conn, [path for _, path, _, _ in top])
@@ -1866,6 +1891,83 @@ def _doctor_check_ollama_and_models(base_url: str, required_models: list[str], t
     return checks
 
 
+def _doctor_check_hardware_profile() -> dict:
+    try:
+        hardware = detect_hardware_profile()
+        pressure = classify_resource_pressure(hardware)
+        policy = safety_policy_for_pressure(pressure)
+    except Exception as exc:
+        return _doctor_result(
+            "hardware_profile",
+            False,
+            f"Hardware profile detection failed: {exc}",
+        )
+
+    total_gb = hardware.to_dict().get("total_memory_gb")
+    available_gb = hardware.to_dict().get("available_memory_gb")
+    return _doctor_result(
+        "hardware_profile",
+        True,
+        (
+            f"Detected {hardware.os_name}/{hardware.machine}; "
+            f"cpu={hardware.cpu_count}; memory={total_gb}GB total, "
+            f"{available_gb}GB available; pressure={pressure}; "
+            f"safe action={policy.get('message', '')}"
+        ),
+    )
+
+
+def _doctor_check_model_recommendation(available_models: list[str]) -> dict:
+    if not available_models:
+        return _doctor_result(
+            "model_fit_recommendation",
+            True,
+            "Model fit recommendation skipped because no Ollama models were discovered",
+        )
+    try:
+        hardware = detect_hardware_profile()
+        recommendation = recommend_model(available_models, hardware)
+    except Exception as exc:
+        return _doctor_result(
+            "model_fit_recommendation",
+            False,
+            f"Model fit recommendation failed: {exc}",
+        )
+
+    recommended = str(recommendation.get("recommended_model") or "").strip()
+    if not recommended:
+        return _doctor_result(
+            "model_fit_recommendation",
+            False,
+            "No chat model recommendation is available; install a non-embedding model",
+        )
+
+    unsafe = [
+        str(item.get("name"))
+        for item in recommendation.get("models", [])
+        if isinstance(item, dict) and str(item.get("safety")) == "unsafe"
+    ]
+    caution = [
+        str(item.get("name"))
+        for item in recommendation.get("models", [])
+        if isinstance(item, dict) and str(item.get("safety")) == "caution"
+    ]
+    details = [
+        f"Recommended model: {recommended}",
+        f"reason={recommendation.get('reason', '')}",
+        f"safe_budget={recommendation.get('safe_budget_gb')}GB",
+    ]
+    if caution:
+        details.append(f"caution={', '.join(caution)}")
+    if unsafe:
+        details.append(f"unsafe={', '.join(unsafe)}")
+    return _doctor_result(
+        "model_fit_recommendation",
+        True,
+        "; ".join(details),
+    )
+
+
 def _doctor_check_index_db_writable(index_db: str) -> dict:
     path = Path(index_db).expanduser()
     parent = path.parent
@@ -1958,6 +2060,13 @@ def doctor_command(args) -> int:
     checks.extend(_doctor_check_dependency_imports())
     checks.extend(_doctor_check_ollama_and_models(
         args.ollama_base, required_models, timeout=args.timeout))
+    checks.append(_doctor_check_hardware_profile())
+    try:
+        discovered_models = _fetch_ollama_model_names(
+            args.ollama_base, timeout=args.timeout)
+    except Exception:
+        discovered_models = []
+    checks.append(_doctor_check_model_recommendation(discovered_models))
     checks.append(_doctor_check_index_db_writable(args.index_db))
     checks.append(_doctor_check_source_dir(args.source))
     checks.append(_doctor_check_port_available(args.web_host, args.web_port))
@@ -2074,6 +2183,17 @@ def build_parser(config: RagCliConfig | None = None):
         "--index-db",
         default=resolved.index_db,
         help="Local sqlite index path",
+    )
+    parser.add_argument(
+        "--answer-num-thread",
+        type=int,
+        default=resolved.answer_num_thread,
+        help="Optional thread cap for answer generation calls; 0 lets Ollama choose",
+    )
+    parser.add_argument(
+        "--answer-keep-alive",
+        default=resolved.answer_keep_alive,
+        help="Ollama keep_alive value for answer generation calls",
     )
 
     sub = parser.add_subparsers(dest="cmd", required=True)

@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 
 from pathlib import Path
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 INDEXER_MODULE_PATH = SRC / "ollama_librarian" / "indexer.py"
+
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
 _original_name = __name__
 _original_file = __file__

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import copy
 from dataclasses import dataclass
 import json
 import logging
@@ -21,6 +22,14 @@ from typing import Mapping
 from urllib.parse import parse_qs, quote, unquote, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+from ollama_librarian.hardware import (
+    build_system_profile,
+    classify_resource_pressure,
+    detect_hardware_profile,
+    recommend_model,
+    safety_policy_for_pressure,
+)
 
 
 LOGGER = logging.getLogger("ollama_web_chat")
@@ -262,6 +271,7 @@ HISTORY_LOCK = threading.Lock()
 PDF_LOCK = threading.Lock()
 STASH_LOCK = threading.Lock()
 PDF_SOURCE_OVERRIDE_PATH = DEFAULT_STATE_DIR / "ui-config.json"
+MODEL_CACHE_PATH = DEFAULT_STATE_DIR / "model-cache.json"
 
 
 PDF_SOURCE = CONFIG.pdf_source
@@ -315,6 +325,49 @@ PDF_SOURCE_SCAN_CACHE = {
     "scanned_at": 0.0,
 }
 PDF_SOURCE_SCAN_CACHE_TTL_SECONDS = 30.0
+RESOURCE_LOCK = threading.Lock()
+RESOURCE_STATE = {
+    "active_generations": 0,
+    "last_pressure": "unknown",
+    "last_policy": {},
+    "last_checked_at": None,
+    "last_block_reason": "",
+    "monitor_enabled": False,
+    "monitor_started_at": None,
+    "monitor_samples": 0,
+    "monitor_critical_samples": 0,
+    "monitor_last_action": "",
+    "monitor_last_action_at": None,
+    "monitor_last_error": "",
+}
+SAFE_MODE = _env_bool_true_unless_false(
+    os.environ, "OLLAMA_WEB_SAFE_MODE", "1")
+ALLOW_UNSAFE_MODEL = _env_bool_true_unless_false(
+    os.environ, "OLLAMA_WEB_ALLOW_UNSAFE_MODEL", "0")
+MAX_CONCURRENT_GENERATIONS = _env_int(
+    os.environ, "OLLAMA_WEB_MAX_CONCURRENT_GENERATIONS", 1, min_value=1)
+FORCE_PRESSURE = str(os.environ.get(
+    "OLLAMA_WEB_FORCE_PRESSURE", "")).strip().lower()
+ANSWER_KEEP_ALIVE = str(os.environ.get("OLLAMA_WEB_ANSWER_KEEP_ALIVE", "60s"))
+SAFE_ANSWER_KEEP_ALIVE = str(
+    os.environ.get("OLLAMA_WEB_SAFE_ANSWER_KEEP_ALIVE", "15s"))
+DEFAULT_MODEL_ENV = str(os.environ.get("OLLAMA_WEB_DEFAULT_MODEL", "")).strip()
+RESOURCE_MONITOR_ENABLED = _env_bool_true_unless_false(
+    os.environ, "OLLAMA_WEB_RESOURCE_MONITOR", "1")
+RESOURCE_MONITOR_POLL_SECONDS = _env_int(
+    os.environ, "OLLAMA_WEB_RESOURCE_MONITOR_POLL_SECONDS", 5, min_value=1)
+RESOURCE_MONITOR_CRITICAL_SAMPLES = _env_int(
+    os.environ, "OLLAMA_WEB_RESOURCE_MONITOR_CRITICAL_SAMPLES", 2, min_value=1)
+RESOURCE_MONITOR_THREAD: threading.Thread | None = None
+MODEL_CACHE_LOCK = threading.Lock()
+MODEL_CACHE = {
+    "models": [],
+    "cached_at": 0.0,
+    "base_url": "",
+    "loaded_from_disk": False,
+}
+MODEL_CACHE_TTL_SECONDS = _env_int(
+    os.environ, "OLLAMA_WEB_MODEL_CACHE_SECONDS", 60, min_value=0)
 UPDATE_LOCK = threading.Lock()
 UPDATE_STATE = {
     "job_id": None,
@@ -1375,8 +1428,245 @@ def start_update_apply(target_version: str) -> dict:
     }
 
 
+def get_current_safety_policy() -> dict:
+    try:
+        if FORCE_PRESSURE in {"ok", "warm", "throttled", "critical"}:
+            pressure = FORCE_PRESSURE
+        else:
+            hardware = detect_hardware_profile()
+            pressure = classify_resource_pressure(hardware)
+        policy = safety_policy_for_pressure(pressure)
+        if FORCE_PRESSURE in {"ok", "warm", "throttled", "critical"}:
+            policy = dict(policy)
+            policy["forced"] = True
+            policy[
+                "message"] = f"Forced pressure override active: {pressure}. {policy.get('message', '')}"
+    except Exception as exc:
+        pressure = "ok"
+        policy = safety_policy_for_pressure("ok")
+        policy = dict(policy)
+        policy["message"] = f"Safety policy fallback active: {exc}"
+
+    with RESOURCE_LOCK:
+        RESOURCE_STATE["last_pressure"] = pressure
+        RESOURCE_STATE["last_policy"] = dict(policy)
+        RESOURCE_STATE["last_checked_at"] = int(time.time())
+    return dict(policy)
+
+
+def get_resource_runtime_state(policy: dict | None = None) -> dict:
+    resolved_policy = dict(policy or get_current_safety_policy())
+    with RESOURCE_LOCK:
+        active_generations = int(
+            RESOURCE_STATE.get("active_generations", 0) or 0)
+        last_block_reason = str(RESOURCE_STATE.get(
+            "last_block_reason", "") or "")
+        last_checked_at = RESOURCE_STATE.get("last_checked_at")
+        monitor = {
+            "enabled": bool(RESOURCE_STATE.get("monitor_enabled", False)),
+            "started_at": RESOURCE_STATE.get("monitor_started_at"),
+            "poll_seconds": int(RESOURCE_MONITOR_POLL_SECONDS),
+            "critical_samples_required": int(RESOURCE_MONITOR_CRITICAL_SAMPLES),
+            "samples": int(RESOURCE_STATE.get("monitor_samples", 0) or 0),
+            "critical_samples": int(RESOURCE_STATE.get("monitor_critical_samples", 0) or 0),
+            "last_action": str(RESOURCE_STATE.get("monitor_last_action", "") or ""),
+            "last_action_at": RESOURCE_STATE.get("monitor_last_action_at"),
+            "last_error": str(RESOURCE_STATE.get("monitor_last_error", "") or ""),
+        }
+    return {
+        "safe_mode": bool(SAFE_MODE),
+        "forced_pressure": FORCE_PRESSURE if FORCE_PRESSURE in {"ok", "warm", "throttled", "critical"} else "",
+        "allow_unsafe_model": bool(ALLOW_UNSAFE_MODEL),
+        "max_concurrent_generations": int(MAX_CONCURRENT_GENERATIONS),
+        "active_generations": active_generations,
+        "last_checked_at": last_checked_at,
+        "last_block_reason": last_block_reason,
+        "monitor": monitor,
+        "policy": resolved_policy,
+    }
+
+
+def resource_monitor_tick() -> dict:
+    policy = get_current_safety_policy()
+    pressure = str(policy.get("pressure") or "ok")
+    action = "sampled"
+    pause_result: dict | None = None
+
+    with RESOURCE_LOCK:
+        RESOURCE_STATE["monitor_enabled"] = bool(
+            SAFE_MODE and RESOURCE_MONITOR_ENABLED)
+        RESOURCE_STATE["monitor_samples"] = int(
+            RESOURCE_STATE.get("monitor_samples", 0) or 0) + 1
+        if pressure == "critical":
+            RESOURCE_STATE["monitor_critical_samples"] = int(
+                RESOURCE_STATE.get("monitor_critical_samples", 0) or 0) + 1
+        else:
+            RESOURCE_STATE["monitor_critical_samples"] = 0
+        critical_samples = int(
+            RESOURCE_STATE.get("monitor_critical_samples", 0) or 0)
+
+    if pressure == "critical" and critical_samples >= RESOURCE_MONITOR_CRITICAL_SAMPLES:
+        should_pause = bool(policy.get("pause_index", False))
+        with PDF_LOCK:
+            index_running = bool(PDF_INDEX_STATE.get("running"))
+            pause_requested = bool(PDF_INDEX_STATE.get("pause_requested"))
+        if should_pause and index_running and not pause_requested:
+            pause_result = pause_pdf_index_job()
+            action = "paused_index" if pause_result.get(
+                "paused") else "pause_attempted"
+        elif index_running and pause_requested:
+            action = "index_pause_already_requested"
+        else:
+            action = "critical_no_index"
+
+    with RESOURCE_LOCK:
+        RESOURCE_STATE["monitor_last_action"] = action
+        RESOURCE_STATE["monitor_last_action_at"] = int(time.time())
+        RESOURCE_STATE["monitor_last_error"] = ""
+        if action in {"paused_index", "pause_attempted", "critical_no_index"}:
+            RESOURCE_STATE["last_block_reason"] = str(
+                policy.get("message") or "System pressure is critical.")
+
+    return {
+        "ok": True,
+        "pressure": pressure,
+        "policy": policy,
+        "action": action,
+        "pause_result": pause_result,
+    }
+
+
+def _resource_monitor_loop() -> None:
+    while True:
+        try:
+            resource_monitor_tick()
+        except Exception as exc:
+            with RESOURCE_LOCK:
+                RESOURCE_STATE["monitor_last_error"] = str(exc)
+                RESOURCE_STATE["monitor_last_action"] = "error"
+                RESOURCE_STATE["monitor_last_action_at"] = int(time.time())
+        time.sleep(max(1, int(RESOURCE_MONITOR_POLL_SECONDS)))
+
+
+def start_resource_monitor() -> bool:
+    global RESOURCE_MONITOR_THREAD
+    if not SAFE_MODE or not RESOURCE_MONITOR_ENABLED:
+        with RESOURCE_LOCK:
+            RESOURCE_STATE["monitor_enabled"] = False
+        return False
+    if RESOURCE_MONITOR_THREAD is not None and RESOURCE_MONITOR_THREAD.is_alive():
+        return False
+    with RESOURCE_LOCK:
+        RESOURCE_STATE["monitor_enabled"] = True
+        RESOURCE_STATE["monitor_started_at"] = int(time.time())
+    RESOURCE_MONITOR_THREAD = threading.Thread(
+        target=_resource_monitor_loop,
+        name="ollama-librarian-resource-monitor",
+        daemon=True,
+    )
+    RESOURCE_MONITOR_THREAD.start()
+    return True
+
+
+def acquire_generation_slot(kind: str) -> dict:
+    if not SAFE_MODE:
+        with RESOURCE_LOCK:
+            RESOURCE_STATE["active_generations"] = int(
+                RESOURCE_STATE.get("active_generations", 0) or 0) + 1
+        return {"ok": True, "policy": safety_policy_for_pressure("ok")}
+
+    policy = get_current_safety_policy()
+    pressure = str(policy.get("pressure") or "ok")
+    policy_slots = int(policy.get("max_generation_slots") or 0)
+    max_slots = min(int(MAX_CONCURRENT_GENERATIONS), policy_slots)
+    if pressure == "critical" or not bool(policy.get("allow_new_work", True)) or max_slots <= 0:
+        reason = str(policy.get("message")
+                     or "System pressure is too high for new work.")
+        with RESOURCE_LOCK:
+            RESOURCE_STATE["last_block_reason"] = reason
+        return {"ok": False, "code": 503, "error": reason, "policy": policy}
+
+    with RESOURCE_LOCK:
+        active = int(RESOURCE_STATE.get("active_generations", 0) or 0)
+        if active >= max_slots:
+            reason = "Another generation is already running; safe mode allows one heavy query at a time."
+            RESOURCE_STATE["last_block_reason"] = reason
+            return {"ok": False, "code": 429, "error": reason, "policy": policy}
+        RESOURCE_STATE["active_generations"] = active + 1
+        RESOURCE_STATE["last_block_reason"] = ""
+    return {"ok": True, "kind": kind, "policy": policy}
+
+
+def release_generation_slot() -> None:
+    with RESOURCE_LOCK:
+        active = int(RESOURCE_STATE.get("active_generations", 0) or 0)
+        RESOURCE_STATE["active_generations"] = max(0, active - 1)
+
+
+def admit_index_start() -> dict:
+    if not SAFE_MODE:
+        return {"ok": True, "policy": safety_policy_for_pressure("ok")}
+    policy = get_current_safety_policy()
+    if not bool(policy.get("allow_index_start", True)):
+        reason = str(policy.get("message")
+                     or "System pressure is too high to start indexing.")
+        with RESOURCE_LOCK:
+            RESOURCE_STATE["last_block_reason"] = reason
+        return {"ok": False, "code": 503, "error": reason, "policy": policy}
+    with RESOURCE_LOCK:
+        active_generations = int(
+            RESOURCE_STATE.get("active_generations", 0) or 0)
+        if active_generations > 0:
+            reason = "A generation is already running; safe mode delays indexing until heavy queries finish."
+            RESOURCE_STATE["last_block_reason"] = reason
+            return {"ok": False, "code": 429, "error": reason, "policy": policy}
+        RESOURCE_STATE["last_block_reason"] = ""
+    return {"ok": True, "policy": policy}
+
+
+def _policy_value(policy: dict, key: str, fallback: int) -> int:
+    raw = policy.get(key)
+    if raw is None:
+        return int(fallback)
+    try:
+        return max(1 if key.endswith("threads") or key.endswith("jobs") else 0, int(raw))
+    except Exception:
+        return int(fallback)
+
+
+def safe_generation_options(policy: dict | None = None) -> dict:
+    resolved_policy = dict(policy or get_current_safety_policy())
+    pressure = str(resolved_policy.get("pressure") or "ok")
+    out = {
+        "num_thread": 0,
+        "keep_alive": ANSWER_KEEP_ALIVE,
+        "pressure": pressure,
+    }
+    if not SAFE_MODE:
+        return out
+
+    raw_threads = resolved_policy.get("embed_num_thread")
+    try:
+        out["num_thread"] = max(0, int(raw_threads or 0))
+    except Exception:
+        out["num_thread"] = 0
+    if pressure in {"warm", "throttled", "critical"}:
+        out["keep_alive"] = SAFE_ANSWER_KEEP_ALIVE
+    return out
+
+
 def _build_pdf_rag_command(extra_args: list[str]) -> tuple[list[str], dict[str, str]]:
     env = os.environ.copy()
+    policy = get_current_safety_policy() if SAFE_MODE else safety_policy_for_pressure("ok")
+    embed_num_thread = _policy_value(
+        policy, "embed_num_thread", PDF_EMBED_NUM_THREAD)
+    embed_delay_ms = _policy_value(
+        policy, "embed_delay_ms", PDF_EMBED_DELAY_MS)
+    doc_cooldown_seconds = _policy_value(
+        policy, "doc_cooldown_seconds", PDF_DOC_COOLDOWN_SECONDS)
+    dynamic_max_threads = _policy_value(
+        policy, "dynamic_max_threads", PDF_DYNAMIC_MAX_THREADS)
+    answer_options = safe_generation_options(policy)
     src_path = str(REPO_ROOT / "src")
     if os.path.isdir(src_path):
         existing_pythonpath = env.get("PYTHONPATH", "")
@@ -1394,11 +1684,11 @@ def _build_pdf_rag_command(extra_args: list[str]) -> tuple[list[str], dict[str, 
         "--embed-model",
         PDF_EMBED_MODEL,
         "--embed-num-thread",
-        str(PDF_EMBED_NUM_THREAD),
+        str(embed_num_thread),
         "--embed-delay-ms",
-        str(PDF_EMBED_DELAY_MS),
+        str(embed_delay_ms),
         "--doc-cooldown-seconds",
-        str(PDF_DOC_COOLDOWN_SECONDS),
+        str(doc_cooldown_seconds),
         "--dynamic-target-embed-ms",
         str(PDF_DYNAMIC_TARGET_EMBED_MS),
         "--dynamic-max-delay-ms",
@@ -1408,9 +1698,13 @@ def _build_pdf_rag_command(extra_args: list[str]) -> tuple[list[str], dict[str, 
         "--dynamic-min-threads",
         str(PDF_DYNAMIC_MIN_THREADS),
         "--dynamic-max-threads",
-        str(PDF_DYNAMIC_MAX_THREADS),
+        str(dynamic_max_threads),
         "--index-db",
         PDF_INDEX_DB,
+        "--answer-num-thread",
+        str(int(answer_options.get("num_thread") or 0)),
+        "--answer-keep-alive",
+        str(answer_options.get("keep_alive") or ANSWER_KEEP_ALIVE),
     ]
     cmd.append(
         "--dynamic-throttle" if PDF_DYNAMIC_THROTTLE else "--no-dynamic-throttle")
@@ -1434,6 +1728,324 @@ def run_pdf_rag(extra_args, timeout: int | None = 600):
     if proc.returncode != 0:
         raise RuntimeError(err or out or f"Command failed: {' '.join(cmd)}")
     return out
+
+
+def _copy_model_items(models: list[dict]) -> list[dict]:
+    return copy.deepcopy(models)
+
+
+def get_model_cache_state() -> dict:
+    with MODEL_CACHE_LOCK:
+        cached_at = float(MODEL_CACHE.get("cached_at", 0.0) or 0.0)
+        model_count = len(MODEL_CACHE.get("models", []) or [])
+        base_url = str(MODEL_CACHE.get("base_url", "") or "")
+        loaded_from_disk = bool(MODEL_CACHE.get("loaded_from_disk", False))
+    now = time.time()
+    age_seconds = max(0.0, now - cached_at) if cached_at > 0 else None
+    return {
+        "ttl_seconds": int(MODEL_CACHE_TTL_SECONDS),
+        "cached_at": int(cached_at) if cached_at > 0 else None,
+        "age_seconds": round(age_seconds, 1) if age_seconds is not None else None,
+        "model_count": model_count,
+        "base_url": base_url,
+        "loaded_from_disk": loaded_from_disk,
+    }
+
+
+def clear_model_cache() -> None:
+    with MODEL_CACHE_LOCK:
+        MODEL_CACHE["models"] = []
+        MODEL_CACHE["cached_at"] = 0.0
+        MODEL_CACHE["base_url"] = ""
+        MODEL_CACHE["loaded_from_disk"] = False
+    try:
+        MODEL_CACHE_PATH.unlink()
+    except FileNotFoundError:
+        pass
+    except Exception:
+        LOGGER.exception("Failed to remove model cache file")
+
+
+def load_model_cache_from_disk() -> bool:
+    try:
+        raw = MODEL_CACHE_PATH.read_text(encoding="utf-8")
+        parsed = json.loads(raw) if raw else {}
+    except FileNotFoundError:
+        return False
+    except Exception:
+        LOGGER.exception("Failed to load model cache file")
+        return False
+
+    if not isinstance(parsed, dict):
+        return False
+    models = parsed.get("models")
+    cached_at = parsed.get("cached_at")
+    base_url = str(parsed.get("base_url") or "")
+    if not isinstance(models, list) or not base_url:
+        return False
+    try:
+        cached_at_float = float(cached_at)
+    except Exception:
+        return False
+    with MODEL_CACHE_LOCK:
+        MODEL_CACHE["models"] = _copy_model_items(
+            [item for item in models if isinstance(item, dict)])
+        MODEL_CACHE["cached_at"] = cached_at_float
+        MODEL_CACHE["base_url"] = base_url
+        MODEL_CACHE["loaded_from_disk"] = True
+    return True
+
+
+def persist_model_cache_to_disk() -> None:
+    with MODEL_CACHE_LOCK:
+        payload = {
+            "models": _copy_model_items(MODEL_CACHE.get("models", []) or []),
+            "cached_at": float(MODEL_CACHE.get("cached_at", 0.0) or 0.0),
+            "base_url": str(MODEL_CACHE.get("base_url", "") or ""),
+        }
+    if not payload["models"] or payload["cached_at"] <= 0 or not payload["base_url"]:
+        return
+    try:
+        MODEL_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = MODEL_CACHE_PATH.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(
+            payload, ensure_ascii=True), encoding="utf-8")
+        os.replace(tmp_path, MODEL_CACHE_PATH)
+    except Exception:
+        LOGGER.exception("Failed to persist model cache file")
+
+
+def fetch_ollama_model_items(timeout: int = 10, force_refresh: bool = False) -> list[dict]:
+    now = time.time()
+    if not force_refresh and MODEL_CACHE_TTL_SECONDS > 0:
+        with MODEL_CACHE_LOCK:
+            has_memory_cache = bool(MODEL_CACHE.get("models"))
+        if not has_memory_cache:
+            load_model_cache_from_disk()
+        with MODEL_CACHE_LOCK:
+            cached_at = float(MODEL_CACHE.get("cached_at", 0.0) or 0.0)
+            cached_base = str(MODEL_CACHE.get("base_url", "") or "")
+            cached_models = MODEL_CACHE.get("models", [])
+            if (
+                cached_base == OLLAMA_BASE
+                and cached_at > 0
+                and (now - cached_at) <= MODEL_CACHE_TTL_SECONDS
+                and isinstance(cached_models, list)
+            ):
+                return _copy_model_items(cached_models)
+
+    models = _fetch_ollama_model_items_uncached(timeout=timeout)
+    if MODEL_CACHE_TTL_SECONDS > 0:
+        with MODEL_CACHE_LOCK:
+            MODEL_CACHE["models"] = _copy_model_items(models)
+            MODEL_CACHE["cached_at"] = float(now)
+            MODEL_CACHE["base_url"] = OLLAMA_BASE
+            MODEL_CACHE["loaded_from_disk"] = False
+        persist_model_cache_to_disk()
+    return _copy_model_items(models)
+
+
+def _fetch_ollama_model_items_uncached(timeout: int = 10) -> list[dict]:
+    req = Request(f"{OLLAMA_BASE.rstrip('/')}/api/tags", method="GET")
+    try:
+        with urlopen(req, timeout=max(1, int(timeout))) as resp:
+            payload = resp.read().decode("utf-8", errors="replace")
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
+    except URLError as exc:
+        raise RuntimeError(
+            f"Cannot reach Ollama at {OLLAMA_BASE}: {exc}") from exc
+
+    data = json.loads(payload) if payload else {}
+    models = data.get("models", []) if isinstance(data, dict) else []
+    out = [dict(item) for item in models if isinstance(item, dict)]
+    show_timeout = max(1, min(5, int(timeout)))
+    for item in out:
+        name = str(item.get("name") or item.get("model") or "").strip()
+        if not name:
+            continue
+        try:
+            detail = fetch_ollama_model_show(name, timeout=show_timeout)
+        except Exception as exc:
+            item["show_error"] = str(exc)
+            continue
+        if isinstance(detail.get("details"), dict):
+            merged_details = dict(item.get("details") or {})
+            merged_details.update(detail["details"])
+            item["details"] = merged_details
+        if isinstance(detail.get("model_info"), dict):
+            item["model_info"] = detail["model_info"]
+        if isinstance(detail.get("parameters"), str):
+            item["parameters"] = detail["parameters"]
+    return out
+
+
+def fetch_ollama_model_show(model: str, timeout: int = 5) -> dict:
+    body = json.dumps({"model": model}).encode("utf-8")
+    req = Request(
+        f"{OLLAMA_BASE.rstrip('/')}/api/show",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(req, timeout=max(1, int(timeout))) as resp:
+            payload = resp.read().decode("utf-8", errors="replace")
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
+    except URLError as exc:
+        raise RuntimeError(
+            f"Cannot inspect model {model} at {OLLAMA_BASE}: {exc}") from exc
+
+    parsed = json.loads(payload) if payload else {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def get_cached_model_items_if_fresh() -> list[dict]:
+    if MODEL_CACHE_TTL_SECONDS <= 0:
+        return []
+    now = time.time()
+    with MODEL_CACHE_LOCK:
+        cached_at = float(MODEL_CACHE.get("cached_at", 0.0) or 0.0)
+        cached_base = str(MODEL_CACHE.get("base_url", "") or "")
+        cached_models = MODEL_CACHE.get("models", [])
+        if (
+            cached_base == OLLAMA_BASE
+            and cached_at > 0
+            and (now - cached_at) <= MODEL_CACHE_TTL_SECONDS
+            and isinstance(cached_models, list)
+        ):
+            return _copy_model_items(cached_models)
+    return []
+
+
+def get_system_profile(force_refresh: bool = False) -> dict:
+    model_error = ""
+    try:
+        models = fetch_ollama_model_items(force_refresh=force_refresh)
+    except Exception as exc:
+        models = []
+        model_error = str(exc)
+
+    payload = build_system_profile(models)
+    active_policy = get_current_safety_policy()
+    payload["resource_state"] = {
+        "pressure": active_policy.get("pressure", "ok"),
+        "monitoring": "active",
+        "policy": active_policy,
+    }
+    payload["ollama"] = {
+        "base_url": OLLAMA_BASE,
+        "reachable": not bool(model_error),
+        "error": model_error,
+        "model_count": len(models),
+        "model_cache": get_model_cache_state(),
+    }
+    payload["runtime"] = get_resource_runtime_state(
+        active_policy if isinstance(active_policy, dict) else None)
+    return payload
+
+
+def get_system_health() -> dict:
+    hardware_payload = {}
+    recommendation = {}
+    try:
+        hardware = detect_hardware_profile()
+        hardware_payload = hardware.to_dict()
+        cached_models = get_cached_model_items_if_fresh()
+        if cached_models:
+            recommendation = recommend_model(cached_models, hardware)
+    except Exception as exc:
+        hardware_payload = {"error": str(exc)}
+
+    active_policy = get_current_safety_policy()
+    resource_state = {
+        "pressure": active_policy.get("pressure", "ok"),
+        "monitoring": "active",
+        "policy": active_policy,
+    }
+    return {
+        "ok": True,
+        "resource_state": resource_state,
+        "runtime": get_resource_runtime_state(active_policy),
+        "hardware": hardware_payload,
+        "recommendation": recommendation,
+        "ollama": {
+            "base_url": OLLAMA_BASE,
+            "reachable": None,
+            "not_checked": True,
+            "model_cache": get_model_cache_state(),
+        },
+    }
+
+
+def get_recommended_model(default: str = "qwen2.5:14b") -> str:
+    # Honor explicit env override first
+    if DEFAULT_MODEL_ENV:
+        return DEFAULT_MODEL_ENV
+
+    try:
+        models = fetch_ollama_model_items(timeout=5)
+        profile = build_system_profile(models)
+        recommended = profile.get("recommendation", {}).get(
+            "recommended_model", "")
+
+        # If this machine looks like a consumer-class machine (<=32GB RAM),
+        # prefer a smaller, reliable model if available (qwen2.5:3b).
+        try:
+            total_mem = float(profile.get(
+                "hardware", {}).get("total_memory_gb") or 0.0)
+        except Exception:
+            total_mem = 0.0
+
+        if (not recommended) or (total_mem > 0 and total_mem <= 32.0):
+            # look for an explicit qwen2.5:3b model in the discovered models
+            for item in profile.get("recommendation", {}).get("models", []):
+                name = str(item.get("name") or "").strip()
+                if not name:
+                    continue
+                if name.lower().startswith("qwen2.5:3b") or "qwen2.5" in name.lower() and ":3b" in name.lower():
+                    return name
+
+        return str(recommended or default)
+    except Exception:
+        return default
+
+
+def choose_pdf_answer_model(value: object) -> str:
+    model = str(value or "").strip()
+    if model:
+        return model
+    return get_recommended_model()
+
+
+def validate_model_allowed(model: str) -> dict:
+    if not SAFE_MODE or ALLOW_UNSAFE_MODEL:
+        return {"ok": True}
+    name = str(model or "").strip()
+    if not name:
+        return {"ok": True}
+    try:
+        models = fetch_ollama_model_items(timeout=5)
+        profile = build_system_profile(models)
+    except Exception:
+        return {"ok": True}
+    for item in profile.get("recommendation", {}).get("models", []):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("name") or "") != name:
+            continue
+        if str(item.get("safety") or "") == "unsafe":
+            recommended = profile.get("recommendation", {}).get(
+                "recommended_model", "")
+            message = f"Model {name} is marked unsafe for this machine."
+            if recommended:
+                message += f" Recommended safe model: {recommended}."
+            return {"ok": False, "code": 409, "error": message, "recommendation": profile.get("recommendation", {})}
+        return {"ok": True, "model_safety": item.get("safety")}
+    return {"ok": True}
 
 
 def pause_pdf_index_job() -> dict:
@@ -1544,6 +2156,12 @@ def get_pdf_status():
         "min_threads": int(PDF_DYNAMIC_MIN_THREADS),
         "max_threads": int(PDF_DYNAMIC_MAX_THREADS),
     }
+    policy = get_current_safety_policy()
+    status["resource_state"] = {
+        "pressure": policy.get("pressure", "ok"),
+        "policy": policy,
+        "runtime": get_resource_runtime_state(policy),
+    }
     return status
 
 
@@ -1560,12 +2178,14 @@ def _index_worker():
         index_args = ["index", "--source",
                       source_path, "--prune", "--json-summary"]
         if PDF_OCR_ON_SYNC:
+            policy = get_current_safety_policy()
+            ocr_jobs = _policy_value(policy, "ocr_jobs", PDF_OCR_JOBS)
             index_args.extend([
                 "--ocr-missing",
                 "--ocr-lang",
                 PDF_OCR_LANG,
                 "--ocr-jobs",
-                str(PDF_OCR_JOBS),
+                str(ocr_jobs),
                 "--ocr-timeout",
                 str(PDF_OCR_TIMEOUT),
             ])
@@ -2527,6 +3147,25 @@ class Handler(BaseHTTPRequestHandler):
             "application/json; charset=utf-8",
         )
 
+    def _handle_get_system_profile(self, parsed_url=None):
+        params = parse_qs(parsed_url.query) if parsed_url is not None else {}
+        refresh = str(params.get("refresh", [""])[0]).strip().lower() in {
+            "1", "true", "yes", "on"
+        }
+        return self._send(
+            200,
+            json.dumps(get_system_profile(
+                force_refresh=refresh), ensure_ascii=True),
+            "application/json; charset=utf-8",
+        )
+
+    def _handle_get_system_health(self):
+        return self._send(
+            200,
+            json.dumps(get_system_health(), ensure_ascii=True),
+            "application/json; charset=utf-8",
+        )
+
     def _handle_get_update_check(self):
         return self._send(
             200,
@@ -2630,7 +3269,49 @@ class Handler(BaseHTTPRequestHandler):
                 "application/json; charset=utf-8",
             )
         data = self.rfile.read(length) if length > 0 else b"{}"
-        return self._proxy("POST", "/api/generate", data)
+        try:
+            payload = json.loads(data.decode(
+                "utf-8", errors="replace") or "{}")
+        except Exception:
+            payload = None
+
+        if isinstance(payload, dict):
+            model = str(payload.get("model") or "").strip()
+            if not model:
+                payload["model"] = get_recommended_model()
+                model = str(payload.get("model") or "").strip()
+            model_check = validate_model_allowed(model)
+            if not model_check.get("ok", True):
+                return self._send(
+                    int(model_check.get("code") or 409),
+                    json.dumps(model_check, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+            policy = get_current_safety_policy()
+            generation_options = safe_generation_options(policy)
+            options = payload.get("options") if isinstance(
+                payload.get("options"), dict) else {}
+            policy_threads = int(generation_options.get("num_thread") or 0)
+            if SAFE_MODE and policy_threads > 0:
+                options = dict(options)
+                options.setdefault("num_thread", policy_threads)
+                payload["options"] = options
+            if SAFE_MODE and generation_options.get("pressure") in {"warm", "throttled", "critical"}:
+                payload["keep_alive"] = str(
+                    generation_options.get("keep_alive") or SAFE_ANSWER_KEEP_ALIVE)
+            data = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+
+        admission = acquire_generation_slot("generate")
+        if not admission.get("ok", True):
+            return self._send(
+                int(admission.get("code") or 503),
+                json.dumps(admission, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        try:
+            return self._proxy("POST", "/api/generate", data)
+        finally:
+            release_generation_slot()
 
     def _handle_post_abstract_evaluate(self):
         payload = self._read_json_body()
@@ -2754,10 +3435,19 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, json.dumps({"ok": True}), "application/json; charset=utf-8")
 
     def _handle_post_pdf_index(self):
+        admission = admit_index_start()
+        if not admission.get("ok", True):
+            return self._send(
+                int(admission.get("code") or 503),
+                json.dumps({"ok": False, "started": False,
+                           **admission}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
         started = start_pdf_index_job()
         return self._send(
             200,
-            json.dumps({"ok": True, "started": started}, ensure_ascii=True),
+            json.dumps({"ok": True, "started": started, "policy": admission.get(
+                "policy", {})}, ensure_ascii=True),
             "application/json; charset=utf-8",
         )
 
@@ -2855,7 +3545,14 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         query = payload.get("query", "")
-        model = payload.get("model", "qwen2.5:14b")
+        model = choose_pdf_answer_model(payload.get("model", ""))
+        model_check = validate_model_allowed(str(model))
+        if not model_check.get("ok", True):
+            return self._send(
+                int(model_check.get("code") or 409),
+                json.dumps(model_check, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
         try:
             top_k = int(payload.get("top_k", PDF_TOP_K))
         except Exception:
@@ -2873,6 +3570,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(
                 400,
                 json.dumps({"error": "query is required"}),
+                "application/json; charset=utf-8",
+            )
+
+        admission = acquire_generation_slot("pdf_ask")
+        if not admission.get("ok", True):
+            return self._send(
+                int(admission.get("code") or 503),
+                json.dumps(admission, ensure_ascii=True),
                 "application/json; charset=utf-8",
             )
 
@@ -2899,6 +3604,8 @@ class Handler(BaseHTTPRequestHandler):
                 json.dumps({"error": str(exc)}, ensure_ascii=True),
                 "application/json; charset=utf-8",
             )
+        finally:
+            release_generation_slot()
 
     def _handle_post_library_upload(self, parsed_url):
         params = parse_qs(parsed_url.query)
@@ -3176,6 +3883,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/stash": lambda: self._handle_get_stash(parsed_url),
             "/api/bibliography": lambda: self._handle_get_bibliography(parsed_url),
             "/api/pdf/status": lambda: self._handle_get_pdf_status(),
+            "/api/system/profile": lambda: self._handle_get_system_profile(parsed_url),
+            "/api/system/health": lambda: self._handle_get_system_health(),
             "/api/update/status": lambda: self._handle_get_update_status(),
             "/api/update/check": lambda: self._handle_get_update_check(),
             "/api/update/events": lambda: self._handle_get_update_events(parsed_url),
@@ -3272,6 +3981,7 @@ def main():
         )
 
     server = ThreadingHTTPServer((HOST, PORT), Handler)
+    start_resource_monitor()
     print(f"Serving UI at http://{HOST}:{PORT} (proxying {OLLAMA_BASE})")
     server.serve_forever()
 

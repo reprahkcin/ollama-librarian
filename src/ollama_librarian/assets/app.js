@@ -75,7 +75,8 @@ const pdfStatusAdaptiveEl = document.getElementById("pdfStatusAdaptive");
 const pdfStatusErrorEl = document.getElementById("pdfStatusError");
 const messagesEl = document.getElementById("messages");
 const statusDotEl = document.getElementById("statusDot");
-const statusTextEl = document.getElementById("statusText");
+const statusMainEl = document.getElementById("statusMain");
+const statusMetaEl = document.getElementById("statusMeta");
 const metaEl = document.getElementById("meta");
 const stashModalEl = document.getElementById("stashModal");
 const stashListEl = document.getElementById("stashList");
@@ -106,6 +107,7 @@ let promptHistory = [];
 let promptHistoryIndex = -1;
 let pinnedPrompts = [];
 let syncSnapshot = null;
+let systemProfile = null;
 
 const DOC_FILTER_STORAGE_KEY = "ollama_web_excluded_docs_v1";
 const PROMPT_HISTORY_STORAGE_KEY = "ollama_web_prompt_history_v1";
@@ -123,6 +125,34 @@ const SUPPORTED_UPLOAD_EXTENSIONS = new Set([
   ".epub",
 ]);
 let latestUpdateVersion = "";
+
+function compactNumber(value, suffix = "") {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) return "";
+  const rounded = Math.round(num * 10) / 10;
+  return `${rounded}${suffix}`;
+}
+
+function describeModelDetails(item) {
+  if (!item || typeof item !== "object") return "";
+  const parts = [];
+  const params = compactNumber(item.parameter_size_b, "B");
+  if (params) parts.push(params);
+  if (item.quantization) parts.push(String(item.quantization).toUpperCase());
+  if (item.family) parts.push(String(item.family));
+  if (item.context_length) parts.push(`${item.context_length} ctx`);
+  if (item.estimated_memory_gb) {
+    parts.push(`~${compactNumber(item.estimated_memory_gb, "GB")}`);
+  }
+  return parts.join(" | ");
+}
+
+function buildModelOptionLabel(name, item) {
+  const safety = item && item.safety ? String(item.safety) : "";
+  const details = describeModelDetails(item);
+  const suffix = [safety, details].filter(Boolean).join(" | ");
+  return suffix ? `${name} (${suffix})` : name;
+}
 
 function extensionOfName(name) {
   const raw = String(name || "")
@@ -434,11 +464,18 @@ async function askSelectedPrompt() {
   await sendPrompt();
 }
 
-function setStatus(state, text) {
+function setStatus(state, text, metaText = "", titleText = "") {
   statusDotEl.classList.remove("ok", "err");
   if (state === "ok") statusDotEl.classList.add("ok");
   if (state === "err") statusDotEl.classList.add("err");
-  statusTextEl.textContent = text;
+
+  const main = String(text || "").trim();
+  const meta = String(metaText || "").trim();
+  const title = String(titleText || [main, meta].filter(Boolean).join(" - "));
+  if (statusMainEl) statusMainEl.textContent = main;
+  if (statusMetaEl) statusMetaEl.textContent = meta;
+  const statusEl = document.getElementById("status");
+  if (statusEl) statusEl.title = title;
 }
 
 function formatAbstractEvalResult(data) {
@@ -2154,6 +2191,34 @@ function buildAdaptiveThrottleLine(data) {
   return `${base} | last run avg ${Math.round(avgEmbedMs)}ms, final ${finalThreads} thread(s), ${finalDelayMs}ms delay, ${adjustments} adjustment(s)`;
 }
 
+function buildResourceStateLine(data) {
+  const resource = data && data.resource_state ? data.resource_state : {};
+  const policy = resource.policy || {};
+  const runtime = resource.runtime || {};
+  const monitor = runtime.monitor || {};
+  const pressure = policy.pressure || resource.pressure || "unknown";
+  const active = Number(runtime.active_generations || 0);
+  const slots = Number(runtime.max_concurrent_generations || 1);
+  const safeMode = runtime.safe_mode === false ? "off" : "on";
+  const monitorText = monitor.enabled
+    ? `monitor ${monitor.last_action || "sampling"}`
+    : "monitor off";
+  return `Resource guard: ${pressure} | safe mode ${safeMode} | active ${active}/${slots} | ${monitorText}`;
+}
+
+function buildModelCacheLine() {
+  const cache =
+    systemProfile && systemProfile.ollama && systemProfile.ollama.model_cache
+      ? systemProfile.ollama.model_cache
+      : null;
+  if (!cache || cache.cached_at === null || cache.cached_at === undefined) {
+    return "Model metadata: uncached";
+  }
+  const age = Number(cache.age_seconds || 0);
+  const ttl = Number(cache.ttl_seconds || 0);
+  return `Model metadata: cached ${Math.round(age)}s ago | ttl ${ttl}s`;
+}
+
 function confirmSyncSafety() {
   return window.confirm(
     "Large library sync can run for a long time and should be planned carefully.\n\n" +
@@ -2230,7 +2295,13 @@ async function refreshPdfStatus() {
     const idx = formatEpoch(data.last_indexed_at);
     const running = job.running ? "running" : "idle";
     const pauseRequested = Boolean(job.pause_requested);
-    const throttleLine = buildAdaptiveThrottleLine(data);
+    const throttleLine = [
+      buildAdaptiveThrottleLine(data),
+      buildResourceStateLine(data),
+      buildModelCacheLine(),
+    ]
+      .filter(Boolean)
+      .join(" | ");
 
     if (pdfSourcePathEl && document.activeElement !== pdfSourcePathEl) {
       pdfSourcePathEl.value = String(data.source_path || "");
@@ -2622,14 +2693,38 @@ function cancelPromptRequest() {
   activeRequestController.abort();
 }
 
-async function loadModels() {
+async function loadModels(forceRefresh = false) {
   modelEl.innerHTML = "";
   setStatus("", "Checking service...");
   try {
-    const res = await fetch("/api/tags");
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    const models = (data.models || []).map((m) => m.name);
+    let models = [];
+    let recommended = "";
+    let detailsByName = new Map();
+
+    try {
+      const profileUrl = forceRefresh
+        ? "/api/system/profile?refresh=1"
+        : "/api/system/profile";
+      const profileRes = await fetch(profileUrl);
+      if (!profileRes.ok) throw new Error(`HTTP ${profileRes.status}`);
+      systemProfile = await profileRes.json();
+      const recommendation = systemProfile.recommendation || {};
+      const modelDetails = Array.isArray(recommendation.models)
+        ? recommendation.models
+        : [];
+      models = modelDetails.map((item) => item.name).filter(Boolean);
+      recommended = String(recommendation.recommended_model || "");
+      detailsByName = new Map(modelDetails.map((item) => [item.name, item]));
+    } catch (_profileErr) {
+      systemProfile = null;
+    }
+
+    if (!models.length) {
+      const res = await fetch("/api/tags");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      models = (data.models || []).map((m) => m.name).filter(Boolean);
+    }
 
     if (!models.length) {
       const opt = document.createElement("option");
@@ -2643,14 +2738,20 @@ async function loadModels() {
     for (const name of models) {
       const opt = document.createElement("option");
       opt.value = name;
-      opt.textContent = name;
+      const details = detailsByName.get(name);
+      opt.textContent = buildModelOptionLabel(name, details);
+      const title = describeModelDetails(details);
+      if (title) opt.title = title;
       modelEl.appendChild(opt);
     }
-    const preferred = models.includes("qwen2.5:14b")
-      ? "qwen2.5:14b"
-      : models[0];
+    const preferred =
+      recommended && models.includes(recommended) ? recommended : models[0];
     modelEl.value = preferred;
-    setStatus("ok", `Online (${models.length} models)`);
+    const modelCountText = `${models.length} ${models.length === 1 ? "model" : "models"}`;
+    const recommendationText = recommended
+      ? `${modelCountText} - recommended: ${recommended}`
+      : modelCountText;
+    setStatus("ok", "Online", recommendationText, buildModelCacheLine());
   } catch (err) {
     setStatus("err", "Service unreachable");
     addMessage("system", `Failed to load models: ${err.message}`);
@@ -2811,7 +2912,7 @@ async function sendPrompt() {
   }
 }
 
-refreshEl.addEventListener("click", loadModels);
+refreshEl.addEventListener("click", () => loadModels(true));
 openLibraryDocsEl.addEventListener("click", openLibraryDocsModal);
 openBibliographyEl.addEventListener("click", () =>
   openStashModal("bibliography"),
