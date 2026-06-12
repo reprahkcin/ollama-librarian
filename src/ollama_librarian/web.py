@@ -2029,6 +2029,8 @@ def get_recommended_model(default: str = "qwen2.5:14b") -> str:
                 name = str(item.get("name") or "").strip()
                 if not name:
                     continue
+                if str(item.get("safety") or "") == "unsafe":
+                    continue
                 if name.lower().startswith("qwen2.5:3b") or "qwen2.5" in name.lower() and ":3b" in name.lower():
                     return name
 

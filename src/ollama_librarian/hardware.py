@@ -92,7 +92,8 @@ def _darwin_available_memory() -> int | None:
 
 def _linux_memory() -> tuple[int | None, int | None]:
     try:
-        raw = open("/proc/meminfo", "r", encoding="utf-8").read()
+        with open("/proc/meminfo", "r", encoding="utf-8") as fh:
+            raw = fh.read()
     except Exception:
         return None, None
 
@@ -423,7 +424,7 @@ def classify_resource_pressure(hardware: HardwareProfile | Mapping[str, Any]) ->
     available = hardware_dict.get("available_memory_bytes")
     try:
         memory_ratio = float(available) / \
-            float(total) if available and total else None
+            float(total) if available is not None and total else None
     except Exception:
         memory_ratio = None
 
