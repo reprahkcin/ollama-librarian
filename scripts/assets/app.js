@@ -466,14 +466,23 @@ async function askSelectedPrompt() {
   await sendPrompt();
 }
 
-function setStatus(state, text, metaText = "", titleText = "") {
+function setStatus(state, text) {
   statusDotEl.classList.remove("ok", "err");
   if (state === "ok") statusDotEl.classList.add("ok");
   if (state === "err") statusDotEl.classList.add("err");
+  // Prefer to show a short primary status in the bubble and smaller metadata outside it.
   try {
-    const main = String(text || "").trim();
-    const meta = String(metaText || "").trim();
-    const title = String(titleText || [main, meta].filter(Boolean).join(" - "));
+    let main = String(text || "");
+    let meta = "";
+    if (main.includes("|") || main.includes(";")) {
+      const sep = main.includes("|") ? "|" : ";";
+      const parts = main.split(sep);
+      main = parts.shift().trim();
+      meta = parts.join(sep).trim();
+    } else if (main.length > 48) {
+      meta = main.slice(48).trim();
+      main = main.slice(0, 48).trim() + "...";
+    }
 
     if (statusMainEl) {
       statusMainEl.textContent = main;
@@ -484,8 +493,6 @@ function setStatus(state, text, metaText = "", titleText = "") {
     if (statusMetaEl) {
       statusMetaEl.textContent = meta;
     }
-    const statusEl = document.getElementById("status");
-    if (statusEl) statusEl.title = title;
   } catch (e) {
     // Swallow errors to avoid breaking page init; record to console for debugging.
     try {
@@ -2765,11 +2772,12 @@ async function loadModels(forceRefresh = false) {
     const preferred =
       recommended && models.includes(recommended) ? recommended : models[0];
     modelEl.value = preferred;
-    const modelCountText = `${models.length} ${models.length === 1 ? "model" : "models"}`;
-    const recommendationText = recommended
-      ? `${modelCountText} - recommended: ${recommended}`
-      : modelCountText;
-    setStatus("ok", "Online", recommendationText, buildModelCacheLine());
+    setStatus(
+      "ok",
+      recommended
+        ? `Online (${models.length} models, recommended ${recommended}; ${buildModelCacheLine()})`
+        : `Online (${models.length} models)`,
+    );
   } catch (err) {
     setStatus("err", "Service unreachable");
     addMessage("system", `Failed to load models: ${err.message}`);
