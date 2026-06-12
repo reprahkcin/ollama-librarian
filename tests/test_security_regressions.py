@@ -1,10 +1,14 @@
 import importlib.util
+import json
 import os
 import re
 import tempfile
 import types
 import unittest
 from pathlib import Path
+from urllib.request import Request, urlopen
+
+from tests.helpers.server_harness import running_server
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -167,6 +171,58 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertIsInstance(parsed, dict)
         self.assertEqual(parsed.get("confidence"), 88)
         self.assertEqual(parsed.get("recommendation"), "maybe")
+
+    def test_safe_mode_clamps_client_num_thread_to_policy_max(self):
+        with running_server() as (app, base_url):
+            original_proxy = app.Handler._proxy
+            original_policy = app.get_current_safety_policy
+            original_validate = app.validate_model_allowed
+            captured = {}
+
+            def fake_proxy(handler, method, path, data):
+                captured["payload"] = json.loads(data.decode("utf-8"))
+                return handler._send(
+                    200,
+                    json.dumps({"response": "ok"}, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+
+            app.get_current_safety_policy = lambda: {
+                "pressure": "throttled",
+                "allow_new_work": True,
+                "max_generation_slots": 1,
+                "embed_num_thread": 1,
+            }
+            app.validate_model_allowed = lambda model: {"ok": True}
+            app.Handler._proxy = fake_proxy
+            try:
+                req = Request(
+                    f"{base_url}/api/generate",
+                    data=json.dumps(
+                        {
+                            "model": "llama3.1:8b",
+                            "prompt": "hello",
+                            "stream": False,
+                            # Malicious client tries to bypass throttling
+                            "options": {"num_thread": 64},
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urlopen(req, timeout=10) as resp:
+                    status = resp.status
+            finally:
+                app.Handler._proxy = original_proxy
+                app.get_current_safety_policy = original_policy
+                app.validate_model_allowed = original_validate
+
+        self.assertEqual(status, 200)
+        # The client-supplied num_thread must be clamped down to the policy
+        # maximum, not honored as-is.
+        self.assertEqual(
+            captured.get("payload", {}).get("options", {}).get("num_thread"), 1
+        )
 
 
 if __name__ == "__main__":

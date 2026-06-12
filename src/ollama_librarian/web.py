@@ -1486,6 +1486,17 @@ def get_resource_runtime_state(policy: dict | None = None) -> dict:
     }
 
 
+def get_monitoring_status() -> str:
+    """Return the resource-monitor status string.
+
+    Mirrors ``runtime.monitor.enabled`` so the reported status agrees with the
+    actual background monitor state instead of being hard-coded to "active".
+    """
+    with RESOURCE_LOCK:
+        enabled = bool(RESOURCE_STATE.get("monitor_enabled", False))
+    return "active" if enabled else "inactive"
+
+
 def resource_monitor_tick() -> dict:
     policy = get_current_safety_policy()
     pressure = str(policy.get("pressure") or "ok")
@@ -1933,7 +1944,7 @@ def get_system_profile(force_refresh: bool = False) -> dict:
     active_policy = get_current_safety_policy()
     payload["resource_state"] = {
         "pressure": active_policy.get("pressure", "ok"),
-        "monitoring": "active",
+        "monitoring": get_monitoring_status(),
         "policy": active_policy,
     }
     payload["ollama"] = {
@@ -1963,7 +1974,7 @@ def get_system_health() -> dict:
     active_policy = get_current_safety_policy()
     resource_state = {
         "pressure": active_policy.get("pressure", "ok"),
-        "monitoring": "active",
+        "monitoring": get_monitoring_status(),
         "policy": active_policy,
     }
     return {
@@ -3294,7 +3305,16 @@ class Handler(BaseHTTPRequestHandler):
             policy_threads = int(generation_options.get("num_thread") or 0)
             if SAFE_MODE and policy_threads > 0:
                 options = dict(options)
-                options.setdefault("num_thread", policy_threads)
+                # Enforce the hardware-pressure thread budget. A client must
+                # not be able to bypass safe-mode throttling by sending a
+                # larger num_thread, so clamp any client value down to the
+                # policy maximum (and apply it when unset or invalid).
+                try:
+                    client_threads = int(options.get("num_thread"))
+                except (TypeError, ValueError):
+                    client_threads = None
+                if client_threads is None or client_threads <= 0 or client_threads > policy_threads:
+                    options["num_thread"] = policy_threads
                 payload["options"] = options
             if SAFE_MODE and generation_options.get("pressure") in {"warm", "throttled", "critical"}:
                 payload["keep_alive"] = str(
