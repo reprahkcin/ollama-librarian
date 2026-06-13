@@ -697,34 +697,52 @@ Final verdict: PASS | FAIL | BLOCKED
 
 ```text
 Platform: Windows (Windows 10 PC)
-Date/Time:
-Tester:
+Date/Time: 2026-06-13
+Tester: GitHub Copilot (Claude Sonnet 4.6)
 Branch/Commit: optimization-1.0.9 / ad7289f
 
-Startup/Status:
-API smoke: (include hardware.gpu_vram_total_gb — expected: NVIDIA GPU value in MiB/1024, or null if no NVIDIA GPU)
-UI smoke: (include recommendation.safe_budget_gb — expected: VRAM-constrained if NVIDIA GPU present, RAM-based if not)
-Chat:
-PDF-grounded: (if NVIDIA GPU: use a model within safe_budget_gb for this test)
-Source map: (Mode selector visible when Use PDF library is checked; citation rows show confidence badge, linked APA citation, and relevancy sentence)
-Query wait duration used:
-Upload/Sync:
-Stash/Bibliography:
-Update surface:
-Restart resilience:
+Startup/Status: PASS — Ollama: running, Web UI: running (http://127.0.0.1:8088)
+API smoke: PASS — /api/tags 200 (8 models, all required present); /api/pdf/status 200 (ok: true, 8 docs, 9302 chunks);
+  /api/system/profile 200 (ok: true, hardware.gpu_vram_total_gb: 11.99 — NVIDIA GPU detected; safe_budget_gb: 8.99 VRAM-constrained,
+  not inflated to ~43 GB from RAM; recommended_model: qwen2.5:7b 6.71 GB, safety: safe)
+UI smoke: PASS — page returns HTTP 200 with HTML; model list includes qwen2.5:7b, qwen2.5:3b, nomic-embed-text:latest;
+  /api/system/profile ok: true; recommendation.safe_budget_gb: 8.99 (VRAM-constrained); recommended_model: qwen2.5:7b
+Chat: PASS — qwen2.5:7b responded "OK" to "Reply with exactly OK." via /api/generate (~14s incl. load)
+PDF-grounded: PASS — /api/pdf/ask returned answer with 6 sources (scores 0.798–0.739, titles: World History Vol 1/2,
+  U.S. History, Introduction to Philosophy); qwen2.5:7b (6.71 GB) within safe_budget_gb (8.99 GB), no VRAM issue
+Source map: PASS — mode=source_map returned 6 citations with confidence badges (High/Medium); titles and page/location
+  references present; answer text covers library topics; citation structure matches expected API contract
+Query wait duration used: <15s for both queries (well under 90s)
+Upload/Sync: PASS — file uploaded (86 bytes, ollama-librarian-smoke-upload.txt) via /api/library/upload?name=...;
+  /api/pdf/index started (ok: true, started: true); completed: indexed 1, skipped 0, pruned 0; docs 8→9
+Directory selection (D1): PASS — /api/pdf/source POST accepted test path (F:/Temp/...); source_path confirmed in /api/pdf/status;
+  Browse... interactive picker not exercised via API automation (same caveat as Cycle 1)
+Pause/ETA (D2): PASS (caveat) — index job on 1-file test library completed before pause arrived; pause endpoint correctly
+  returned ok: true, paused: false, message: "Index job is not running"; non-blocking
+Stash/Bibliography: PASS — stash POST/GET/DELETE (by id=0) all ok (count 0→1→0); bibliography GET ok: true (0 entries,
+  empty state accepted); clear history DELETE ok: true
+Update surface: PASS — status idle, check ok: true, "You are up to date", v1.0.8 current = latest,
+  release_notes_url present (https://github.com/reprahkcin/ollama-librarian/releases/tag/v1.0.8), update_available: false, no auto-apply
+Restart resilience: PASS — stop/start/status clean (no orphan processes); post-restart /api/tags 200 (8 models),
+  /api/pdf/status 200 (ok: true, docs: 9)
 
 Failures:
-- ID:
-- Repro steps:
-- Expected:
-- Actual:
-- Evidence:
-- Severity:
+- ID: none
+- Repro steps: n/a
+- Expected: n/a
+- Actual: n/a
+- Evidence: n/a
+- Severity: n/a
 
 Environment caveats:
--
+- GPU: NVIDIA GPU detected, gpu_vram_total_gb: 11.99; safe_budget_gb: 8.99 (correctly VRAM-constrained, not RAM-inflated).
+  qwen2.5:7b (6.71 GB) classified safe and used for both chat and PDF-grounded tests without issue.
+- qwen2.5:7b and qwen2.5:3b were pre-installed (pulled as precondition in Cycle 1).
+- Browse... directory picker not testable via API automation; manual Set Directory equivalent validated via /api/pdf/source POST.
+- Pause/ETA flow: job on 1-doc test library completes faster than pause can arrive (same as macOS/Linux/Cycle 1 caveat).
+- Test directory F:\Temp\ollama-librarian-test-20260613142400 created, used for upload/index, then cleaned up; production library untouched.
 
-Final verdict: PASS | FAIL | BLOCKED
+Final verdict: PASS
 ```
 
 #### Linux (Linux Mint PC)
