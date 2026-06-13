@@ -21,6 +21,7 @@ class HardwareProfile:
     available_memory_bytes: int | None
     load_average_1m: float | None
     notes: list[str]
+    gpu_vram_total_gb: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         total_gb = _bytes_to_gb(self.total_memory_bytes)
@@ -36,6 +37,7 @@ class HardwareProfile:
             "available_memory_gb": available_gb,
             "load_average_1m": self.load_average_1m,
             "notes": list(self.notes),
+            "gpu_vram_total_gb": self.gpu_vram_total_gb,
         }
 
 
@@ -59,6 +61,25 @@ def _run_text(cmd: list[str], timeout: float = 2.0) -> str:
     if proc.returncode != 0:
         return ""
     return (proc.stdout or "").strip()
+
+
+def _nvidia_smi_vram_gb() -> float | None:
+    """Query total VRAM of the first NVIDIA GPU via nvidia-smi. Returns GB or None."""
+    raw = _run_text(
+        ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+        timeout=3.0,
+    )
+    if not raw:
+        return None
+    # One line per GPU; use the first (GPU 0 — Ollama's primary device).
+    line = raw.splitlines()[0].strip()
+    try:
+        mib = float(line)
+    except Exception:
+        return None
+    if mib <= 0:
+        return None
+    return round(mib / 1024.0, 2)
 
 
 def _darwin_total_memory() -> int | None:
@@ -127,6 +148,7 @@ def detect_hardware_profile() -> HardwareProfile:
     notes: list[str] = []
     total_memory: int | None = None
     available_memory: int | None = None
+    gpu_vram_total_gb: float | None = None
 
     if os_name == "darwin":
         total_memory = _darwin_total_memory()
@@ -135,8 +157,10 @@ def detect_hardware_profile() -> HardwareProfile:
             notes.append("apple_silicon_unified_memory")
     elif os_name == "linux":
         total_memory, available_memory = _linux_memory()
+        gpu_vram_total_gb = _nvidia_smi_vram_gb()
     elif os_name == "windows":
         total_memory, available_memory = _windows_memory()
+        gpu_vram_total_gb = _nvidia_smi_vram_gb()
 
     try:
         load_average = float(os.getloadavg()[0])
@@ -152,6 +176,7 @@ def detect_hardware_profile() -> HardwareProfile:
         available_memory_bytes=available_memory,
         load_average_1m=load_average,
         notes=notes,
+        gpu_vram_total_gb=gpu_vram_total_gb,
     )
 
 
@@ -337,11 +362,32 @@ def recommend_model(
         total_memory = 0.0
 
     if total_memory > 0:
-        safe_budget_gb = max(3.0, round(total_memory * 0.55, 2))
-        caution_budget_gb = max(safe_budget_gb, round(total_memory * 0.75, 2))
+        ram_safe_budget_gb = max(3.0, round(total_memory * 0.55, 2))
+        ram_caution_budget_gb = max(
+            ram_safe_budget_gb, round(total_memory * 0.75, 2))
     else:
-        safe_budget_gb = 8.0
-        caution_budget_gb = 12.0
+        ram_safe_budget_gb = 8.0
+        ram_caution_budget_gb = 12.0
+
+    # On machines with a discrete GPU, VRAM is the binding constraint for model
+    # safety — not RAM.  Apple Silicon uses unified memory so the RAM budget
+    # already applies; skip VRAM override in that case.
+    notes = hardware_dict.get("notes") or []
+    is_unified_memory = "apple_silicon_unified_memory" in notes
+    raw_vram = hardware_dict.get("gpu_vram_total_gb")
+    try:
+        gpu_vram_gb = float(raw_vram) if raw_vram is not None else None
+    except Exception:
+        gpu_vram_gb = None
+
+    if gpu_vram_gb and gpu_vram_gb > 0 and not is_unified_memory:
+        vram_safe = max(3.0, round(gpu_vram_gb * 0.75, 2))
+        vram_caution = max(vram_safe, round(gpu_vram_gb * 0.90, 2))
+        safe_budget_gb = min(ram_safe_budget_gb, vram_safe)
+        caution_budget_gb = min(ram_caution_budget_gb, vram_caution)
+    else:
+        safe_budget_gb = ram_safe_budget_gb
+        caution_budget_gb = ram_caution_budget_gb
 
     candidates: list[dict[str, Any]] = []
     for item in models:

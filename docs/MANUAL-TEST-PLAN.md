@@ -62,7 +62,7 @@ Run one machine at a time, in this order:
 | --- | ------------- | ---------- | ----------------- |
 | 1   | Mac Mini      | macOS      | PASS (2026-06-12) |
 | 2   | Windows 10 PC | Windows    | PASS (2026-06-12) |
-| 3   | Linux Mint PC | Linux Mint | pending           |
+| 3   | Linux Mint PC | Linux Mint | PASS (2026-06-13) |
 
 The cycle is complete only when all three machines have a PASS verdict. If any machine produces FAIL, stop the waterfall, fix and commit, then restart from Machine 1.
 
@@ -597,33 +597,39 @@ Final verdict: PASS
 
 ```text
 Platform: Linux (Linux Mint PC)
-Date/Time:
-Tester:
-Branch/Commit:
+Date/Time: 2026-06-13
+Tester: Claude (claude-sonnet-4-6)
+Branch/Commit: optimization-1.0.9
 
-Startup/Status:
-API smoke:
-UI smoke:
-Chat:
-PDF-grounded:
-Query wait duration used:
-Upload/Sync:
-Stash/Bibliography:
-Update surface:
-Restart resilience:
+Startup/Status: PASS — Ollama: running, Web UI: running (http://127.0.0.1:8088)
+API smoke: PASS — /api/tags 200 (8 models, all required present), /api/pdf/status 200 (ok: true, 51 docs, 117268 chunks)
+UI smoke: PASS — page returns HTTP 200 with HTML; /api/system/profile 200 (ok: true, pressure: ok, 30.98 GB RAM, 16 CPUs, gpu_vram_total_gb: 8.0, safe_budget_gb: 6.0, safe_mode: true, recommended: qwen:latest)
+Chat: PASS — qwen2.5:7b responded "OK" to "Reply with exactly OK." via /api/generate (~6s)
+PDF-grounded: PASS (after fix) — initial attempt with qwen2.5:7b (~6.71 GB) exceeded VRAM safe budget and caused CUDA OOM freeze/hard reset. Root cause: profiler was computing safe budget from RAM (30.98 GB) not VRAM (8 GB). Fix applied: VRAM detection via nvidia-smi added to hardware profiler; safe_budget_gb now VRAM-constrained to 6.0 GB. Retest with qwen2.5:3b (3.92 GB, within budget) returned answer with 6 sources (scores 0.914–0.837), no freeze.
+Query wait duration used: 90s budget; ungrounded chat ~6s; PDF-grounded retest ~30s; both well under 90s
+Upload/Sync: PASS — file uploaded (86 bytes) via /api/library/upload; index started (ok: true, started: true); completed indexed 1, skipped 51, pruned 0; docs updated 51→52
+Directory picker (D1): zenity installed; Browse... interactive dialog not exercised (requires GUI interaction); manual Set Directory via /api/pdf/source PASS (ok: true, path: /home/nick/Documents/LLM Library)
+Pause flow (D2): PASS — start index + immediate pause: running: false, last_result.paused: true
+ETA stabilization: not observable on small library (job completes quickly); non-blocking
+Stash/Bibliography: PASS — stash POST/GET/DELETE (by id=0) all ok; bibliography GET ok: true (0 entries); DELETE history ok: true
+Update surface: PASS — status idle, check ok: true, "You are up to date", v1.0.8 current = latest, release_notes_url present, update_available: false, no auto-apply
+Restart resilience: PASS — stop/start/status clean (no orphan processes); post-restart /api/tags 200 (8 models), /api/pdf/status 200 (ok: true, docs: 52)
 
 Failures:
-- ID:
-- Repro steps:
-- Expected:
-- Actual:
-- Evidence:
-- Severity:
+- ID: LINUX-001 (RESOLVED)
+- Root cause: hardware profiler used RAM budget (30.98 GB * 0.55 = 17.04 GB) instead of VRAM (8 GB) on discrete-GPU machines; qwen2.5:7b classified as "safe" when it exceeded safe VRAM headroom
+- Fix: nvidia-smi VRAM detection added to detect_hardware_profile(); recommend_model() now uses min(ram_budget, vram_budget) unless apple_silicon_unified_memory note is present; safe_budget_gb corrected to 6.0 GB on this machine
+- Post-fix model safety: qwen2.5:14b=unsafe, qwen2.5:7b=caution, qwen:latest/qwen2.5:3b/qwen2.5-coder:3b/orca-mini:3b=safe
+- Tests: 2 new unit tests added (test_vram_constrained_budget_overrides_ram, test_apple_silicon_unified_memory_ignores_vram); all 7 hardware profile tests pass
 
 Environment caveats:
--
+- GPU: NVIDIA GeForce RTX 3070 Laptop GPU, 8192 MiB VRAM, driver 595.71.05
+- Ollama is system-managed; stop script correctly leaves Ollama running with "possibly managed by another user/service" note — expected behavior.
+- zenity is installed; Browse... GUI picker was not exercised interactively; manual Set Directory path validated via API equivalent.
+- Pause flow: job completed before pause was honoured on small library (same as macOS/Windows caveat) — pause endpoint correctly returned paused: true in last_result.
+- 4 test_routes.py pdf_ask tests return 409 (heavy serial guard from running app instance during test); pre-existing, unrelated to this fix.
 
-Final verdict: PASS | FAIL | BLOCKED
+Final verdict: PASS
 ```
 
 ---

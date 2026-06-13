@@ -98,6 +98,45 @@ class ModelRecommendationTests(unittest.TestCase):
         self.assertTrue(policy.get("pause_index"))
         self.assertEqual(policy.get("embed_num_thread"), 1)
 
+    def test_vram_constrained_budget_overrides_ram(self):
+        # Machine with 32 GB RAM but only 8 GB VRAM: VRAM is the binding constraint.
+        # qwen2.5:7b estimated ~6.71 GB > VRAM safe budget (8 * 0.75 = 6.0 GB) -> caution/unsafe
+        # qwen2.5:3b estimated ~3.92 GB <= 6.0 GB -> safe
+        result = recommend_model(
+            [
+                {"name": "qwen2.5:7b", "details": {
+                    "parameter_size": "7.6B", "quantization_level": "Q4_K_M"}},
+                {"name": "qwen2.5:3b", "details": {
+                    "parameter_size": "3.1B", "quantization_level": "Q4_K_M"}},
+            ],
+            {"total_memory_gb": 32.0, "gpu_vram_total_gb": 8.0},
+        )
+        self.assertEqual(result.get("recommended_model"), "qwen2.5:3b")
+        models_by_name = {m["name"]: m for m in result.get("models", [])}
+        self.assertEqual(models_by_name["qwen2.5:3b"]["safety"], "safe")
+        self.assertNotEqual(models_by_name["qwen2.5:7b"]["safety"], "safe")
+        # Effective safe budget should be VRAM-constrained, not RAM-constrained.
+        self.assertLess(result.get("safe_budget_gb", 99.0), 10.0)
+
+    def test_apple_silicon_unified_memory_ignores_vram(self):
+        # On Apple Silicon, unified memory means RAM budget applies, not VRAM.
+        # Even if gpu_vram_total_gb were somehow populated, notes gate should prevent reduction.
+        result = recommend_model(
+            [
+                {"name": "qwen2.5:14b", "details": {
+                    "parameter_size": "14.8B", "quantization_level": "Q4_K_M"}},
+                {"name": "qwen2.5:7b", "details": {
+                    "parameter_size": "7.6B", "quantization_level": "Q4_K_M"}},
+            ],
+            {"total_memory_gb": 64.0, "gpu_vram_total_gb": 8.0,
+                "notes": ["apple_silicon_unified_memory"]},
+        )
+        # RAM budget (64 * 0.55 = 35.2 GB) should dominate; both models are safe.
+        models_by_name = {m["name"]: m for m in result.get("models", [])}
+        self.assertEqual(models_by_name["qwen2.5:14b"]["safety"], "safe")
+        self.assertEqual(models_by_name["qwen2.5:7b"]["safety"], "safe")
+        self.assertGreater(result.get("safe_budget_gb", 0.0), 10.0)
+
 
 if __name__ == "__main__":
     unittest.main()
