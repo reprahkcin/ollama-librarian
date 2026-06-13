@@ -1116,7 +1116,15 @@ def index_command(args) -> int:
         mismatched_paths = []
         for doc_id, doc_path in all_indexed_docs:
             doc_realpath = os.path.realpath(os.path.expanduser(doc_path))
-            if not doc_realpath.startswith(source_realpath):
+            try:
+                doc_is_under_source = (
+                    os.path.commonpath([doc_realpath, source_realpath])
+                    == source_realpath
+                )
+            except ValueError:
+                # Raised on Windows when paths are on different drives
+                doc_is_under_source = False
+            if not doc_is_under_source:
                 mismatched_paths.append(doc_path)
 
         if mismatched_paths:
