@@ -11,6 +11,8 @@ Scope:
 ## 1) Execution Rules
 
 - Only run tests in this plan unless explicitly requested otherwise.
+- **CRITICAL SAFETY RULE:** Before any upload or index operations (Section D), complete the test directory setup (Section C1 or Section 9B step 5) to avoid modifying your production library.
+- **INDEX SAFETY:** As of v1.0.9+, automatic pruning is DISABLED by default. The `--prune` flag (which removes indexed documents that no longer exist on disk) will NOT run unless you explicitly set `OLLAMA_WEB_PDF_PRUNE_ON_INDEX=1` in your environment. Additionally, the database now lives inside your source directory at `<source>/.ollama-librarian/pdf-rag.sqlite` to prevent path mismatches.
 - Record objective evidence for each failed step (command output, API response, or exact UI symptom).
 - Do not make speculative code changes during testing.
 - For chat/retrieval actions, define a tester-selected wait duration before each run (for example, 90s, 180s, or another value you choose).
@@ -67,6 +69,10 @@ Run one machine at a time, in this order:
 The cycle is complete only when all three machines have a PASS verdict. If any machine produces FAIL, stop the waterfall, fix and commit, then restart from Machine 1.
 
 ### Cycle 2 restart notice (2026-06-13) — for macOS and Windows testers
+
+**IMPORTANT DATABASE LOCATION CHANGE:** The index database has been moved from `~/Library/Application Support/ollama-librarian/pdf-rag.sqlite` to inside your source directory at `<source_path>/.ollama-librarian/pdf-rag.sqlite`. This prevents path mismatches from causing accidental index deletions.
+
+**AUTO-PRUNE NOW DISABLED:** The `--prune` flag (which removes indexed documents that no longer exist) is now **OFF by default**. It will only run if you explicitly set `OLLAMA_WEB_PDF_PRUNE_ON_INDEX=1`. This prevents accidental data loss during testing.
 
 A code fix was committed after Cycle 1 completed. Restart the waterfall from Machine 1 (macOS).
 
@@ -152,13 +158,73 @@ A code fix was committed after Cycle 1 completed. Restart the waterfall from Mac
 
 1. PDF-grounded ask
 
-- Preconditions: `Use PDF-grounded answers` checked
+- Preconditions: `Use PDF library` checked; `Mode:` selector set to `Grounded answer`
 - Action: ask a grounded question about indexed content
 - Expected:
-  - response returned
+  - response returned with citation block below the answer
   - no route/auth/CSP errors
 
+1. Source map mode
+
+- Preconditions: `Use PDF library` checked; `Mode:` selector set to `Source map`
+- Action: ask a research question about indexed content (for example, `What topics does the library cover?`)
+- Expected:
+  - response returned within the selected wait duration
+  - citation block rendered below the header line; one row per source document
+  - each row contains: a confidence badge (High/Medium/Low), an APA citation with a linked and italicised title that opens the document at the cited page, and one italic relevancy sentence describing why that source is relevant
+  - no route/auth/CSP errors
+  - `Generate Bibliography` button works on source map results
+
+### C1. Test Directory Setup (MANDATORY before Section D)
+
+**CRITICAL:** This step must be completed before any upload or index operations to prevent modifying your production library.
+
+1. Create isolated test directory
+
+- macOS/Linux command:
+  ```bash
+  TEST_LIB_DIR="/tmp/ollama-librarian-test-$(date +%s)"
+  mkdir -p "$TEST_LIB_DIR"
+  echo "Test directory: $TEST_LIB_DIR"
+  ```
+- Windows PowerShell command:
+  ```powershell
+  $TEST_LIB_DIR = "$env:TEMP\ollama-librarian-test-$(Get-Date -Format 'yyyyMMddHHmmss')"
+  New-Item -ItemType Directory -Path $TEST_LIB_DIR -Force
+  Write-Host "Test directory: $TEST_LIB_DIR"
+  ```
+- Expected:
+  - directory created successfully
+  - path displayed for verification
+
+1. Set library directory to test location
+
+- Command (macOS/Linux):
+  ```bash
+  curl -sS -X POST http://127.0.0.1:8088/api/pdf/source \
+    -H 'Content-Type: application/json' \
+    -d "{\"source_path\": \"$TEST_LIB_DIR\"}"
+  ```
+- Command (Windows PowerShell):
+  ```powershell
+  $body = @{ source_path = $TEST_LIB_DIR } | ConvertTo-Json
+  Invoke-RestMethod -Uri 'http://127.0.0.1:8088/api/pdf/source' -Method POST -ContentType 'application/json' -Body $body
+  ```
+- Expected:
+  - `{"ok": true, "source_path": "<test-dir>", ...}`
+
+1. Verify source path is set
+
+- Command:
+  ```bash
+  curl -sS http://127.0.0.1:8088/api/pdf/status | python3 -c "import sys, json; d=json.load(sys.stdin); print(f\"source_path: {d['source_path']}\")"
+  ```
+- Expected:
+  - output shows the test directory path (not your production library)
+
 ### D. Upload and Index Interaction
+
+**Precondition:** Section C1 (Test Directory Setup) must be completed first.
 
 1. Upload docs
 
@@ -284,6 +350,7 @@ macOS evidence summary:
 - UI smoke: (include recommendation.safe_budget_gb and recommended_model)
 - Chat:
 - PDF-grounded:
+- Source map: (Mode selector visible; citation rows show badge, linked APA citation, relevancy sentence)
 - Query wait duration used:
 - Upload/Sync:
 - Stash/Bibliography:
@@ -444,6 +511,15 @@ Run in repo root:
 2. `./scripts/librarian-status-macos.sh`
 3. `curl -sS -i http://127.0.0.1:8088/api/tags`
 4. `curl -sS -i http://127.0.0.1:8088/api/pdf/status`
+5. **Set up isolated test directory (MANDATORY before any upload/index):**
+   ```bash
+   TEST_LIB_DIR="/tmp/ollama-librarian-test-$(date +%s)"
+   mkdir -p "$TEST_LIB_DIR"
+   curl -sS -X POST http://127.0.0.1:8088/api/pdf/source \
+     -H 'Content-Type: application/json' \
+     -d "{\"source_path\": \"$TEST_LIB_DIR\"}"
+   curl -sS http://127.0.0.1:8088/api/pdf/status | python3 -c "import sys, json; d=json.load(sys.stdin); print(f\"source_path: {d['source_path']}\")"
+   ```
 
 Expected minimum signals:
 
@@ -451,30 +527,37 @@ Expected minimum signals:
 - both API calls return `HTTP/1.0 200 OK` or `HTTP/1.1 200 OK`
 - `/api/tags` JSON contains `models`
 - `/api/pdf/status` JSON contains `ok`
+- test directory created and set as source_path (step 5)
 
 ### C. Exact UI Action Sequence
 
 1. Open `http://127.0.0.1:8088/`.
 2. Verify sidebar shows online model state (for example `Online (N models)`).
 3. Click `Refresh` next to model selector.
-4. Ensure `Use PDF-grounded answers` is unchecked.
+4. Ensure `Use PDF library` is unchecked.
 5. Send prompt `Reply with exactly OK.`.
 6. If confirmation appears (`Send this query without PDF grounding?`), click confirm/OK.
 7. Pause and wait for the tester-selected query wait duration.
 8. Verify assistant returns `OK`.
-9. Enable `Use PDF-grounded answers`.
-10. Send one grounded prompt (for example, `Give one sentence summary of what is in the indexed library.`).
-11. Pause and wait for the tester-selected query wait duration.
-12. Click `Upload Documents`.
-13. Upload one disposable text file from the temp path.
-14. Verify footer/status indicates upload success (for example `Uploaded 1 file; indexing started`).
-15. Click `Sync New PDFs`.
-16. Verify PDF status line either transitions to running (`PDF index: running`) or remains/returns idle with updated doc/chunk counts when no work remains.
-17. Click `View Stash`, verify modal opens, then close it.
-18. Click `View Bibliography`, verify modal opens (empty state acceptable), then close it.
-19. Click `Check for Updates`.
-20. Verify update area reports up-to-date state and release notes link appears.
-21. Click `Clear Conversation` and verify chat resets (`Shared history cleared`).
+9. Enable `Use PDF library`; verify the `Mode:` selector appears below it.
+10. Confirm `Mode:` is set to `Grounded answer`.
+11. Send one grounded prompt (for example, `Give one sentence summary of what is in the indexed library.`).
+12. Pause and wait for the tester-selected query wait duration.
+13. Set `Mode:` selector to `Source map`.
+14. Send one source map query (for example, `What topics does the library cover?`).
+15. Pause and wait for the tester-selected query wait duration.
+16. Verify the result: a `Source map for:` header line, then a citation block with one row per source. Each row must show a confidence badge, a linked APA citation (title is a clickable link to the document at the cited page), and one italic relevancy sentence below the citation text.
+17. **IMPORTANT:** Before upload/index steps, ensure test directory is set (see Section 9B step 5). If using UI for testing instead of API, manually set the directory path in the UI first.
+18. Click `Upload Documents`.
+19. Upload one disposable text file from the temp path.
+20. Verify footer/status indicates upload success (for example `Uploaded 1 file; indexing started`).
+21. Click `Sync New PDFs`.
+22. Verify PDF status line either transitions to running (`PDF index: running`) or remains/returns idle with updated doc/chunk counts when no work remains.
+23. Click `View Stash`, verify modal opens, then close it.
+24. Click `View Bibliography`, verify modal opens (empty state acceptable), then close it.
+25. Click `Check for Updates`.
+26. Verify update area reports up-to-date state and release notes link appears.
+27. Click `Clear Conversation` and verify chat resets (`Shared history cleared`).
 
 ### D. Exact Restart Verification
 
@@ -532,7 +615,33 @@ Set-Content -Path "$env:TEMP\ollama-librarian-smoke-upload.txt" -Value @(
 
 Cleanup: `Remove-Item "$env:TEMP\ollama-librarian-smoke-upload.txt" -ErrorAction SilentlyContinue`
 
-### F. Known Non-Blocking Variability
+### F. Test Directory Cleanup
+
+After completing all tests, clean up the isolated test directory:
+
+macOS/Linux:
+
+```bash
+# Remove test directory (if you saved the path from Section 9B step 5)
+rm -rf "$TEST_LIB_DIR"
+
+# Or if variable is not set, manually remove:
+# rm -rf /tmp/ollama-librarian-test-*
+```
+
+Windows PowerShell:
+
+```powershell
+# Remove test directory (if you saved the path)
+Remove-Item -Path $TEST_LIB_DIR -Recurse -Force -ErrorAction SilentlyContinue
+
+# Or if variable is not set, manually remove:
+# Remove-Item -Path "$env:TEMP\ollama-librarian-test-*" -Recurse -Force
+```
+
+**Note:** Your production library was never modified if the test directory setup (Section C1 / Section 9B step 5) was completed before any upload or index operations.
+
+### G. Known Non-Blocking Variability
 
 - Model selector keyboard navigation may be inconsistent in some automation harnesses; mouse selection is acceptable.
 - Index progress metrics can jump or look non-linear depending on existing library/index state.
@@ -540,6 +649,7 @@ Cleanup: `Remove-Item "$env:TEMP\ollama-librarian-smoke-upload.txt" -ErrorAction
 - Chat responses can take a few seconds while model/runtime state warms up; avoid early cancellation.
 - Browser `net::ERR_ABORTED` observed immediately after pressing `Cancel` indicates client-side abort, not a confirmed backend failure.
 - On Windows, `Browse...` may stay in `Opening...` until picker timeout; UI recovery + manual `Set Directory` success is PASS for that step.
+- **Test directory isolation:** If upload/index steps modified your production library, the test directory setup step (Section C1) was skipped or failed. Always verify source_path points to the test directory before proceeding.
 
 ## 10) Evidence Blocks
 
@@ -562,6 +672,7 @@ API smoke: (include hardware.gpu_vram_total_gb — expected: null on Apple Silic
 UI smoke: (include recommendation.safe_budget_gb and recommended_model — expected: RAM-budget applies, no change from Cycle 1)
 Chat:
 PDF-grounded:
+Source map: (Mode selector visible when Use PDF library is checked; citation rows show confidence badge, linked APA citation, and relevancy sentence)
 Query wait duration used:
 Upload/Sync:
 Stash/Bibliography:
@@ -595,6 +706,7 @@ API smoke: (include hardware.gpu_vram_total_gb — expected: NVIDIA GPU value in
 UI smoke: (include recommendation.safe_budget_gb — expected: VRAM-constrained if NVIDIA GPU present, RAM-based if not)
 Chat:
 PDF-grounded: (if NVIDIA GPU: use a model within safe_budget_gb for this test)
+Source map: (Mode selector visible when Use PDF library is checked; citation rows show confidence badge, linked APA citation, and relevancy sentence)
 Query wait duration used:
 Upload/Sync:
 Stash/Bibliography:
@@ -628,6 +740,7 @@ API smoke: (include hardware.gpu_vram_total_gb — expected: 8.0 on RTX 3070 Lap
 UI smoke: (include recommendation.safe_budget_gb — expected: 6.0; recommended_model within safe VRAM budget)
 Chat:
 PDF-grounded: (use a model within safe_budget_gb — qwen2.5:3b or qwen:latest)
+Source map: (Mode selector visible when Use PDF library is checked; citation rows show confidence badge, linked APA citation, and relevancy sentence; use a model within safe_budget_gb)
 Query wait duration used:
 Upload/Sync:
 Stash/Bibliography:

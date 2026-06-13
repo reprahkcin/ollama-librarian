@@ -442,6 +442,16 @@ button:disabled {
   font-size: 0.69rem;
   align-self: center;
 }
+.citation-relevancy {
+  grid-column: 1 / -1;
+  font-size: 0.8rem;
+  color: var(--ink);
+  opacity: 0.82;
+  font-style: italic;
+  border-top: 1px solid var(--border);
+  padding-top: 0.2rem;
+  margin-top: 0.1rem;
+}
 .msg.system {
   align-self: center;
   background: var(--osu-candela);
@@ -645,6 +655,17 @@ textarea {
   height: 1rem;
   margin: 0;
   accent-color: var(--primary);
+}
+.pdf-mode-row {
+  padding-left: 1.5rem;
+}
+.pdf-mode-row select {
+  font-size: 0.82rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  padding: 0.1rem 0.3rem;
 }
 .tiny {
   font-size: 0.76rem;

@@ -95,6 +95,7 @@ class WebConfig:
     pdf_ocr_lang: str
     pdf_ocr_jobs: int
     pdf_ocr_timeout: int
+    pdf_prune_on_index: bool
     stash_path: str
     update_state_path: Path
     update_repo_owner: str
@@ -153,8 +154,8 @@ class WebConfig:
                 str(env.get("OLLAMA_WEB_PDF_SOURCE", resolve_default_pdf_source()))
             ),
             pdf_index_db=os.path.expanduser(
-                str(env.get("OLLAMA_WEB_PDF_INDEX_DB", str(
-                    default_state_dir / "pdf-rag.sqlite")))
+                # Empty = use source-relative path
+                str(env.get("OLLAMA_WEB_PDF_INDEX_DB", ""))
             ),
             pdf_embed_model=str(
                 env.get("OLLAMA_WEB_PDF_EMBED_MODEL", "nomic-embed-text")),
@@ -186,6 +187,8 @@ class WebConfig:
                 env, "OLLAMA_WEB_PDF_OCR_JOBS", 2, min_value=1),
             pdf_ocr_timeout=_env_int(
                 env, "OLLAMA_WEB_PDF_OCR_TIMEOUT", 1800, min_value=60),
+            pdf_prune_on_index=_env_bool_true_unless_false(
+                env, "OLLAMA_WEB_PDF_PRUNE_ON_INDEX", "0"),
             stash_path=stash_path,
             update_state_path=Path(os.path.dirname(
                 history_path) or str(REPO_ROOT)) / "update-state.json",
@@ -292,6 +295,7 @@ PDF_OCR_ON_SYNC = CONFIG.pdf_ocr_on_sync
 PDF_OCR_LANG = CONFIG.pdf_ocr_lang
 PDF_OCR_JOBS = CONFIG.pdf_ocr_jobs
 PDF_OCR_TIMEOUT = CONFIG.pdf_ocr_timeout
+PDF_PRUNE_ON_INDEX = CONFIG.pdf_prune_on_index
 STASH_PATH = CONFIG.stash_path
 APP_VERSION_FILE = REPO_ROOT / "scripts" / "VERSION"
 if (PACKAGE_DIR / "VERSION").is_file():
@@ -448,6 +452,21 @@ def _bootstrap_pdf_source_override() -> None:
 def get_pdf_source_path() -> str:
     with PDF_LOCK:
         return str(PDF_SOURCE)
+
+
+def get_pdf_index_db_path() -> str:
+    """
+    Resolve database path. If OLLAMA_WEB_PDF_INDEX_DB is set, use it.
+    Otherwise, use <source_dir>/.ollama-librarian/pdf-rag.sqlite
+    """
+    if PDF_INDEX_DB:  # Explicit env var override
+        return str(PDF_INDEX_DB)
+
+    # Default: database lives inside source directory
+    source_path = get_pdf_source_path()
+    db_dir = Path(source_path) / ".ollama-librarian"
+    db_dir.mkdir(parents=True, exist_ok=True)
+    return str(db_dir / "pdf-rag.sqlite")
 
 
 def set_pdf_source_path(raw_path: str) -> dict:
@@ -1723,7 +1742,7 @@ def _build_pdf_rag_command(extra_args: list[str]) -> tuple[list[str], dict[str, 
         "--dynamic-max-threads",
         str(dynamic_max_threads),
         "--index-db",
-        PDF_INDEX_DB,
+        get_pdf_index_db_path(),
         "--answer-num-thread",
         str(int(answer_options.get("num_thread") or 0)),
         "--answer-keep-alive",
@@ -2200,8 +2219,12 @@ def _index_worker():
         PDF_INDEX_STATE["active_pid"] = None
     try:
         source_path = get_pdf_source_path()
-        index_args = ["index", "--source",
-                      source_path, "--prune", "--json-summary"]
+        index_args = ["index", "--source", source_path, "--json-summary"]
+
+        # Only add --prune if explicitly enabled via OLLAMA_WEB_PDF_PRUNE_ON_INDEX=1
+        if PDF_PRUNE_ON_INDEX:
+            index_args.append("--prune")
+
         if PDF_OCR_ON_SYNC:
             policy = get_current_safety_policy()
             ocr_jobs = _policy_value(policy, "ocr_jobs", PDF_OCR_JOBS)
@@ -2303,6 +2326,39 @@ def ask_pdf_library(
     parsed = json.loads(raw) if raw else {}
     if not isinstance(parsed, dict):
         raise RuntimeError("Unexpected PDF ask response")
+    return parsed
+
+
+def synthesize_pdf_library(
+    query: str,
+    model: str,
+    top_k: int,
+    include_paths: list[str] | None = None,
+    exclude_paths: list[str] | None = None,
+):
+    args = [
+        "synthesize",
+        "--query",
+        query,
+        "--top-k",
+        str(top_k),
+        "--answer-model",
+        model,
+        "--answer-timeout",
+        "90",
+        "--json-output",
+    ]
+    for path in include_paths or []:
+        if isinstance(path, str) and path.strip():
+            args.extend(["--include-path", path.strip()])
+    for path in exclude_paths or []:
+        if isinstance(path, str) and path.strip():
+            args.extend(["--exclude-path", path.strip()])
+
+    raw = run_pdf_rag(args, timeout=180)
+    parsed = json.loads(raw) if raw else {}
+    if not isinstance(parsed, dict):
+        raise RuntimeError("Unexpected PDF synthesize response")
     return parsed
 
 
@@ -2617,7 +2673,7 @@ def clear_stash_entries(entry_type: str | None = None) -> dict:
 
 
 def list_library_docs() -> dict:
-    index_db = os.path.expanduser(PDF_INDEX_DB)
+    index_db = os.path.expanduser(get_pdf_index_db_path())
     if not os.path.exists(index_db):
         return {"ok": True, "documents": [], "groups": [], "count": 0}
 
@@ -3449,7 +3505,14 @@ class Handler(BaseHTTPRequestHandler):
                 "application/json; charset=utf-8",
             )
 
-        append_history({"role": role, "text": text, "ts": ts})
+        msg: dict = {"role": role, "text": text, "ts": ts}
+        citation_entries = payload.get("citation_entries")
+        if isinstance(citation_entries, list):
+            msg["citation_entries"] = citation_entries
+        citation_query = payload.get("citation_query")
+        if isinstance(citation_query, str):
+            msg["citation_query"] = citation_query
+        append_history(msg)
         return self._send(200, json.dumps({"ok": True}), "application/json; charset=utf-8")
 
     def _handle_post_instructions(self):
@@ -3630,6 +3693,69 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(
                 200,
                 json.dumps(normalized, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        except Exception as exc:
+            return self._send(
+                502,
+                json.dumps({"error": str(exc)}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        finally:
+            release_generation_slot()
+
+    def _handle_post_pdf_synthesize(self):
+        payload = self._read_json_body()
+        if payload is None:
+            return
+
+        query = payload.get("query", "")
+        model = choose_pdf_answer_model(payload.get("model", ""))
+        model_check = validate_model_allowed(str(model))
+        if not model_check.get("ok", True):
+            return self._send(
+                int(model_check.get("code") or 409),
+                json.dumps(model_check, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        try:
+            top_k = int(payload.get("top_k", PDF_TOP_K))
+        except Exception:
+            top_k = PDF_TOP_K
+        top_k = max(1, min(100, top_k))
+        include_paths = payload.get("include_paths", [])
+        exclude_paths = payload.get("exclude_paths", [])
+        if not isinstance(include_paths, list):
+            include_paths = []
+        if not isinstance(exclude_paths, list):
+            exclude_paths = []
+
+        if not isinstance(query, str) or not query.strip():
+            return self._send(
+                400,
+                json.dumps({"error": "query is required"}),
+                "application/json; charset=utf-8",
+            )
+
+        admission = acquire_generation_slot("pdf_synthesize")
+        if not admission.get("ok", True):
+            return self._send(
+                int(admission.get("code") or 503),
+                json.dumps(admission, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        try:
+            result = synthesize_pdf_library(
+                query.strip(),
+                str(model),
+                top_k,
+                include_paths=[str(x) for x in include_paths if isinstance(x, str)],
+                exclude_paths=[str(x) for x in exclude_paths if isinstance(x, str)],
+            )
+            return self._send(
+                200,
+                json.dumps(result, ensure_ascii=True),
                 "application/json; charset=utf-8",
             )
         except Exception as exc:
@@ -3954,6 +4080,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/update/apply": lambda: self._handle_post_update_apply(),
             "/api/update/check": lambda: self._handle_post_update_check(),
             "/api/pdf/ask": lambda: self._handle_post_pdf_ask(),
+            "/api/pdf/synthesize": lambda: self._handle_post_pdf_synthesize(),
             "/api/library/upload": lambda: self._handle_post_library_upload(parsed_url),
             "/api/stash": lambda: self._handle_post_stash(),
         }

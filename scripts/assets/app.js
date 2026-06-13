@@ -53,6 +53,8 @@ const pdfSourcePathEl = document.getElementById("pdfSourcePath");
 const browsePdfSourceEl = document.getElementById("browsePdfSource");
 const savePdfSourceEl = document.getElementById("savePdfSource");
 const usePdfLibraryEl = document.getElementById("usePdfLibrary");
+const pdfSearchModeEl = document.getElementById("pdfSearchMode");
+const pdfModeRowEl = document.getElementById("pdfModeRow");
 const syncPdfLibraryEl = document.getElementById("syncPdfLibrary");
 const uploadLibraryDocsEl = document.getElementById("uploadLibraryDocs");
 const pdfProgressEl = document.getElementById("pdfProgress");
@@ -608,11 +610,18 @@ function isoNow() {
   return new Date().toISOString();
 }
 
-async function persistMessage(role, text, ts) {
+async function persistMessage(role, text, ts, opts = {}) {
+  const body = { role, text, ts };
+  if (Array.isArray(opts.citationEntries) && opts.citationEntries.length) {
+    body.citation_entries = opts.citationEntries;
+  }
+  if (opts.citationQuery) {
+    body.citation_query = opts.citationQuery;
+  }
   await fetch("/api/history", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ role, text, ts }),
+    body: JSON.stringify(body),
   });
 }
 
@@ -1352,7 +1361,7 @@ async function addMessageAndStore(role, text) {
   const opts = arguments.length > 2 ? arguments[2] : {};
   addMessage(role, text, opts);
   try {
-    await persistMessage(role, text, ts);
+    await persistMessage(role, text, ts, opts);
   } catch (_) {
     // Keep UI responsive if history persistence fails.
   }
@@ -2053,6 +2062,26 @@ function citationSourceRowsFromAskPayload(payload) {
   return legacyRows;
 }
 
+function formatSourceMapAnswer(query, sources) {
+  if (!sources || !sources.length) {
+    return `Source map for: "${query}"\n\nNo relevant sources found.`;
+  }
+  const lines = [`Source map for: "${query}"\n`];
+  for (const src of sources) {
+    const title = src.title || src.path.split("/").pop() || src.path;
+    const locType = src.location_type || "loc";
+    const loc = src.location != null ? ` (${locType} ${src.location})` : "";
+    const score = src.score != null ? `, score: ${src.score.toFixed(3)}` : "";
+    lines.push(`**${title}**${loc}${score}`);
+    if (src.relevancy) {
+      lines.push(`→ ${src.relevancy}`);
+    }
+    lines.push("");
+  }
+  lines.push(`${sources.length} source${sources.length !== 1 ? "s" : ""} found.`);
+  return lines.join("\n");
+}
+
 function formatApaSources(sources) {
   return buildApaCitationEntries(sources).map((entry) => `- ${entry.citation}`);
 }
@@ -2111,6 +2140,12 @@ function renderCitationActions(citationEntries, queryText = "") {
     });
 
     row.appendChild(text);
+    if (entry.relevancy) {
+      const relevancyEl = document.createElement("div");
+      relevancyEl.className = "citation-relevancy";
+      relevancyEl.textContent = entry.relevancy;
+      row.appendChild(relevancyEl);
+    }
     row.appendChild(stashBtn);
     wrap.appendChild(row);
   }
@@ -2700,6 +2735,7 @@ function setBusy(isBusy) {
   instructionsEl.disabled = isBusy;
   saveInstructionsEl.disabled = isBusy;
   usePdfLibraryEl.disabled = isBusy;
+  pdfSearchModeEl.disabled = isBusy;
   pdfSourcePathEl.disabled = isBusy;
   browsePdfSourceEl.disabled = isBusy;
   savePdfSourceEl.disabled = isBusy;
@@ -2811,7 +2847,13 @@ async function loadHistory() {
         rememberPrompt(text, false);
         lastUserPrompt = text;
       }
-      addMessage(role, text);
+      const msgOpts = {};
+      if (Array.isArray(item.citation_entries) && item.citation_entries.length) {
+        msgOpts.citationEntries = item.citation_entries;
+        msgOpts.citationQuery =
+          typeof item.citation_query === "string" ? item.citation_query : "";
+      }
+      addMessage(role, text, msgOpts);
     }
     persistPromptHistory();
   } catch (err) {
@@ -2866,35 +2908,76 @@ async function sendPrompt() {
           throw new Error(selectionError);
         }
       }
-      const res = await fetch("/api/pdf/ask", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: requestController.signal,
-        body: JSON.stringify({
-          query: prompt,
-          model,
-          top_k: 8,
-          include_paths: filters.includePaths,
-          exclude_paths: filters.excludePaths,
-        }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      if (data.ok === false && data.error) {
-        throw new Error(data.error);
+      const pdfMode = pdfSearchModeEl.value;
+      if (pdfMode === "sourcemap") {
+        const res = await fetch("/api/pdf/synthesize", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: requestController.signal,
+          body: JSON.stringify({
+            query: prompt,
+            model,
+            top_k: 8,
+            include_paths: filters.includePaths,
+            exclude_paths: filters.excludePaths,
+          }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (data.ok === false && data.error) {
+          throw new Error(data.error);
+        }
+        const mapSources = data.sources || [];
+        const citationEntries = buildApaCitationEntries(mapSources);
+        const relevancyByPath = {};
+        for (const src of mapSources) {
+          if (src.path) relevancyByPath[src.path] = src.relevancy || "";
+        }
+        for (const entry of citationEntries) {
+          if (entry.source && entry.source.path) {
+            entry.relevancy = relevancyByPath[entry.source.path] || "";
+          }
+        }
+        answer = mapSources.length
+          ? `Source map for: "${prompt}"`
+          : `Source map for: "${prompt}"\n\nNo relevant sources found.`;
+        lastPdfSources = mapSources;
+        lastCitationQuery = prompt;
+        await addMessageAndStore("assistant", answer, {
+          citationEntries,
+          citationQuery: prompt,
+        });
+      } else {
+        const res = await fetch("/api/pdf/ask", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: requestController.signal,
+          body: JSON.stringify({
+            query: prompt,
+            model,
+            top_k: 8,
+            include_paths: filters.includePaths,
+            exclude_paths: filters.excludePaths,
+          }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (data.ok === false && data.error) {
+          throw new Error(data.error);
+        }
+        const citationSourceRows = citationSourceRowsFromAskPayload(data);
+        const citationEntries = buildApaCitationEntries(citationSourceRows);
+        answer =
+          typeof data.answer_text === "string" && data.answer_text.trim()
+            ? data.answer_text
+            : data.answer || "[no answer field]";
+        lastPdfSources = citationSourceRows;
+        lastCitationQuery = prompt;
+        await addMessageAndStore("assistant", answer, {
+          citationEntries,
+          citationQuery: prompt,
+        });
       }
-      const citationSourceRows = citationSourceRowsFromAskPayload(data);
-      const citationEntries = buildApaCitationEntries(citationSourceRows);
-      answer =
-        typeof data.answer_text === "string" && data.answer_text.trim()
-          ? data.answer_text
-          : data.answer || "[no answer field]";
-      lastPdfSources = citationSourceRows;
-      lastCitationQuery = prompt;
-      await addMessageAndStore("assistant", answer, {
-        citationEntries,
-        citationQuery: prompt,
-      });
     } else {
       const res = await fetch("/api/generate", {
         method: "POST",
@@ -2915,7 +2998,10 @@ async function sendPrompt() {
     }
 
     const elapsedMs = Math.round(performance.now() - start);
-    metaEl.textContent = `Model: ${model}${usePdfLibrary ? " + PDF" : ""} | ${elapsedMs} ms`;
+    const pdfLabel = usePdfLibrary
+      ? (pdfSearchModeEl.value === "sourcemap" ? " + source map" : " + PDF")
+      : "";
+    metaEl.textContent = `Model: ${model}${pdfLabel} | ${elapsedMs} ms`;
   } catch (err) {
     if (err && err.name === "AbortError") {
       // Keep the canceled query in the input so users can quickly adjust and resend.
@@ -3025,17 +3111,19 @@ pdfSourcePathEl.addEventListener("keydown", (e) => {
 });
 usePdfLibraryEl.addEventListener("change", () => {
   if (usePdfLibraryEl.checked) {
-    metaEl.textContent = "PDF-grounded mode enabled";
+    pdfModeRowEl.style.display = "";
+    metaEl.textContent = "PDF library mode enabled";
     return;
   }
   const proceedUngrounded = confirm(
-    "Turn off PDF grounding?\\n\\nOllama Librarian is intended primarily for PDF-grounded research. Continue with ungrounded mode?",
+    "Turn off PDF library?\\n\\nOllama Librarian is intended primarily for PDF-grounded research. Continue with ungrounded mode?",
   );
   if (!proceedUngrounded) {
     usePdfLibraryEl.checked = true;
-    metaEl.textContent = "PDF-grounded mode kept on";
+    metaEl.textContent = "PDF library mode kept on";
     return;
   }
+  pdfModeRowEl.style.display = "none";
   metaEl.textContent = "Ungrounded mode enabled";
 });
 makeBibliographyEl.addEventListener(
