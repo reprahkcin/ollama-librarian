@@ -2758,7 +2758,7 @@ async function loadModels(forceRefresh = false) {
     setStatus(
       "ok",
       recommended
-        ? `Online (${models.length} models, recommended ${recommended}; ${buildModelCacheLine()})`
+        ? `Online (${models.length} models, recommended ${recommended}) | ${buildModelCacheLine()}`
         : `Online (${models.length} models)`,
     );
   } catch (err) {

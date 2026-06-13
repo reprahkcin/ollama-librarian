@@ -271,7 +271,7 @@ HISTORY_LOCK = threading.Lock()
 PDF_LOCK = threading.Lock()
 STASH_LOCK = threading.Lock()
 PDF_SOURCE_OVERRIDE_PATH = DEFAULT_STATE_DIR / "ui-config.json"
-MODEL_CACHE_PATH = DEFAULT_STATE_DIR / "model-cache.json"
+MODEL_CACHE_PATH = Path(HISTORY_PATH).parent / "model-cache.json"
 
 
 PDF_SOURCE = CONFIG.pdf_source
