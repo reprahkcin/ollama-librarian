@@ -60,11 +60,32 @@ Run one machine at a time, in this order:
 
 | #   | Machine       | Platform   | Status            |
 | --- | ------------- | ---------- | ----------------- |
-| 1   | Mac Mini      | macOS      | PASS (2026-06-12) |
-| 2   | Windows 10 PC | Windows    | PASS (2026-06-12) |
-| 3   | Linux Mint PC | Linux Mint | PASS (2026-06-13) |
+| 1   | Mac Mini      | macOS      | pending (Cycle 2) |
+| 2   | Windows 10 PC | Windows    | pending (Cycle 2) |
+| 3   | Linux Mint PC | Linux Mint | pending (Cycle 2) |
 
 The cycle is complete only when all three machines have a PASS verdict. If any machine produces FAIL, stop the waterfall, fix and commit, then restart from Machine 1.
+
+### Cycle 2 restart notice (2026-06-13) — for macOS and Windows testers
+
+A code fix was committed after Cycle 1 completed. Restart the waterfall from Machine 1 (macOS).
+
+**Commit:** `ad7289f` — `feat(hardware): add VRAM detection to constrain model recommendations on discrete-GPU machines`
+
+**What changed:**
+- `src/ollama_librarian/hardware.py`: VRAM detection via `nvidia-smi` added to `detect_hardware_profile()`. `recommend_model()` now uses `min(ram_budget, vram_budget)` on discrete-GPU machines. `HardwareProfile` and `to_dict()` now include `gpu_vram_total_gb`.
+- `tests/test_hardware_profile.py`: 2 new unit tests added.
+- `docs/MANUAL-TEST-PLAN.md`: Linux evidence block updated (FAIL→PASS after fix).
+
+**Impact on macOS (Apple Silicon):** None. The `apple_silicon_unified_memory` note gates the VRAM override, so the RAM budget applies as before. The `gpu_vram_total_gb` field will be `null` in `/api/system/profile` (no `nvidia-smi` on Apple Silicon). Verify this in your UI smoke check — `/api/system/profile` should still return `ok: true` and a sensible recommendation.
+
+**Impact on Windows:** If the Windows 10 PC has an NVIDIA GPU, `gpu_vram_total_gb` will now appear in `/api/system/profile` and model safety ratings may change. If there is no NVIDIA GPU, behaviour is identical to Cycle 1. Note the new field in your evidence block either way.
+
+**What to watch for:**
+- `/api/system/profile` returns `ok: true` with `hardware.gpu_vram_total_gb` present (non-null on NVIDIA machines, null on others).
+- `recommendation.safe_budget_gb` is plausible for the hardware (not inflated to 55% of RAM on a VRAM-limited machine).
+- `recommended_model` is a model that fits within the safe budget.
+- No regressions in any other section.
 
 ## 5) macOS Test Sequence (Mac Mini — Run First)
 
@@ -251,37 +272,44 @@ When macOS is PASS, give the Windows tester this payload:
 ```text
 Handoff from: macOS (Mac Mini)
 Handoff to: Windows 10 PC
-Date/Time: 2026-06-12
-Branch/Commit: optimization-1.0.9 / ba72d18
+Date/Time: <fill in>
+Branch/Commit: optimization-1.0.9 / ad7289f
 
-macOS result: PASS
+macOS result: <fill in>
 macOS evidence summary:
-- Startup/Status: PASS — Ollama: running, Web UI: running
-- API smoke: PASS — /api/tags 200, /api/pdf/status 200 (ok: true)
-- UI smoke: PASS — page 200, system profile ok, pressure: ok
-- Chat: PASS — qwen2.5:7b replied "OK"
-- PDF-grounded: PASS — answer returned with 6 sources
-- Query wait duration used: <10s (well under 90s threshold)
-- Upload/Sync: PASS — file uploaded, index started and completed cleanly
-- Stash/Bibliography: PASS — stash CRUD ok, bibliography GET ok (empty state)
-- Update surface: PASS — status idle, check ok, release notes link present, no auto-apply
-- Restart resilience: PASS — stop/start/status clean, post-restart APIs 200
+- Startup/Status:
+- API smoke: (include hardware.gpu_vram_total_gb value from /api/system/profile)
+- UI smoke: (include recommendation.safe_budget_gb and recommended_model)
+- Chat:
+- PDF-grounded:
+- Query wait duration used:
+- Upload/Sync:
+- Stash/Bibliography:
+- Update surface:
+- Restart resilience:
 
-Environment caveats (macOS):
-- Index pruned 685 stale docs on sync (source_path pointed to custom-library with 2 docs; prior indexed docs were from a different library path). Correct behavior, not a defect.
-- Pause/ETA flow not observable at API level on a 1-doc run (job completed before pause call). Non-blocking.
-- Interactive UI click paths (Browse..., modal open/close, Clear button) validated via equivalent API calls rather than browser.
+Code change since Cycle 1 (commit ad7289f):
+- hardware.py: VRAM detection added via nvidia-smi; recommend_model() now uses
+  min(ram_budget, vram_budget) on discrete-GPU machines. Apple Silicon bypasses
+  this via the apple_silicon_unified_memory note (no behaviour change on Mac Mini).
+- New field hardware.gpu_vram_total_gb in /api/system/profile (null on Apple Silicon).
+- Two new unit tests in test_hardware_profile.py.
+
+Environment caveats (macOS): <fill in>
 
 Open failures to watch on Windows:
-- None from macOS.
+- If Windows machine has NVIDIA GPU: verify gpu_vram_total_gb is detected and
+  safe_budget_gb is VRAM-constrained (not inflated to 55% of RAM).
+- If no NVIDIA GPU: gpu_vram_total_gb will be null; RAM budget applies as before.
 
 Next immediate action for Windows tester:
-1. Pull or checkout branch: optimization-1.0.9
+1. git pull / checkout branch: optimization-1.0.9 (ensure commit ad7289f is present)
 2. Ensure models pulled: qwen2.5:7b, qwen2.5:3b, nomic-embed-text
 3. Run Section 6 (Windows Test Sequence) start to finish
-4. Record evidence block in Section 10 under "Windows (Windows 10 PC)"
-5. If PASS: hand off to Linux Mint PC using the Section 6 handoff template
-6. If FAIL: stop, report to macOS operator, do not continue to Linux
+4. Note gpu_vram_total_gb and safe_budget_gb values in your evidence block
+5. Record evidence block in Section 10 under "Windows (Windows 10 PC)"
+6. If PASS: hand off to Linux Mint PC using the Section 6 handoff template
+7. If FAIL: stop, report to macOS operator, do not continue to Linux
 ```
 
 ## 6) Windows Test Sequence (Windows 10 PC — Run Second)
@@ -514,6 +542,109 @@ Cleanup: `Remove-Item "$env:TEMP\ollama-librarian-smoke-upload.txt" -ErrorAction
 ## 10) Evidence Blocks
 
 Record one block per platform per cycle. Keep prior cycles below as history.
+
+---
+
+### Cycle 2 — Branch: optimization-1.0.9 / commit ad7289f
+
+#### macOS (Mac Mini)
+
+```text
+Platform: macOS (Mac Mini)
+Date/Time:
+Tester:
+Branch/Commit: optimization-1.0.9 / ad7289f
+
+Startup/Status:
+API smoke: (include hardware.gpu_vram_total_gb — expected: null on Apple Silicon)
+UI smoke: (include recommendation.safe_budget_gb and recommended_model — expected: RAM-budget applies, no change from Cycle 1)
+Chat:
+PDF-grounded:
+Query wait duration used:
+Upload/Sync:
+Stash/Bibliography:
+Update surface:
+Restart resilience:
+
+Failures:
+- ID:
+- Repro steps:
+- Expected:
+- Actual:
+- Evidence:
+- Severity:
+
+Environment caveats:
+-
+
+Final verdict: PASS | FAIL | BLOCKED
+```
+
+#### Windows (Windows 10 PC)
+
+```text
+Platform: Windows (Windows 10 PC)
+Date/Time:
+Tester:
+Branch/Commit: optimization-1.0.9 / ad7289f
+
+Startup/Status:
+API smoke: (include hardware.gpu_vram_total_gb — expected: NVIDIA GPU value in MiB/1024, or null if no NVIDIA GPU)
+UI smoke: (include recommendation.safe_budget_gb — expected: VRAM-constrained if NVIDIA GPU present, RAM-based if not)
+Chat:
+PDF-grounded: (if NVIDIA GPU: use a model within safe_budget_gb for this test)
+Query wait duration used:
+Upload/Sync:
+Stash/Bibliography:
+Update surface:
+Restart resilience:
+
+Failures:
+- ID:
+- Repro steps:
+- Expected:
+- Actual:
+- Evidence:
+- Severity:
+
+Environment caveats:
+-
+
+Final verdict: PASS | FAIL | BLOCKED
+```
+
+#### Linux (Linux Mint PC)
+
+```text
+Platform: Linux (Linux Mint PC)
+Date/Time:
+Tester:
+Branch/Commit: optimization-1.0.9 / ad7289f
+
+Startup/Status:
+API smoke: (include hardware.gpu_vram_total_gb — expected: 8.0 on RTX 3070 Laptop)
+UI smoke: (include recommendation.safe_budget_gb — expected: 6.0; recommended_model within safe VRAM budget)
+Chat:
+PDF-grounded: (use a model within safe_budget_gb — qwen2.5:3b or qwen:latest)
+Query wait duration used:
+Upload/Sync:
+Stash/Bibliography:
+Update surface:
+Restart resilience:
+
+Failures:
+- ID:
+- Repro steps:
+- Expected:
+- Actual:
+- Evidence:
+- Severity:
+
+Environment caveats:
+-
+
+Final verdict: PASS | FAIL | BLOCKED
+```
 
 ---
 
