@@ -58,10 +58,10 @@ Use these exact statuses per test item:
 
 Run one machine at a time, in this order:
 
-| #   | Machine       | Platform   | Status  |
-| --- | ------------- | ---------- | ------- |
+| #   | Machine       | Platform   | Status            |
+| --- | ------------- | ---------- | ----------------- |
 | 1   | Mac Mini      | macOS      | PASS (2026-06-12) |
-| 2   | Windows 10 PC | Windows    | pending           |
+| 2   | Windows 10 PC | Windows    | PASS (2026-06-12) |
 | 3   | Linux Mint PC | Linux Mint | pending           |
 
 The cycle is complete only when all three machines have a PASS verdict. If any machine produces FAIL, stop the waterfall, fix and commit, then restart from Machine 1.
@@ -317,32 +317,35 @@ When Windows is PASS, give the Linux tester this payload:
 ```text
 Handoff from: Windows 10 PC
 Handoff to: Linux Mint PC
-Date/Time:
-Branch/Commit:
+Date/Time: 2026-06-12
+Branch/Commit: optimization-1.0.9 / 9ac124bd
 
-Windows result: PASS | FAIL | BLOCKED
+Windows result: PASS
 Windows evidence summary:
-- Startup/Status:
-- API smoke:
-- UI smoke:
-- Chat:
-- PDF-grounded:
-- Query wait duration used:
-- Upload/Sync:
-- Stash/Bibliography:
-- Update surface:
-- Restart resilience:
+- Startup/Status: PASS — Ollama: running, Web UI: running on http://127.0.0.1:8088
+- API smoke: PASS — /api/tags 200 (8 models), /api/pdf/status 200 (ok: true)
+- UI smoke: PASS — page 200 HTML, model list includes all required models
+- Chat: PASS — qwen2.5:7b replied "OK"
+- PDF-grounded: PASS — answer returned with 6 sources
+- Query wait duration used: <15s (well under 90s threshold)
+- Upload/Sync: PASS — 88-byte file uploaded; index completed indexed 3, skipped 5, pruned 0
+- Stash/Bibliography: PASS — stash CRUD ok (POST/GET/DELETE by id); bibliography GET ok (empty state); clear history ok
+- Update surface: PASS — status idle, check ok, v1.0.8 up-to-date, release notes URL present, no auto-apply
+- Restart resilience: PASS — stop/start/status clean; post-restart /api/tags and /api/pdf/status both 200
 
-macOS result (from prior handoff): PASS | FAIL | BLOCKED
+macOS result (from prior handoff): PASS
 
 Environment caveats (Windows):
--
+- qwen2.5:7b and qwen2.5:3b pulled as precondition (not pre-installed).
+- /api/system/profile returns 404 on this branch — non-blocking.
+- Browse... directory picker not exercised interactively; equivalent /api/pdf/source POST validated instead.
+- Pause flow not observable on small library (job completes before pause arrives) — correct "not running" state returned.
 
 Open failures to watch on Linux:
--
+- None from Windows.
 
 Next immediate action for Linux Mint tester:
-1. Ensure repo is on branch: <branch>
+1. Ensure repo is on branch: optimization-1.0.9
 2. Ensure models pulled: qwen2.5:7b, qwen2.5:3b, nomic-embed-text
 3. Install one of zenity, kdialog, or yad for directory picker
 4. Run Section 7 (Linux Test Sequence) start to finish
@@ -556,33 +559,38 @@ Final verdict: PASS
 
 ```text
 Platform: Windows (Windows 10 PC)
-Date/Time:
-Tester:
-Branch/Commit:
+Date/Time: 2026-06-12
+Tester: Claude (claude-sonnet-4-6)
+Branch/Commit: optimization-1.0.9 / 9ac124bd
 
-Startup/Status:
-API smoke:
-UI smoke:
-Chat:
-PDF-grounded:
-Query wait duration used:
-Upload/Sync:
-Stash/Bibliography:
-Update surface:
-Restart resilience:
+Startup/Status: PASS — Ollama: running, Web UI: running (http://127.0.0.1:8088)
+API smoke: PASS — /api/tags 200 (8 models, qwen2.5:7b + qwen2.5:3b pulled as precondition), /api/pdf/status 200 (ok: true, 5 docs/9299 chunks at start)
+UI smoke: PASS — page returns HTTP 200 with HTML; model list includes qwen2.5:7b, qwen2.5:3b, nomic-embed-text:latest; /api/system/profile returns 404 (same as macOS — non-blocking)
+Chat: PASS — qwen2.5:7b responded "OK" to "Reply with exactly OK." via /api/generate
+PDF-grounded: PASS — /api/pdf/ask returned answer with 6 sources (scores 0.798–0.739)
+Query wait duration used: <15s (both queries returned well under 90s)
+Upload/Sync: PASS — file uploaded (88 bytes, collision-named) via /api/library/upload; /api/pdf/index started (ok: true, started: true); completed indexed 3, skipped 5, total 10, pruned 0; docs updated 5→8
+Stash/Bibliography: PASS — stash POST/GET/DELETE (by id) all ok; bibliography GET ok: true (0 entries, empty state accepted); clear conversation DELETE ok: true
+Update surface: PASS — /api/update/status idle, /api/update/check returns ok: true, message "You are up to date", v1.0.8 current = latest, release_notes_url present, update_available: false, no auto-apply
+Restart resilience: PASS — stop/start/status clean (no orphan processes); post-restart /api/tags 200 (8 models) and /api/pdf/status 200 (ok: true, docs: 8)
 
 Failures:
-- ID:
-- Repro steps:
-- Expected:
-- Actual:
-- Evidence:
-- Severity:
+- ID: none
+- Repro steps: n/a
+- Expected: n/a
+- Actual: n/a
+- Evidence: n/a
+- Severity: n/a
 
 Environment caveats:
--
+- qwen2.5:7b and qwen2.5:3b were not pre-installed; pulled before test run as required precondition. nomic-embed-text:latest already present.
+- /api/system/profile returns 404 on this branch (same as macOS); non-blocking.
+- Browser Browse... directory picker not testable via API automation; validated equivalent path via /api/pdf/source POST (ok: true, path confirmed in /api/pdf/status). Manual Set Directory: PASS.
+- Pause/ETA flow: job completed before pause call on a small library (same as macOS caveat). Pause endpoint returned correct "not running" state. Non-blocking.
+- Stash DELETE requires ?id= (integer stash_id), not ?saved_at=; correct param discovered and used.
+- Upload collision naming (smoke-upload (2).txt): expected behavior since a prior copy existed in library dir from macOS run artifacts.
 
-Final verdict: PASS | FAIL | BLOCKED
+Final verdict: PASS
 ```
 
 #### Linux (Linux Mint PC)
