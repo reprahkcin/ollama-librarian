@@ -1149,6 +1149,99 @@ class RouteBaselineTests(unittest.TestCase):
         self.assertEqual(payload.get("citations", [])[
             0].get("confidence_label"), "High")
 
+    def test_post_pdf_synthesize_returns_sources_and_ok(self):
+        with running_server() as (app, base_url):
+            original_synth = app.synthesize_pdf_library
+            original_validate = app.validate_model_allowed
+            app.validate_model_allowed = lambda model: {"ok": True}
+
+            def fake_synth(query, model, top_k, include_paths=None, exclude_paths=None):
+                return {
+                    "ok": True,
+                    "sources": [
+                        {
+                            "path": "/library/paper.pdf",
+                            "title": "Paper",
+                            "location": 5,
+                            "score": 1.23,
+                            "relevancy": "This source is relevant because it covers the topic.",
+                        }
+                    ],
+                }
+
+            app.synthesize_pdf_library = fake_synth
+            try:
+                status, payload, _ = _request_json(
+                    "POST",
+                    f"{base_url}/api/pdf/synthesize",
+                    {
+                        "query": "What topics does the library cover?",
+                        "model": "qwen2.5:14b",
+                        "top_k": 5,
+                    },
+                )
+            finally:
+                app.synthesize_pdf_library = original_synth
+                app.validate_model_allowed = original_validate
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload.get("ok"))
+        self.assertIsInstance(payload.get("sources"), list)
+        self.assertEqual(len(payload["sources"]), 1)
+        self.assertIn("relevancy", payload["sources"][0])
+
+    def test_post_pdf_synthesize_blocked_when_resource_pressure_critical(self):
+        with running_server() as (app, base_url):
+            original_acquire = app.acquire_generation_slot
+            original_validate = app.validate_model_allowed
+            app.validate_model_allowed = lambda model: {"ok": True}
+            app.acquire_generation_slot = lambda kind: {
+                "ok": False,
+                "code": 503,
+                "error": "System pressure is critical",
+                "policy": {"pressure": "critical"},
+            }
+            try:
+                status, payload, _ = _request_json(
+                    "POST",
+                    f"{base_url}/api/pdf/synthesize",
+                    {
+                        "query": "What does the library cover?",
+                        "model": "qwen2.5:14b",
+                    },
+                )
+            finally:
+                app.acquire_generation_slot = original_acquire
+                app.validate_model_allowed = original_validate
+
+        self.assertEqual(status, 503)
+        self.assertFalse(payload.get("ok", True))
+        self.assertIn("critical", str(payload.get("error", "")))
+
+    def test_post_pdf_synthesize_rejected_when_model_unsafe(self):
+        with running_server() as (app, base_url):
+            original_validate = app.validate_model_allowed
+            app.validate_model_allowed = lambda model: {
+                "ok": False,
+                "code": 409,
+                "error": f"Model {model!r} exceeds safe resource limits.",
+            }
+            try:
+                status, payload, _ = _request_json(
+                    "POST",
+                    f"{base_url}/api/pdf/synthesize",
+                    {
+                        "query": "What does the library cover?",
+                        "model": "llama3.1:70b",
+                    },
+                )
+            finally:
+                app.validate_model_allowed = original_validate
+
+        self.assertEqual(status, 409)
+        self.assertFalse(payload.get("ok", True))
+        self.assertIn("safe resource limits", str(payload.get("error", "")))
+
     def test_api_routes_require_key_when_configured(self):
         with running_server(api_key="secret-key") as (_, base_url):
             status, payload, _ = _request_json(
