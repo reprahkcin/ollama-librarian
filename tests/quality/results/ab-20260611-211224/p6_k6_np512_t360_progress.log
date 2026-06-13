@@ -1,0 +1,4 @@
+[2026-06-11T21:20:02+00:00] START total_prompts=2
+[2026-06-11T21:20:03+00:00] 1/2 id=bf_001 latency_ms=64 ok=False error=yes
+[2026-06-11T21:20:03+00:00] 2/2 id=bf_002 latency_ms=1 ok=False error=yes
+[2026-06-11T21:20:03+00:00] COMPLETE prompts=2

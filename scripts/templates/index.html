@@ -150,6 +150,31 @@
           </div>
         </section>
 
+        <section
+          class="sidebar-section perf-panel"
+          aria-label="Performance dashboard"
+        >
+          <h3 class="sidebar-section-title">Performance</h3>
+          <div id="perfSummary" class="tiny perf-row">
+            Performance: checking...
+          </div>
+          <div id="perfSystem" class="tiny perf-row"></div>
+          <div id="perfRequest" class="tiny perf-row"></div>
+          <div id="perfHotRoute" class="tiny perf-row"></div>
+          <div id="perfCooldown" class="tiny perf-row"></div>
+          <div class="cooldown-actions">
+            <select id="cooldownMinutes" title="Cooldown duration in minutes">
+              <option value="2">2 min</option>
+              <option value="5" selected>5 min</option>
+              <option value="10">10 min</option>
+              <option value="15">15 min</option>
+            </select>
+            <button id="cooldownToggle" class="btn-soft" type="button">
+              Pause Heavy Work
+            </button>
+          </div>
+        </section>
+
         <details
           class="sidebar-accordion"
           id="updatesAccordion"

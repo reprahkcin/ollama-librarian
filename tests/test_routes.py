@@ -68,6 +68,68 @@ class RouteBaselineTests(unittest.TestCase):
         self.assertEqual(payload.get("models", [])[
                          0].get("name"), "stub-model")
 
+    def test_post_generate_requires_model(self):
+        with running_server() as (_, base_url):
+            status, payload, _ = _request_json(
+                "POST", f"{base_url}/api/generate", {"prompt": "hello"}
+            )
+
+        self.assertEqual(status, 400)
+        self.assertIsInstance(payload, dict)
+        self.assertIn("model", str(payload.get("error", "")).lower())
+
+    def test_post_generate_trips_model_guard_after_repeated_failures(self):
+        with running_server(
+            extra_env={
+                "OLLAMA_WEB_MODEL_FAILURE_THRESHOLD": "2",
+                "OLLAMA_WEB_MODEL_FAILURE_COOLDOWN_SECONDS": "120",
+                "OLLAMA_WEB_SAFETY_BRAKE_ENABLED": "0",
+            }
+        ) as (app, base_url):
+            call_count = {"urlopen": 0}
+            original_urlopen = app.urlopen
+
+            def fake_urlopen(_req, timeout=0):
+                call_count["urlopen"] += 1
+                raise app.URLError("connection reset by peer")
+
+            app.urlopen = fake_urlopen
+            try:
+                status_1, payload_1, _ = _request_json(
+                    "POST",
+                    f"{base_url}/api/generate",
+                    {"model": "unstable-model", "prompt": "test one", "stream": False},
+                )
+                status_2, payload_2, _ = _request_json(
+                    "POST",
+                    f"{base_url}/api/generate",
+                    {"model": "unstable-model", "prompt": "test two", "stream": False},
+                )
+                status_3, payload_3, _ = _request_json(
+                    "POST",
+                    f"{base_url}/api/generate",
+                    {"model": "unstable-model",
+                        "prompt": "test three", "stream": False},
+                )
+            finally:
+                app.urlopen = original_urlopen
+
+        self.assertEqual(status_1, 502)
+        self.assertIsInstance(payload_1, dict)
+        self.assertFalse(payload_1.get("guarded", False))
+
+        self.assertEqual(status_2, 503)
+        self.assertIsInstance(payload_2, dict)
+        self.assertTrue(payload_2.get("guarded"))
+        self.assertGreater(int(payload_2.get("retry_after_seconds", 0)), 0)
+
+        self.assertEqual(status_3, 503)
+        self.assertIsInstance(payload_3, dict)
+        self.assertTrue(payload_3.get("guarded"))
+        self.assertGreater(int(payload_3.get("retry_after_seconds", 0)), 0)
+
+        self.assertEqual(call_count["urlopen"], 2)
+
     def test_get_history_returns_messages_payload(self):
         with running_server() as (_, base_url):
             status, payload, headers = _request_json(
@@ -226,6 +288,479 @@ class RouteBaselineTests(unittest.TestCase):
         self.assertIn("ok", payload)
         self.assertIn("source_path", payload)
 
+    def test_metrics_endpoint_reports_request_data(self):
+        with running_server() as (_, base_url):
+            status, payload, _ = _request_json(
+                "GET", f"{base_url}/api/history")
+            self.assertEqual(status, 200)
+
+            status, metrics, _ = _request_json(
+                "GET", f"{base_url}/api/metrics?limit=25")
+
+        self.assertEqual(status, 200)
+        self.assertTrue(metrics.get("ok"))
+        self.assertTrue(metrics.get("enabled"))
+        self.assertIn("requests_total", metrics)
+        self.assertGreaterEqual(int(metrics.get("requests_total", 0)), 1)
+        self.assertIn("recent_requests", metrics)
+        self.assertIsInstance(metrics.get("recent_requests"), list)
+        self.assertIn("last_resource", metrics)
+        self.assertIsInstance(metrics.get("last_resource"), dict)
+        resource = metrics.get("last_resource", {})
+        self.assertIn("cpu_usage_pct_now", resource)
+        self.assertIn("gpu_monitoring", resource)
+        self.assertIn("cooldown", metrics)
+        self.assertIn("safety_brake", metrics)
+
+    def test_safety_brake_sets_cooldown_from_metrics_snapshot(self):
+        with running_server() as (app, base_url):
+            original_resource_snapshot = app._resource_snapshot
+
+            def fake_resource_snapshot():
+                return {
+                    "ts": 0,
+                    "cpu_load_pct_1m": 10.0,
+                    "cpu_usage_pct_now": 25.0,
+                    "cpu_count": 8,
+                    "mem_available_mb": 16000.0,
+                    "process_rss_mb": 300.0,
+                    "disk_free_mb": 100000.0,
+                    "gpu_monitoring": "ok",
+                    "gpu_present": True,
+                    "gpu_count": 1,
+                    "gpu_util_pct_max": 97.0,
+                    "gpu_mem_util_pct_max": 96.0,
+                    "gpu_temp_c_max": 84.0,
+                }
+
+            app._resource_snapshot = fake_resource_snapshot
+            try:
+                status, metrics, _ = _request_json(
+                    "GET", f"{base_url}/api/metrics?limit=10")
+            finally:
+                app._resource_snapshot = original_resource_snapshot
+
+        self.assertEqual(status, 200)
+        self.assertTrue(metrics.get("ok"))
+        cooldown = metrics.get("cooldown", {})
+        self.assertTrue(cooldown.get("active"))
+        self.assertIn("Auto safety brake", str(cooldown.get("reason", "")))
+        self.assertIn("safety_brake", metrics)
+
+    def test_safety_brake_blocks_generate_before_upstream_call(self):
+        with running_server() as (app, base_url):
+            original_resource_snapshot = app._resource_snapshot
+            original_urlopen = app.urlopen
+            call_count = {"urlopen": 0}
+
+            def fake_resource_snapshot():
+                return {
+                    "ts": 0,
+                    "cpu_load_pct_1m": 8.0,
+                    "cpu_usage_pct_now": 20.0,
+                    "cpu_count": 8,
+                    "mem_available_mb": 16000.0,
+                    "process_rss_mb": 320.0,
+                    "disk_free_mb": 100000.0,
+                    "gpu_monitoring": "ok",
+                    "gpu_present": True,
+                    "gpu_count": 1,
+                    "gpu_util_pct_max": 98.0,
+                    "gpu_mem_util_pct_max": 97.0,
+                    "gpu_temp_c_max": 85.0,
+                }
+
+            def fake_urlopen(_req, timeout=0):
+                call_count["urlopen"] += 1
+                raise app.URLError("should not be called")
+
+            app._resource_snapshot = fake_resource_snapshot
+            app.urlopen = fake_urlopen
+            try:
+                status, payload, _ = _request_json(
+                    "POST",
+                    f"{base_url}/api/generate",
+                    {"model": "qwen2.5:14b", "prompt": "test", "stream": False},
+                )
+            finally:
+                app._resource_snapshot = original_resource_snapshot
+                app.urlopen = original_urlopen
+
+        self.assertEqual(status, 429)
+        self.assertIn("safety brake", str(payload.get("error", "")).lower())
+        self.assertEqual(call_count["urlopen"], 0)
+
+    def test_soft_throttle_delays_generate_under_pressure(self):
+        with running_server(
+            extra_env={
+                "OLLAMA_WEB_SAFETY_BRAKE_ENABLED": "0",
+                "OLLAMA_WEB_SOFT_THROTTLE_ENABLED": "1",
+                "OLLAMA_WEB_SOFT_THROTTLE_START_RATIO_PCT": "50",
+                "OLLAMA_WEB_SOFT_THROTTLE_MAX_DELAY_MS": "1200",
+                "OLLAMA_WEB_SOFT_THROTTLE_MIN_GAP_MS": "0",
+            }
+        ) as (app, base_url):
+            original_resource_snapshot = app._resource_snapshot
+            original_urlopen = app.urlopen
+            original_sleep = app.time.sleep
+            sleep_calls: list[float] = []
+
+            def fake_resource_snapshot():
+                return {
+                    "ts": 0,
+                    "cpu_load_pct_1m": 12.0,
+                    "cpu_usage_pct_now": 72.0,
+                    "cpu_count": 8,
+                    "mem_available_mb": 16000.0,
+                    "process_rss_mb": 300.0,
+                    "disk_free_mb": 100000.0,
+                    "gpu_monitoring": "unavailable",
+                    "gpu_present": False,
+                }
+
+            def fake_urlopen(_req, timeout=0):
+                raise app.URLError("simulated upstream timeout")
+
+            def fake_sleep(seconds):
+                sleep_calls.append(float(seconds))
+
+            app._resource_snapshot = fake_resource_snapshot
+            app.urlopen = fake_urlopen
+            app.time.sleep = fake_sleep
+            try:
+                status, _, _ = _request_json(
+                    "POST",
+                    f"{base_url}/api/generate",
+                    {"model": "qwen2.5:14b", "prompt": "test", "stream": False},
+                )
+            finally:
+                app._resource_snapshot = original_resource_snapshot
+                app.urlopen = original_urlopen
+                app.time.sleep = original_sleep
+
+        self.assertIn(status, {502, 503})
+        self.assertTrue(sleep_calls)
+        self.assertGreater(sleep_calls[0], 0.0)
+
+    def test_heavy_operation_guard_rejects_when_busy(self):
+        with running_server(
+            extra_env={
+                "OLLAMA_WEB_HEAVY_SERIAL_ENABLED": "1",
+                "OLLAMA_WEB_HEAVY_SERIAL_QUEUE_TIMEOUT_SECONDS": "1",
+                "OLLAMA_WEB_SAFETY_BRAKE_ENABLED": "0",
+                "OLLAMA_WEB_SOFT_THROTTLE_ENABLED": "0",
+            }
+        ) as (app, base_url):
+            acquired = app.HEAVY_OP_LOCK.acquire(timeout=1.0)
+            self.assertTrue(acquired)
+
+            with app.HEAVY_OP_STATE_LOCK:
+                app.HEAVY_OP_STATE["active"] = True
+                app.HEAVY_OP_STATE["active_operation"] = "PDF-grounded ask"
+                app.HEAVY_OP_STATE["active_since_ts"] = int(app.time.time())
+
+            try:
+                status, payload, _ = _request_json(
+                    "POST",
+                    f"{base_url}/api/generate",
+                    {"model": "qwen2.5:14b", "prompt": "test", "stream": False},
+                )
+            finally:
+                with app.HEAVY_OP_STATE_LOCK:
+                    app.HEAVY_OP_STATE["active"] = False
+                    app.HEAVY_OP_STATE["active_operation"] = ""
+                    app.HEAVY_OP_STATE["active_since_ts"] = None
+                app.HEAVY_OP_LOCK.release()
+
+        self.assertEqual(status, 429)
+        self.assertIn("heavy operation", str(payload.get("error", "")).lower())
+        self.assertEqual(int(payload.get("retry_after_seconds", 0) or 0), 1)
+        self.assertTrue(
+            bool(payload.get("heavy_operation_guard", {}).get("enabled")))
+
+    def test_metrics_exposes_heavy_operation_guard(self):
+        with running_server() as (_, base_url):
+            status, payload, _ = _request_json(
+                "GET",
+                f"{base_url}/api/metrics?limit=10",
+            )
+
+        self.assertEqual(status, 200)
+        self.assertIn("heavy_operation_guard", payload)
+        self.assertIsInstance(payload.get("heavy_operation_guard"), dict)
+        self.assertIn("enabled", payload.get("heavy_operation_guard", {}))
+
+    def test_safe_generate_profile_applies_defaults(self):
+        with running_server(
+            extra_env={
+                "OLLAMA_WEB_SAFE_GENERATE_PROFILE_ENABLED": "1",
+                "OLLAMA_WEB_SAFE_GENERATE_NUM_THREAD": "2",
+                "OLLAMA_WEB_SAFE_GENERATE_NUM_BATCH": "12",
+                "OLLAMA_WEB_SAFE_GENERATE_NUM_PREDICT_CAP": "320",
+                "OLLAMA_WEB_SOFT_THROTTLE_ENABLED": "0",
+                "OLLAMA_WEB_SAFETY_BRAKE_ENABLED": "0",
+            }
+        ) as (app, base_url):
+            original_urlopen = app.urlopen
+            captured_payload = {}
+
+            class _Resp:
+                status = 200
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+                def read(self):
+                    return b'{"response":"ok"}'
+
+            def fake_urlopen(req, timeout=0):
+                body = req.data.decode("utf-8")
+                captured_payload.update(json.loads(body))
+                return _Resp()
+
+            app.urlopen = fake_urlopen
+            try:
+                status, payload, _ = _request_json(
+                    "POST",
+                    f"{base_url}/api/generate",
+                    {"model": "qwen2.5:14b", "prompt": "test", "stream": False},
+                )
+            finally:
+                app.urlopen = original_urlopen
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload.get("response"), "ok")
+        options = captured_payload.get("options", {})
+        self.assertEqual(int(options.get("num_thread", 0)), 2)
+        self.assertEqual(int(options.get("num_batch", 0)), 12)
+        self.assertEqual(int(options.get("num_predict", 0)), 320)
+
+    def test_safe_generate_profile_caps_num_predict(self):
+        with running_server(
+            extra_env={
+                "OLLAMA_WEB_SAFE_GENERATE_PROFILE_ENABLED": "1",
+                "OLLAMA_WEB_SAFE_GENERATE_NUM_PREDICT_CAP": "320",
+                "OLLAMA_WEB_SOFT_THROTTLE_ENABLED": "0",
+                "OLLAMA_WEB_SAFETY_BRAKE_ENABLED": "0",
+            }
+        ) as (app, base_url):
+            original_urlopen = app.urlopen
+            captured_payload = {}
+
+            class _Resp:
+                status = 200
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+                def read(self):
+                    return b'{"response":"ok"}'
+
+            def fake_urlopen(req, timeout=0):
+                body = req.data.decode("utf-8")
+                captured_payload.update(json.loads(body))
+                return _Resp()
+
+            app.urlopen = fake_urlopen
+            try:
+                status, _, _ = _request_json(
+                    "POST",
+                    f"{base_url}/api/generate",
+                    {
+                        "model": "qwen2.5:14b",
+                        "prompt": "test",
+                        "stream": False,
+                        "options": {"num_predict": 1024},
+                    },
+                )
+            finally:
+                app.urlopen = original_urlopen
+
+        self.assertEqual(status, 200)
+        options = captured_payload.get("options", {})
+        self.assertEqual(int(options.get("num_predict", 0)), 320)
+
+    def test_safety_brake_cooldown_releases_early_after_recovery(self):
+        with running_server(
+            extra_env={
+                "OLLAMA_WEB_SAFETY_BRAKE_MIN_HOLD_SECONDS": "0",
+                "OLLAMA_WEB_SAFETY_BRAKE_RELEASE_STREAK": "2",
+                "OLLAMA_WEB_SAFETY_BRAKE_GPU_UTIL_PCT": "88",
+                "OLLAMA_WEB_SAFETY_BRAKE_GPU_MEM_PCT": "88",
+                "OLLAMA_WEB_SAFETY_BRAKE_GPU_TEMP_C": "78",
+            }
+        ) as (app, base_url):
+            original_resource_snapshot = app._resource_snapshot
+
+            def hot_resource_snapshot():
+                return {
+                    "ts": 0,
+                    "cpu_load_pct_1m": 7.0,
+                    "cpu_usage_pct_now": 15.0,
+                    "cpu_count": 8,
+                    "mem_available_mb": 16000.0,
+                    "process_rss_mb": 320.0,
+                    "disk_free_mb": 100000.0,
+                    "gpu_monitoring": "ok",
+                    "gpu_present": True,
+                    "gpu_count": 1,
+                    "gpu_util_pct_max": 96.0,
+                    "gpu_mem_util_pct_max": 95.0,
+                    "gpu_temp_c_max": 84.0,
+                }
+
+            def cool_resource_snapshot():
+                return {
+                    "ts": 0,
+                    "cpu_load_pct_1m": 7.0,
+                    "cpu_usage_pct_now": 10.0,
+                    "cpu_count": 8,
+                    "mem_available_mb": 16500.0,
+                    "process_rss_mb": 300.0,
+                    "disk_free_mb": 100000.0,
+                    "gpu_monitoring": "ok",
+                    "gpu_present": True,
+                    "gpu_count": 1,
+                    "gpu_util_pct_max": 45.0,
+                    "gpu_mem_util_pct_max": 40.0,
+                    "gpu_temp_c_max": 55.0,
+                }
+
+            app._resource_snapshot = hot_resource_snapshot
+            try:
+                status_1, metrics_1, _ = _request_json(
+                    "GET", f"{base_url}/api/metrics?limit=10")
+                app._resource_snapshot = cool_resource_snapshot
+                status_2, metrics_2, _ = _request_json(
+                    "GET", f"{base_url}/api/metrics?limit=10")
+                status_3, metrics_3, _ = _request_json(
+                    "GET", f"{base_url}/api/metrics?limit=10")
+            finally:
+                app._resource_snapshot = original_resource_snapshot
+
+        self.assertEqual(status_1, 200)
+        self.assertEqual(status_2, 200)
+        self.assertEqual(status_3, 200)
+        self.assertTrue(metrics_1.get("cooldown", {}).get("active"))
+        self.assertTrue(metrics_2.get("cooldown", {}).get("active"))
+        self.assertFalse(metrics_3.get("cooldown", {}).get("active"))
+
+    def test_metrics_reset_clears_counters(self):
+        with running_server() as (_, base_url):
+            status, _, _ = _request_json("GET", f"{base_url}/api/history")
+            self.assertEqual(status, 200)
+
+            status, payload, _ = _request_json(
+                "POST", f"{base_url}/api/metrics/reset", {}
+            )
+            self.assertEqual(status, 200)
+            self.assertTrue(payload.get("ok"))
+
+            status, metrics, _ = _request_json(
+                "GET", f"{base_url}/api/metrics?limit=25")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(int(metrics.get("requests_error", 0)), 0)
+        # One request may be present for /api/metrics itself after reset.
+        self.assertLessEqual(int(metrics.get("requests_total", 0)), 2)
+
+    def test_metrics_capture_generate_request_metadata(self):
+        with running_server() as (app, base_url):
+            original_urlopen = app.urlopen
+
+            def fake_urlopen(_req, timeout=0):
+                raise app.URLError("simulated upstream timeout")
+
+            app.urlopen = fake_urlopen
+            try:
+                status, _, _ = _request_json(
+                    "POST",
+                    f"{base_url}/api/generate",
+                    {
+                        "model": "qwen2.5:14b",
+                        "prompt": "What are robust retrieval patterns?",
+                        "stream": False,
+                    },
+                )
+                self.assertIn(status, {502, 503})
+
+                status, metrics, _ = _request_json(
+                    "GET", f"{base_url}/api/metrics?limit=30")
+            finally:
+                app.urlopen = original_urlopen
+
+        self.assertEqual(status, 200)
+        events = metrics.get("recent_requests", [])
+        self.assertTrue(events)
+        matched = [
+            event
+            for event in events
+            if event.get("path") == "/api/generate" and event.get("method") == "POST"
+        ]
+        self.assertTrue(matched)
+        meta = matched[0].get("meta", {})
+        self.assertEqual(meta.get("model"), "qwen2.5:14b")
+        self.assertIn("prompt_chars", meta)
+
+    def test_cooldown_status_endpoint_and_clear(self):
+        with running_server() as (_, base_url):
+            status, payload, _ = _request_json(
+                "GET", f"{base_url}/api/cooldown/status"
+            )
+            self.assertEqual(status, 200)
+            self.assertTrue(payload.get("ok"))
+            self.assertFalse(payload.get("cooldown", {}).get("active", True))
+
+            status, payload, _ = _request_json(
+                "POST",
+                f"{base_url}/api/cooldown",
+                {"minutes": 2, "reason": "manual cool down"},
+            )
+            self.assertEqual(status, 200)
+            self.assertTrue(payload.get("active"))
+
+            status, payload, _ = _request_json(
+                "POST",
+                f"{base_url}/api/cooldown",
+                {"action": "clear"},
+            )
+
+        self.assertEqual(status, 200)
+        self.assertFalse(payload.get("active", True))
+
+    def test_cooldown_blocks_generate_and_pdf_ask(self):
+        with running_server() as (_, base_url):
+            status, payload, _ = _request_json(
+                "POST",
+                f"{base_url}/api/cooldown",
+                {"minutes": 2, "reason": "thermal"},
+            )
+            self.assertEqual(status, 200)
+            self.assertTrue(payload.get("active"))
+
+            status, payload, _ = _request_json(
+                "POST",
+                f"{base_url}/api/generate",
+                {"model": "qwen2.5:14b", "prompt": "hello", "stream": False},
+            )
+            self.assertEqual(status, 429)
+            self.assertIn("cooldown", payload)
+
+            status, payload, _ = _request_json(
+                "POST",
+                f"{base_url}/api/pdf/ask",
+                {"query": "hello", "model": "qwen2.5:14b", "top_k": 6},
+            )
+
+        self.assertEqual(status, 429)
+        self.assertIn("cooldown", payload)
+
     def test_post_pdf_index_pause_is_stable_when_not_running(self):
         with running_server() as (_, base_url):
             status, payload, _ = _request_json(
@@ -250,6 +785,12 @@ class RouteBaselineTests(unittest.TestCase):
 
             status, status_payload, _ = _request_json(
                 "GET", f"{base_url}/api/pdf/status")
+
+            self.assertTrue(Path(app.PDF_SOURCE_OVERRIDE_PATH).is_file())
+            self.assertEqual(
+                Path(app.PDF_SOURCE_OVERRIDE_PATH).parent,
+                Path(app.HISTORY_PATH).parent,
+            )
 
         self.assertEqual(status, 200)
         self.assertTrue(Path(target).is_dir())
@@ -379,7 +920,13 @@ class RouteBaselineTests(unittest.TestCase):
         self.assertIn("state", payload)
 
     def test_post_abstract_evaluate_uses_normalized_contract(self):
-        with running_server() as (app, base_url):
+        with running_server(
+            extra_env={
+                "OLLAMA_WEB_SAFETY_BRAKE_ENABLED": "0",
+                "OLLAMA_WEB_SOFT_THROTTLE_ENABLED": "0",
+                "OLLAMA_WEB_HEAVY_SERIAL_ENABLED": "0",
+            }
+        ) as (app, base_url):
             original_eval = app.evaluate_abstract_relevance
 
             def fake_eval(model, research_need, abstract_text, instructions):
@@ -415,7 +962,7 @@ class RouteBaselineTests(unittest.TestCase):
         self.assertEqual(payload.get("confidence"), 88)
 
     def test_post_pdf_ask_default_hides_debug_trace(self):
-        with running_server() as (app, base_url):
+        with running_server(extra_env={"OLLAMA_WEB_SOFT_THROTTLE_ENABLED": "0"}) as (app, base_url):
             original_ask = app.ask_pdf_library
 
             def fake_ask(query, model, top_k, include_paths=None, exclude_paths=None, debug_trace=False):

@@ -7,6 +7,7 @@ import mimetypes
 import os
 import platform
 import re
+import resource
 import signal
 import shutil
 import sqlite3
@@ -95,6 +96,35 @@ class WebConfig:
     update_apply_mode: str
     update_apply_mode_resolved: str
     update_events_max: int
+    generate_timeout: int
+    model_failure_threshold: int
+    model_failure_cooldown_seconds: int
+    monitor_enabled: bool
+    monitor_max_events: int
+    monitor_slow_ms: int
+    monitor_log_jsonl: bool
+    monitor_log_path: str
+    safety_brake_enabled: bool
+    safety_brake_cooldown_seconds: int
+    safety_brake_cpu_pct: int
+    safety_brake_gpu_util_pct: int
+    safety_brake_gpu_mem_pct: int
+    safety_brake_gpu_temp_c: int
+    safety_brake_min_hold_seconds: int
+    safety_brake_release_streak: int
+    safety_brake_recover_margin_pct: int
+    safety_brake_recover_temp_c: int
+    soft_throttle_enabled: bool
+    soft_throttle_start_ratio_pct: int
+    soft_throttle_max_delay_ms: int
+    soft_throttle_min_gap_ms: int
+    heavy_serial_enabled: bool
+    heavy_serial_queue_timeout_seconds: int
+    safe_generate_profile_enabled: bool
+    safe_generate_num_thread: int
+    safe_generate_num_batch: int
+    safe_generate_num_gpu: int
+    safe_generate_num_predict_cap: int
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "WebConfig":
@@ -191,6 +221,91 @@ class WebConfig:
             update_apply_mode_resolved=update_apply_mode_resolved,
             update_events_max=_read_update_events_max(
                 env.get("OLLAMA_WEB_UPDATE_EVENTS_MAX", "200")),
+            generate_timeout=_env_int(
+                env, "OLLAMA_WEB_GENERATE_TIMEOUT", 120, min_value=10),
+            model_failure_threshold=_env_int(
+                env, "OLLAMA_WEB_MODEL_FAILURE_THRESHOLD", 2, min_value=1),
+            model_failure_cooldown_seconds=_env_int(
+                env, "OLLAMA_WEB_MODEL_FAILURE_COOLDOWN_SECONDS", 180, min_value=5),
+            monitor_enabled=_env_bool_true_unless_false(
+                env, "OLLAMA_WEB_MONITOR_ENABLED", "1"),
+            monitor_max_events=_env_int(
+                env, "OLLAMA_WEB_MONITOR_MAX_EVENTS", 1000, min_value=20),
+            monitor_slow_ms=_env_int(
+                env, "OLLAMA_WEB_MONITOR_SLOW_MS", 2500, min_value=100),
+            monitor_log_jsonl=_env_bool_true_unless_false(
+                env, "OLLAMA_WEB_MONITOR_LOG_JSONL", "1"),
+            monitor_log_path=os.path.expanduser(
+                str(
+                    env.get(
+                        "OLLAMA_WEB_MONITOR_LOG_PATH",
+                        str(default_state_dir / "perf-events.jsonl"),
+                    )
+                )
+            ),
+            safety_brake_enabled=_env_bool_true_unless_false(
+                env, "OLLAMA_WEB_SAFETY_BRAKE_ENABLED", "1"
+            ),
+            safety_brake_cooldown_seconds=_env_int(
+                env, "OLLAMA_WEB_SAFETY_BRAKE_COOLDOWN_SECONDS", 300, min_value=30
+            ),
+            safety_brake_cpu_pct=_env_int(
+                env, "OLLAMA_WEB_SAFETY_BRAKE_CPU_PCT", 95, min_value=60
+            ),
+            safety_brake_gpu_util_pct=_env_int(
+                env, "OLLAMA_WEB_SAFETY_BRAKE_GPU_UTIL_PCT", 92, min_value=50
+            ),
+            safety_brake_gpu_mem_pct=_env_int(
+                env, "OLLAMA_WEB_SAFETY_BRAKE_GPU_MEM_PCT", 92, min_value=50
+            ),
+            safety_brake_gpu_temp_c=_env_int(
+                env, "OLLAMA_WEB_SAFETY_BRAKE_GPU_TEMP_C", 82, min_value=50
+            ),
+            safety_brake_min_hold_seconds=_env_int(
+                env, "OLLAMA_WEB_SAFETY_BRAKE_MIN_HOLD_SECONDS", 45, min_value=0
+            ),
+            safety_brake_release_streak=_env_int(
+                env, "OLLAMA_WEB_SAFETY_BRAKE_RELEASE_STREAK", 3, min_value=1
+            ),
+            safety_brake_recover_margin_pct=_env_int(
+                env, "OLLAMA_WEB_SAFETY_BRAKE_RECOVER_MARGIN_PCT", 12, min_value=1
+            ),
+            safety_brake_recover_temp_c=_env_int(
+                env, "OLLAMA_WEB_SAFETY_BRAKE_RECOVER_TEMP_C", 6, min_value=1
+            ),
+            soft_throttle_enabled=_env_bool_true_unless_false(
+                env, "OLLAMA_WEB_SOFT_THROTTLE_ENABLED", "1"
+            ),
+            soft_throttle_start_ratio_pct=_env_int(
+                env, "OLLAMA_WEB_SOFT_THROTTLE_START_RATIO_PCT", 24, min_value=20
+            ),
+            soft_throttle_max_delay_ms=_env_int(
+                env, "OLLAMA_WEB_SOFT_THROTTLE_MAX_DELAY_MS", 30000, min_value=0
+            ),
+            soft_throttle_min_gap_ms=_env_int(
+                env, "OLLAMA_WEB_SOFT_THROTTLE_MIN_GAP_MS", 50000, min_value=0
+            ),
+            heavy_serial_enabled=_env_bool_true_unless_false(
+                env, "OLLAMA_WEB_HEAVY_SERIAL_ENABLED", "1"
+            ),
+            heavy_serial_queue_timeout_seconds=_env_int(
+                env, "OLLAMA_WEB_HEAVY_SERIAL_QUEUE_TIMEOUT_SECONDS", 30, min_value=0
+            ),
+            safe_generate_profile_enabled=_env_bool_true_unless_false(
+                env, "OLLAMA_WEB_SAFE_GENERATE_PROFILE_ENABLED", "1"
+            ),
+            safe_generate_num_thread=_env_int(
+                env, "OLLAMA_WEB_SAFE_GENERATE_NUM_THREAD", 1, min_value=1
+            ),
+            safe_generate_num_batch=_env_int(
+                env, "OLLAMA_WEB_SAFE_GENERATE_NUM_BATCH", 10, min_value=0
+            ),
+            safe_generate_num_gpu=_env_int(
+                env, "OLLAMA_WEB_SAFE_GENERATE_NUM_GPU", 0, min_value=-1
+            ),
+            safe_generate_num_predict_cap=_env_int(
+                env, "OLLAMA_WEB_SAFE_GENERATE_NUM_PREDICT_CAP", 640, min_value=0
+            ),
         )
 
 
@@ -261,7 +376,9 @@ HISTORY_PATH = CONFIG.history_path
 HISTORY_LOCK = threading.Lock()
 PDF_LOCK = threading.Lock()
 STASH_LOCK = threading.Lock()
-PDF_SOURCE_OVERRIDE_PATH = DEFAULT_STATE_DIR / "ui-config.json"
+PDF_SOURCE_OVERRIDE_PATH = Path(
+    os.path.dirname(HISTORY_PATH) or str(DEFAULT_STATE_DIR)
+) / "ui-config.json"
 
 
 PDF_SOURCE = CONFIG.pdf_source
@@ -296,6 +413,35 @@ UPDATE_APPLY_MODE_RESOLVED = CONFIG.update_apply_mode_resolved
 UPDATE_SCRIPT_MACOS = REPO_ROOT / "scripts" / "librarian-update-macos.sh"
 UPDATE_SCRIPT_WINDOWS = REPO_ROOT / "scripts" / "librarian-update-windows.ps1"
 UPDATE_EVENTS_MAX = CONFIG.update_events_max
+GENERATE_TIMEOUT = CONFIG.generate_timeout
+MODEL_FAILURE_THRESHOLD = CONFIG.model_failure_threshold
+MODEL_FAILURE_COOLDOWN_SECONDS = CONFIG.model_failure_cooldown_seconds
+MONITOR_ENABLED = CONFIG.monitor_enabled
+MONITOR_MAX_EVENTS = CONFIG.monitor_max_events
+MONITOR_SLOW_MS = CONFIG.monitor_slow_ms
+MONITOR_LOG_JSONL = CONFIG.monitor_log_jsonl
+MONITOR_LOG_PATH = CONFIG.monitor_log_path
+SAFETY_BRAKE_ENABLED = CONFIG.safety_brake_enabled
+SAFETY_BRAKE_COOLDOWN_SECONDS = CONFIG.safety_brake_cooldown_seconds
+SAFETY_BRAKE_CPU_PCT = CONFIG.safety_brake_cpu_pct
+SAFETY_BRAKE_GPU_UTIL_PCT = CONFIG.safety_brake_gpu_util_pct
+SAFETY_BRAKE_GPU_MEM_PCT = CONFIG.safety_brake_gpu_mem_pct
+SAFETY_BRAKE_GPU_TEMP_C = CONFIG.safety_brake_gpu_temp_c
+SAFETY_BRAKE_MIN_HOLD_SECONDS = CONFIG.safety_brake_min_hold_seconds
+SAFETY_BRAKE_RELEASE_STREAK = CONFIG.safety_brake_release_streak
+SAFETY_BRAKE_RECOVER_MARGIN_PCT = CONFIG.safety_brake_recover_margin_pct
+SAFETY_BRAKE_RECOVER_TEMP_C = CONFIG.safety_brake_recover_temp_c
+SOFT_THROTTLE_ENABLED = CONFIG.soft_throttle_enabled
+SOFT_THROTTLE_START_RATIO_PCT = CONFIG.soft_throttle_start_ratio_pct
+SOFT_THROTTLE_MAX_DELAY_MS = CONFIG.soft_throttle_max_delay_ms
+SOFT_THROTTLE_MIN_GAP_MS = CONFIG.soft_throttle_min_gap_ms
+HEAVY_SERIAL_ENABLED = CONFIG.heavy_serial_enabled
+HEAVY_SERIAL_QUEUE_TIMEOUT_SECONDS = CONFIG.heavy_serial_queue_timeout_seconds
+SAFE_GENERATE_PROFILE_ENABLED = CONFIG.safe_generate_profile_enabled
+SAFE_GENERATE_NUM_THREAD = CONFIG.safe_generate_num_thread
+SAFE_GENERATE_NUM_BATCH = CONFIG.safe_generate_num_batch
+SAFE_GENERATE_NUM_GPU = CONFIG.safe_generate_num_gpu
+SAFE_GENERATE_NUM_PREDICT_CAP = CONFIG.safe_generate_num_predict_cap
 ASSET_CACHE_BUSTER = str(int(time.time()))
 
 PDF_INDEX_STATE = {
@@ -340,27 +486,1045 @@ UPDATE_STATE = {
     "last_error": None,
 }
 UPDATE_EVENTS: list[dict] = []
+MODEL_GUARD_LOCK = threading.Lock()
+MODEL_GUARD_STATE: dict[str, dict[str, object]] = {}
+MONITOR_LOCK = threading.Lock()
+MONITOR_STATE: dict[str, object] = {
+    "started_at": int(time.time()),
+    "requests_total": 0,
+    "requests_error": 0,
+    "requests_slow": 0,
+    "by_route": {},
+    "recent": [],
+    "last_resource": None,
+}
+CPU_SAMPLE_LOCK = threading.Lock()
+CPU_SAMPLE_PREV: dict[str, float | None] = {
+    "total": None,
+    "idle": None,
+}
+GPU_SAMPLE_LOCK = threading.Lock()
+GPU_SAMPLE_CACHE: dict[str, object] = {
+    "ts": 0.0,
+    "data": None,
+}
+SAFETY_BRAKE_LOCK = threading.Lock()
+SAFETY_BRAKE_STATE: dict[str, object] = {
+    "last_triggered_at": None,
+    "last_reason": "",
+    "trigger_count": 0,
+    "last_resource": None,
+    "safe_streak": 0,
+}
+SOFT_THROTTLE_LOCK = threading.Lock()
+SOFT_THROTTLE_STATE: dict[str, object] = {
+    "last_heavy_started_at": 0.0,
+    "last_delay_ms": 0,
+    "last_pressure_ratio": 0.0,
+}
+HEAVY_OP_LOCK = threading.Lock()
+HEAVY_OP_STATE_LOCK = threading.Lock()
+HEAVY_OP_STATE: dict[str, object] = {
+    "active": False,
+    "active_operation": "",
+    "active_since_ts": None,
+    "last_rejected_at": None,
+    "last_rejected_operation": "",
+}
+COOLDOWN_LOCK = threading.Lock()
+COOLDOWN_STATE: dict[str, object] = {
+    "until_ts": 0,
+    "last_set_at": None,
+    "last_cleared_at": None,
+    "reason": "",
+}
 
 
-def _normalize_pdf_source_path(raw_path: str) -> str:
-    return str(Path(os.path.expanduser(str(raw_path))).resolve())
+def _cooldown_status_snapshot() -> dict:
+    now = int(time.time())
+    with COOLDOWN_LOCK:
+        until_ts = int(COOLDOWN_STATE.get("until_ts", 0) or 0)
+        last_set_at = COOLDOWN_STATE.get("last_set_at")
+        last_cleared_at = COOLDOWN_STATE.get("last_cleared_at")
+        reason = str(COOLDOWN_STATE.get("reason", "") or "")
+
+    active = until_ts > now
+    remaining_seconds = max(0, until_ts - now)
+    return {
+        "active": active,
+        "remaining_seconds": int(remaining_seconds),
+        "until_ts": int(until_ts),
+        "last_set_at": last_set_at,
+        "last_cleared_at": last_cleared_at,
+        "reason": reason,
+    }
 
 
-def _load_pdf_source_override() -> str | None:
-    if not PDF_SOURCE_OVERRIDE_PATH.is_file():
+def set_cooldown(seconds: int, reason: str = "") -> dict:
+    duration = max(0, int(seconds))
+    now = int(time.time())
+    until_ts = now + duration
+
+    with COOLDOWN_LOCK:
+        COOLDOWN_STATE["until_ts"] = until_ts
+        COOLDOWN_STATE["last_set_at"] = now
+        COOLDOWN_STATE["reason"] = str(reason or "")[:200]
+
+    # If indexing is currently running, request pause immediately.
+    pause_result = pause_pdf_index_job()
+    out = _cooldown_status_snapshot()
+    out["ok"] = True
+    out["pause_result"] = pause_result
+    return out
+
+
+def clear_cooldown() -> dict:
+    now = int(time.time())
+    with COOLDOWN_LOCK:
+        COOLDOWN_STATE["until_ts"] = 0
+        COOLDOWN_STATE["last_cleared_at"] = now
+        COOLDOWN_STATE["reason"] = ""
+    out = _cooldown_status_snapshot()
+    out["ok"] = True
+    return out
+
+
+def _cooldown_block_payload(operation: str) -> dict:
+    status = _cooldown_status_snapshot()
+    reason = str(status.get("reason", "") or "")
+    reason_tail = f" Reason: {reason}" if reason else ""
+    return {
+        "error": (
+            f"{operation} paused while cooldown is active. "
+            f"Use Resume to continue heavy operations.{reason_tail}"
+        ),
+        "cooldown": status,
+    }
+
+
+def _is_cooldown_active() -> bool:
+    return bool(_cooldown_status_snapshot().get("active"))
+
+
+def _safe_float(value: object) -> float | None:
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _safety_brake_status_snapshot() -> dict:
+    with SAFETY_BRAKE_LOCK:
+        return {
+            "enabled": bool(SAFETY_BRAKE_ENABLED),
+            "cooldown_seconds": int(SAFETY_BRAKE_COOLDOWN_SECONDS),
+            "min_hold_seconds": int(SAFETY_BRAKE_MIN_HOLD_SECONDS),
+            "release_streak": int(SAFETY_BRAKE_RELEASE_STREAK),
+            "thresholds": {
+                "cpu_pct": int(SAFETY_BRAKE_CPU_PCT),
+                "gpu_util_pct": int(SAFETY_BRAKE_GPU_UTIL_PCT),
+                "gpu_mem_pct": int(SAFETY_BRAKE_GPU_MEM_PCT),
+                "gpu_temp_c": int(SAFETY_BRAKE_GPU_TEMP_C),
+                "recover_margin_pct": int(SAFETY_BRAKE_RECOVER_MARGIN_PCT),
+                "recover_temp_c": int(SAFETY_BRAKE_RECOVER_TEMP_C),
+            },
+            "last_triggered_at": SAFETY_BRAKE_STATE.get("last_triggered_at"),
+            "last_reason": str(SAFETY_BRAKE_STATE.get("last_reason", "") or ""),
+            "trigger_count": int(SAFETY_BRAKE_STATE.get("trigger_count", 0) or 0),
+            "safe_streak": int(SAFETY_BRAKE_STATE.get("safe_streak", 0) or 0),
+        }
+
+
+def _safety_brake_reasons(resource: dict) -> list[str]:
+    reasons: list[str] = []
+    cpu_now = _safe_float(resource.get("cpu_usage_pct_now"))
+    gpu_monitoring = str(resource.get("gpu_monitoring", "") or "")
+    gpu_present = bool(resource.get("gpu_present"))
+    gpu_util = _safe_float(resource.get("gpu_util_pct_max"))
+    gpu_mem = _safe_float(resource.get("gpu_mem_util_pct_max"))
+    gpu_temp = _safe_float(resource.get("gpu_temp_c_max"))
+
+    if cpu_now is not None and cpu_now >= float(SAFETY_BRAKE_CPU_PCT):
+        reasons.append(
+            f"CPU now {round(cpu_now, 1)}% >= {int(SAFETY_BRAKE_CPU_PCT)}%"
+        )
+
+    if gpu_monitoring == "ok" and gpu_present:
+        if gpu_util is not None and gpu_util >= float(SAFETY_BRAKE_GPU_UTIL_PCT):
+            reasons.append(
+                f"GPU util {round(gpu_util, 1)}% >= {int(SAFETY_BRAKE_GPU_UTIL_PCT)}%"
+            )
+        if gpu_mem is not None and gpu_mem >= float(SAFETY_BRAKE_GPU_MEM_PCT):
+            reasons.append(
+                f"VRAM {round(gpu_mem, 1)}% >= {int(SAFETY_BRAKE_GPU_MEM_PCT)}%"
+            )
+        if gpu_temp is not None and gpu_temp >= float(SAFETY_BRAKE_GPU_TEMP_C):
+            reasons.append(
+                f"GPU temp {round(gpu_temp, 1)}C >= {int(SAFETY_BRAKE_GPU_TEMP_C)}C"
+            )
+
+    return reasons
+
+
+def _safety_brake_recovered(resource: dict) -> bool:
+    cpu_now = _safe_float(resource.get("cpu_usage_pct_now"))
+    gpu_monitoring = str(resource.get("gpu_monitoring", "") or "")
+    gpu_present = bool(resource.get("gpu_present"))
+    gpu_util = _safe_float(resource.get("gpu_util_pct_max"))
+    gpu_mem = _safe_float(resource.get("gpu_mem_util_pct_max"))
+    gpu_temp = _safe_float(resource.get("gpu_temp_c_max"))
+
+    cpu_limit = max(0, int(SAFETY_BRAKE_CPU_PCT) -
+                    int(SAFETY_BRAKE_RECOVER_MARGIN_PCT))
+    gpu_util_limit = max(0, int(SAFETY_BRAKE_GPU_UTIL_PCT) -
+                         int(SAFETY_BRAKE_RECOVER_MARGIN_PCT))
+    gpu_mem_limit = max(0, int(SAFETY_BRAKE_GPU_MEM_PCT) -
+                        int(SAFETY_BRAKE_RECOVER_MARGIN_PCT))
+    gpu_temp_limit = max(0, int(SAFETY_BRAKE_GPU_TEMP_C) -
+                         int(SAFETY_BRAKE_RECOVER_TEMP_C))
+
+    if cpu_now is not None and cpu_now > float(cpu_limit):
+        return False
+
+    if gpu_monitoring == "ok" and gpu_present:
+        if gpu_util is not None and gpu_util > float(gpu_util_limit):
+            return False
+        if gpu_mem is not None and gpu_mem > float(gpu_mem_limit):
+            return False
+        if gpu_temp is not None and gpu_temp > float(gpu_temp_limit):
+            return False
+
+    return True
+
+
+def _maybe_release_safety_brake(resource: dict | None = None) -> bool:
+    snapshot = resource if isinstance(resource, dict) else _resource_snapshot()
+    now = int(time.time())
+
+    with COOLDOWN_LOCK:
+        reason = str(COOLDOWN_STATE.get("reason", "") or "")
+        until_ts = int(COOLDOWN_STATE.get("until_ts", 0) or 0)
+
+    if not reason.startswith("Auto safety brake"):
+        with SAFETY_BRAKE_LOCK:
+            SAFETY_BRAKE_STATE["safe_streak"] = 0
+        return False
+
+    if until_ts <= now:
+        with SAFETY_BRAKE_LOCK:
+            SAFETY_BRAKE_STATE["safe_streak"] = 0
+        return False
+
+    with SAFETY_BRAKE_LOCK:
+        last_triggered = int(SAFETY_BRAKE_STATE.get(
+            "last_triggered_at", 0) or 0)
+        safe_streak = int(SAFETY_BRAKE_STATE.get("safe_streak", 0) or 0)
+
+    if last_triggered > 0 and (now - last_triggered) < int(SAFETY_BRAKE_MIN_HOLD_SECONDS):
+        with SAFETY_BRAKE_LOCK:
+            SAFETY_BRAKE_STATE["safe_streak"] = 0
+        return False
+
+    if not _safety_brake_recovered(snapshot):
+        with SAFETY_BRAKE_LOCK:
+            SAFETY_BRAKE_STATE["safe_streak"] = 0
+            SAFETY_BRAKE_STATE["last_resource"] = snapshot
+        return False
+
+    safe_streak += 1
+    with SAFETY_BRAKE_LOCK:
+        SAFETY_BRAKE_STATE["safe_streak"] = safe_streak
+        SAFETY_BRAKE_STATE["last_resource"] = snapshot
+
+    if safe_streak < int(SAFETY_BRAKE_RELEASE_STREAK):
+        return False
+
+    clear_cooldown()
+    with SAFETY_BRAKE_LOCK:
+        SAFETY_BRAKE_STATE["safe_streak"] = 0
+    return True
+
+
+def _maybe_apply_safety_brake(operation: str, resource: dict | None = None) -> dict | None:
+    if not SAFETY_BRAKE_ENABLED:
+        return None
+
+    snapshot = resource if isinstance(resource, dict) else _resource_snapshot()
+    reasons = _safety_brake_reasons(snapshot)
+    if not reasons:
+        return None
+
+    reason_text = "; ".join(reasons)
+    cooldown = set_cooldown(
+        seconds=SAFETY_BRAKE_COOLDOWN_SECONDS,
+        reason=f"Auto safety brake: {reason_text}",
+    )
+
+    with SAFETY_BRAKE_LOCK:
+        SAFETY_BRAKE_STATE["last_triggered_at"] = int(time.time())
+        SAFETY_BRAKE_STATE["last_reason"] = reason_text
+        SAFETY_BRAKE_STATE["trigger_count"] = int(
+            SAFETY_BRAKE_STATE.get("trigger_count", 0) or 0
+        ) + 1
+        SAFETY_BRAKE_STATE["last_resource"] = snapshot
+        SAFETY_BRAKE_STATE["safe_streak"] = 0
+
+    return {
+        "error": (
+            f"{operation} paused by automatic safety brake. "
+            f"{reason_text}. Cooling down for at least "
+            f"{max(1, int(SAFETY_BRAKE_COOLDOWN_SECONDS / 60))} min."
+        ),
+        "cooldown": cooldown,
+        "safety_brake": {
+            "triggered": True,
+            "reason": reason_text,
+        },
+    }
+
+
+def _preflight_heavy_operation_block(operation: str) -> dict | None:
+    resource = _resource_snapshot()
+
+    _maybe_release_safety_brake(resource=resource)
+
+    auto_block = _maybe_apply_safety_brake(operation, resource=resource)
+    if isinstance(auto_block, dict):
+        return auto_block
+
+    _apply_soft_throttle(operation, resource=resource)
+
+    resource_after_delay = _resource_snapshot()
+    _maybe_release_safety_brake(resource=resource_after_delay)
+    auto_block = _maybe_apply_safety_brake(
+        operation, resource=resource_after_delay)
+    if isinstance(auto_block, dict):
+        return auto_block
+
+    if _is_cooldown_active():
+        return _cooldown_block_payload(operation)
+
+    return None
+
+
+def _heavy_operation_status_snapshot() -> dict:
+    with HEAVY_OP_STATE_LOCK:
+        active = bool(HEAVY_OP_STATE.get("active", False))
+        active_operation = str(HEAVY_OP_STATE.get(
+            "active_operation", "") or "")
+        active_since_ts = HEAVY_OP_STATE.get("active_since_ts")
+        last_rejected_at = HEAVY_OP_STATE.get("last_rejected_at")
+        last_rejected_operation = str(
+            HEAVY_OP_STATE.get("last_rejected_operation", "") or ""
+        )
+
+    return {
+        "enabled": bool(HEAVY_SERIAL_ENABLED),
+        "queue_timeout_seconds": int(HEAVY_SERIAL_QUEUE_TIMEOUT_SECONDS),
+        "active": active,
+        "active_operation": active_operation,
+        "active_since_ts": active_since_ts,
+        "last_rejected_at": last_rejected_at,
+        "last_rejected_operation": last_rejected_operation,
+    }
+
+
+def _acquire_heavy_operation_slot(operation: str) -> dict | None:
+    if not HEAVY_SERIAL_ENABLED:
+        return None
+
+    timeout_seconds = max(0, int(HEAVY_SERIAL_QUEUE_TIMEOUT_SECONDS))
+    if timeout_seconds <= 0:
+        acquired = HEAVY_OP_LOCK.acquire(blocking=False)
+    else:
+        acquired = HEAVY_OP_LOCK.acquire(timeout=float(timeout_seconds))
+
+    if not acquired:
+        now = int(time.time())
+        with HEAVY_OP_STATE_LOCK:
+            HEAVY_OP_STATE["last_rejected_at"] = now
+            HEAVY_OP_STATE["last_rejected_operation"] = operation
+            active_operation = str(HEAVY_OP_STATE.get(
+                "active_operation", "") or "")
+
+        retry_after = max(1, int(min(30, max(1, timeout_seconds))))
+        active_tail = (
+            f" Current heavy operation: {active_operation}." if active_operation else ""
+        )
+        return {
+            "error": (
+                f"{operation} is waiting for another heavy operation and timed out."
+                f" Please retry shortly.{active_tail}"
+            ),
+            "retry_after_seconds": retry_after,
+            "heavy_operation_guard": {
+                "enabled": bool(HEAVY_SERIAL_ENABLED),
+                "queue_timeout_seconds": int(HEAVY_SERIAL_QUEUE_TIMEOUT_SECONDS),
+                "active": True,
+                "active_operation": active_operation,
+                "active_since_ts": None,
+                "last_rejected_at": now,
+                "last_rejected_operation": operation,
+            },
+        }
+
+    now = int(time.time())
+    with HEAVY_OP_STATE_LOCK:
+        HEAVY_OP_STATE["active"] = True
+        HEAVY_OP_STATE["active_operation"] = operation
+        HEAVY_OP_STATE["active_since_ts"] = now
+    return None
+
+
+def _release_heavy_operation_slot() -> None:
+    if not HEAVY_SERIAL_ENABLED:
+        return
+    try:
+        with HEAVY_OP_STATE_LOCK:
+            HEAVY_OP_STATE["active"] = False
+            HEAVY_OP_STATE["active_operation"] = ""
+            HEAVY_OP_STATE["active_since_ts"] = None
+    finally:
+        HEAVY_OP_LOCK.release()
+
+
+def _resource_pressure_ratio(resource: dict) -> float:
+    ratios: list[float] = []
+    cpu_now = _safe_float(resource.get("cpu_usage_pct_now"))
+    gpu_monitoring = str(resource.get("gpu_monitoring", "") or "")
+    gpu_present = bool(resource.get("gpu_present"))
+    gpu_util = _safe_float(resource.get("gpu_util_pct_max"))
+    gpu_mem = _safe_float(resource.get("gpu_mem_util_pct_max"))
+    gpu_temp = _safe_float(resource.get("gpu_temp_c_max"))
+
+    if cpu_now is not None and SAFETY_BRAKE_CPU_PCT > 0:
+        ratios.append(max(0.0, cpu_now / float(SAFETY_BRAKE_CPU_PCT)))
+
+    if gpu_monitoring == "ok" and gpu_present:
+        if gpu_util is not None and SAFETY_BRAKE_GPU_UTIL_PCT > 0:
+            ratios.append(
+                max(0.0, gpu_util / float(SAFETY_BRAKE_GPU_UTIL_PCT)))
+        if gpu_mem is not None and SAFETY_BRAKE_GPU_MEM_PCT > 0:
+            ratios.append(max(0.0, gpu_mem / float(SAFETY_BRAKE_GPU_MEM_PCT)))
+        if gpu_temp is not None and SAFETY_BRAKE_GPU_TEMP_C > 0:
+            ratios.append(max(0.0, gpu_temp / float(SAFETY_BRAKE_GPU_TEMP_C)))
+
+    if not ratios:
+        return 0.0
+    return max(ratios)
+
+
+def _apply_soft_throttle(operation: str, resource: dict | None = None) -> dict:
+    if not SOFT_THROTTLE_ENABLED:
+        return {"applied": False, "delay_ms": 0}
+
+    snapshot = resource if isinstance(resource, dict) else _resource_snapshot()
+    pressure_ratio = _resource_pressure_ratio(snapshot)
+    start_ratio = max(0.05, min(0.98, float(
+        SOFT_THROTTLE_START_RATIO_PCT) / 100.0))
+
+    pressure_delay_ms = 0
+    if pressure_ratio > start_ratio and SOFT_THROTTLE_MAX_DELAY_MS > 0:
+        scale = min(1.0, (pressure_ratio - start_ratio) /
+                    max(0.01, 1.0 - start_ratio))
+        pressure_delay_ms = int(
+            round(float(SOFT_THROTTLE_MAX_DELAY_MS) * scale))
+
+    # Reserve a start slot while holding the lock so concurrent heavy requests
+    # cannot calculate the same delay and then launch together.
+    with SOFT_THROTTLE_LOCK:
+        now = time.time()
+        last_heavy_started_at = float(
+            SOFT_THROTTLE_STATE.get("last_heavy_started_at", 0.0) or 0.0
+        )
+        target_start_at = now
+        if SOFT_THROTTLE_MIN_GAP_MS > 0 and last_heavy_started_at > 0:
+            min_gap_s = float(SOFT_THROTTLE_MIN_GAP_MS) / 1000.0
+            target_start_at = max(
+                target_start_at, last_heavy_started_at + min_gap_s)
+        if pressure_delay_ms > 0:
+            pressure_delay_s = float(pressure_delay_ms) / 1000.0
+            target_start_at = max(target_start_at, now + pressure_delay_s)
+
+        SOFT_THROTTLE_STATE["last_heavy_started_at"] = target_start_at
+        delay_ms = int(max(0.0, round((target_start_at - now) * 1000.0)))
+
+    if delay_ms > 0:
+        time.sleep(float(delay_ms) / 1000.0)
+
+    with SOFT_THROTTLE_LOCK:
+        SOFT_THROTTLE_STATE["last_delay_ms"] = int(delay_ms)
+        SOFT_THROTTLE_STATE["last_pressure_ratio"] = float(
+            round(pressure_ratio, 4))
+
+    if delay_ms >= 500:
+        LOGGER.info(
+            "Soft throttle delayed %s by %sms (pressure_ratio=%.2f)",
+            operation,
+            delay_ms,
+            pressure_ratio,
+        )
+
+    return {
+        "applied": bool(delay_ms > 0),
+        "delay_ms": int(delay_ms),
+        "pressure_ratio": float(round(pressure_ratio, 4)),
+    }
+
+
+def _coerce_int(value: object, fallback: int) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(fallback)
+
+
+def _apply_safe_generate_profile(payload: dict) -> dict:
+    if not SAFE_GENERATE_PROFILE_ENABLED or not isinstance(payload, dict):
+        return payload
+
+    options = payload.get("options")
+    if not isinstance(options, dict):
+        options = {}
+        payload["options"] = options
+
+    if SAFE_GENERATE_NUM_THREAD > 0:
+        existing = options.get("num_thread")
+        if existing in (None, ""):
+            options["num_thread"] = int(SAFE_GENERATE_NUM_THREAD)
+        else:
+            options["num_thread"] = max(1, _coerce_int(
+                existing, SAFE_GENERATE_NUM_THREAD))
+
+    if SAFE_GENERATE_NUM_BATCH > 0:
+        existing = options.get("num_batch")
+        if existing in (None, ""):
+            options["num_batch"] = int(SAFE_GENERATE_NUM_BATCH)
+        else:
+            options["num_batch"] = max(1, _coerce_int(
+                existing, SAFE_GENERATE_NUM_BATCH))
+
+    if SAFE_GENERATE_NUM_GPU >= 0:
+        existing_num_gpu = options.get("num_gpu")
+        if existing_num_gpu in (None, ""):
+            options["num_gpu"] = int(SAFE_GENERATE_NUM_GPU)
+        else:
+            options["num_gpu"] = max(0, _coerce_int(
+                existing_num_gpu, SAFE_GENERATE_NUM_GPU))
+
+    if SAFE_GENERATE_NUM_PREDICT_CAP > 0:
+        existing_predict = options.get("num_predict")
+        if existing_predict in (None, ""):
+            options["num_predict"] = int(SAFE_GENERATE_NUM_PREDICT_CAP)
+        else:
+            parsed = _coerce_int(
+                existing_predict, SAFE_GENERATE_NUM_PREDICT_CAP)
+            if parsed <= 0:
+                options["num_predict"] = int(SAFE_GENERATE_NUM_PREDICT_CAP)
+            else:
+                options["num_predict"] = min(
+                    parsed, int(SAFE_GENERATE_NUM_PREDICT_CAP))
+
+    return payload
+
+
+def _safe_cpu_load_percent() -> float | None:
+    try:
+        load_1m = float(os.getloadavg()[0])
+    except Exception:
+        return None
+    cpu_count = os.cpu_count() or 1
+    return round((load_1m / float(cpu_count)) * 100.0, 2)
+
+
+def _safe_cpu_usage_percent_now() -> float | None:
+    if platform.system().lower() != "linux":
         return None
     try:
-        parsed = json.loads(
-            PDF_SOURCE_OVERRIDE_PATH.read_text(encoding="utf-8"))
+        with open("/proc/stat", "r", encoding="utf-8") as f:
+            first = f.readline().strip()
+    except Exception:
+        return None
+
+    parts = first.split()
+    if len(parts) < 5 or parts[0] != "cpu":
+        return None
+
+    try:
+        values = [float(part) for part in parts[1:]]
+    except Exception:
+        return None
+
+    total = float(sum(values))
+    idle = float(values[3] + (values[4] if len(values) > 4 else 0.0))
+
+    with CPU_SAMPLE_LOCK:
+        prev_total = CPU_SAMPLE_PREV.get("total")
+        prev_idle = CPU_SAMPLE_PREV.get("idle")
+        CPU_SAMPLE_PREV["total"] = total
+        CPU_SAMPLE_PREV["idle"] = idle
+
+    if prev_total is None or prev_idle is None:
+        return None
+
+    delta_total = total - float(prev_total)
+    delta_idle = idle - float(prev_idle)
+    if delta_total <= 0:
+        return None
+
+    usage_pct = max(
+        0.0, min(100.0, ((delta_total - delta_idle) / delta_total) * 100.0))
+    return round(usage_pct, 2)
+
+
+def _safe_gpu_snapshot_uncached() -> dict:
+    nvidia_smi = shutil.which("nvidia-smi")
+    if not nvidia_smi:
+        return {
+            "gpu_monitoring": "unavailable",
+            "gpu_present": False,
+        }
+
+    try:
+        proc = subprocess.run(
+            [
+                nvidia_smi,
+                "--query-gpu=utilization.gpu,memory.total,memory.used,temperature.gpu,power.draw",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=1.2,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "gpu_monitoring": "timeout",
+            "gpu_present": False,
+        }
     except Exception as exc:
-        LOGGER.warning("Failed to parse %s: %s", PDF_SOURCE_OVERRIDE_PATH, exc)
+        return {
+            "gpu_monitoring": "error",
+            "gpu_present": False,
+            "gpu_error": str(exc)[:180],
+        }
+
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        return {
+            "gpu_monitoring": "error",
+            "gpu_present": False,
+            "gpu_error": detail[:180],
+        }
+
+    lines = [line.strip()
+             for line in (proc.stdout or "").splitlines() if line.strip()]
+    if not lines:
+        return {
+            "gpu_monitoring": "ok",
+            "gpu_present": False,
+            "gpu_count": 0,
+        }
+
+    util_values: list[float] = []
+    temp_values: list[float] = []
+    power_values: list[float] = []
+    mem_util_values: list[float] = []
+    mem_total_sum = 0.0
+    mem_used_sum = 0.0
+
+    for line in lines:
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 5:
+            continue
+
+        def _to_float(raw: str) -> float | None:
+            try:
+                return float(raw)
+            except Exception:
+                return None
+
+        util = _to_float(parts[0])
+        mem_total = _to_float(parts[1])
+        mem_used = _to_float(parts[2])
+        temp_c = _to_float(parts[3])
+        power_w = _to_float(parts[4])
+
+        if util is not None:
+            util_values.append(util)
+        if temp_c is not None:
+            temp_values.append(temp_c)
+        if power_w is not None:
+            power_values.append(power_w)
+        if mem_total is not None and mem_total > 0:
+            mem_total_sum += mem_total
+            if mem_used is not None and mem_used >= 0:
+                mem_used_sum += mem_used
+                mem_util_values.append((mem_used / mem_total) * 100.0)
+
+    return {
+        "gpu_monitoring": "ok",
+        "gpu_present": True,
+        "gpu_count": len(lines),
+        "gpu_util_pct_max": round(max(util_values), 2) if util_values else None,
+        "gpu_temp_c_max": round(max(temp_values), 2) if temp_values else None,
+        "gpu_power_w_max": round(max(power_values), 2) if power_values else None,
+        "gpu_mem_util_pct_max": round(max(mem_util_values), 2) if mem_util_values else None,
+        "gpu_mem_used_mb": round(mem_used_sum, 2) if mem_used_sum > 0 else None,
+        "gpu_mem_total_mb": round(mem_total_sum, 2) if mem_total_sum > 0 else None,
+    }
+
+
+def _safe_gpu_snapshot_cached(ttl_seconds: float = 2.0) -> dict:
+    now = time.time()
+    with GPU_SAMPLE_LOCK:
+        cached_ts = float(GPU_SAMPLE_CACHE.get("ts", 0.0) or 0.0)
+        cached_data = GPU_SAMPLE_CACHE.get("data")
+        if isinstance(cached_data, dict) and now - cached_ts <= max(0.1, ttl_seconds):
+            return dict(cached_data)
+
+    snapshot = _safe_gpu_snapshot_uncached()
+
+    with GPU_SAMPLE_LOCK:
+        GPU_SAMPLE_CACHE["ts"] = now
+        GPU_SAMPLE_CACHE["data"] = snapshot
+
+    return dict(snapshot)
+
+
+def _safe_mem_available_mb() -> float | None:
+    if platform.system().lower() == "linux":
+        try:
+            with open("/proc/meminfo", "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("MemAvailable:"):
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            kib = float(parts[1])
+                            return round(kib / 1024.0, 2)
+        except Exception:
+            return None
+    return None
+
+
+def _safe_process_rss_mb() -> float | None:
+    if platform.system().lower() == "linux":
+        try:
+            with open("/proc/self/status", "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("VmRSS:"):
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            kib = float(parts[1])
+                            return round(kib / 1024.0, 2)
+        except Exception:
+            pass
+
+    try:
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        rss_kib = float(usage.ru_maxrss or 0)
+        if platform.system().lower() == "darwin":
+            # macOS reports ru_maxrss in bytes.
+            rss_kib = rss_kib / 1024.0
+        return round(rss_kib / 1024.0, 2)
+    except Exception:
         return None
-    if not isinstance(parsed, dict):
-        return None
-    raw = parsed.get("pdf_source")
-    if not isinstance(raw, str) or not raw.strip():
-        return None
-    return _normalize_pdf_source_path(raw)
+
+
+def _resource_snapshot() -> dict:
+    disk_path = os.path.dirname(HISTORY_PATH) or str(DEFAULT_STATE_DIR)
+    disk_free_mb = None
+    try:
+        _, _, free = shutil.disk_usage(disk_path)
+        disk_free_mb = round(float(free) / (1024.0 * 1024.0), 2)
+    except Exception:
+        disk_free_mb = None
+
+    snapshot = {
+        "ts": int(time.time()),
+        "cpu_load_pct_1m": _safe_cpu_load_percent(),
+        "cpu_usage_pct_now": _safe_cpu_usage_percent_now(),
+        "cpu_count": int(os.cpu_count() or 1),
+        "mem_available_mb": _safe_mem_available_mb(),
+        "process_rss_mb": _safe_process_rss_mb(),
+        "disk_free_mb": disk_free_mb,
+    }
+    snapshot.update(_safe_gpu_snapshot_cached())
+    return snapshot
+
+
+def _append_monitor_event_jsonl(event: dict) -> None:
+    if not MONITOR_LOG_JSONL:
+        return
+    try:
+        parent = os.path.dirname(MONITOR_LOG_PATH)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(MONITOR_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=True) + "\n")
+    except Exception:
+        LOGGER.debug("Failed to append monitor event", exc_info=True)
+
+
+def _record_request_metric(event: dict) -> None:
+    if not MONITOR_ENABLED:
+        return
+
+    route_key = f"{event.get('method', 'GET')} {event.get('path', '/')}"
+    status = int(event.get("status", 500) or 500)
+    duration_ms = float(event.get("duration_ms", 0.0) or 0.0)
+
+    with MONITOR_LOCK:
+        MONITOR_STATE["requests_total"] = int(
+            MONITOR_STATE.get("requests_total", 0) or 0
+        ) + 1
+        if status >= 500:
+            MONITOR_STATE["requests_error"] = int(
+                MONITOR_STATE.get("requests_error", 0) or 0
+            ) + 1
+        if duration_ms >= float(MONITOR_SLOW_MS):
+            MONITOR_STATE["requests_slow"] = int(
+                MONITOR_STATE.get("requests_slow", 0) or 0
+            ) + 1
+
+        by_route = MONITOR_STATE.get("by_route")
+        if not isinstance(by_route, dict):
+            by_route = {}
+            MONITOR_STATE["by_route"] = by_route
+        route_state = by_route.setdefault(
+            route_key,
+            {
+                "count": 0,
+                "errors": 0,
+                "slow": 0,
+                "last_status": 0,
+                "last_duration_ms": 0.0,
+                "last_seen": 0,
+            },
+        )
+        route_state["count"] = int(route_state.get("count", 0) or 0) + 1
+        if status >= 500:
+            route_state["errors"] = int(route_state.get("errors", 0) or 0) + 1
+        if duration_ms >= float(MONITOR_SLOW_MS):
+            route_state["slow"] = int(route_state.get("slow", 0) or 0) + 1
+        route_state["last_status"] = status
+        route_state["last_duration_ms"] = round(duration_ms, 2)
+        route_state["last_seen"] = int(
+            event.get("ts", int(time.time())) or int(time.time()))
+
+        recent = MONITOR_STATE.get("recent")
+        if not isinstance(recent, list):
+            recent = []
+            MONITOR_STATE["recent"] = recent
+        recent.append(event)
+        max_events = max(20, int(MONITOR_MAX_EVENTS))
+        if len(recent) > max_events:
+            del recent[:-max_events]
+
+        MONITOR_STATE["last_resource"] = event.get("resource_after")
+
+    _append_monitor_event_jsonl(event)
+
+
+def get_monitor_snapshot(limit: int = 200) -> dict:
+    if not MONITOR_ENABLED:
+        return {
+            "ok": True,
+            "enabled": False,
+            "message": "Monitoring is disabled",
+        }
+
+    current_resource = _resource_snapshot()
+    _maybe_release_safety_brake(resource=current_resource)
+    _maybe_apply_safety_brake("Heavy operations", resource=current_resource)
+
+    with MONITOR_LOCK:
+        recent = MONITOR_STATE.get("recent")
+        if not isinstance(recent, list):
+            recent = []
+        clipped = recent[-max(0, int(limit)):]
+        by_route = MONITOR_STATE.get("by_route")
+        if not isinstance(by_route, dict):
+            by_route = {}
+
+        hot_routes = sorted(
+            [
+                {
+                    "route": str(route),
+                    "count": int(stats.get("count", 0) or 0),
+                    "errors": int(stats.get("errors", 0) or 0),
+                    "slow": int(stats.get("slow", 0) or 0),
+                    "last_status": int(stats.get("last_status", 0) or 0),
+                    "last_duration_ms": float(stats.get("last_duration_ms", 0.0) or 0.0),
+                    "last_seen": int(stats.get("last_seen", 0) or 0),
+                }
+                for route, stats in by_route.items()
+                if isinstance(stats, dict)
+            ],
+            key=lambda item: (item["errors"], item["slow"], item["count"]),
+            reverse=True,
+        )
+
+        snapshot = {
+            "ok": True,
+            "enabled": True,
+            "slow_threshold_ms": int(MONITOR_SLOW_MS),
+            "log_jsonl_enabled": bool(MONITOR_LOG_JSONL),
+            "log_path": MONITOR_LOG_PATH,
+            "started_at": int(MONITOR_STATE.get("started_at", 0) or 0),
+            "requests_total": int(MONITOR_STATE.get("requests_total", 0) or 0),
+            "requests_error": int(MONITOR_STATE.get("requests_error", 0) or 0),
+            "requests_slow": int(MONITOR_STATE.get("requests_slow", 0) or 0),
+            "last_resource": current_resource,
+            "cooldown": _cooldown_status_snapshot(),
+            "safety_brake": _safety_brake_status_snapshot(),
+            "heavy_operation_guard": _heavy_operation_status_snapshot(),
+            "hot_routes": hot_routes[:20],
+            "recent_requests": list(reversed(clipped)),
+        }
+        MONITOR_STATE["last_resource"] = current_resource
+    return snapshot
+
+
+def reset_monitor_snapshot() -> dict:
+    with MONITOR_LOCK:
+        MONITOR_STATE["started_at"] = int(time.time())
+        MONITOR_STATE["requests_total"] = 0
+        MONITOR_STATE["requests_error"] = 0
+        MONITOR_STATE["requests_slow"] = 0
+        MONITOR_STATE["by_route"] = {}
+        MONITOR_STATE["recent"] = []
+        MONITOR_STATE["last_resource"] = _resource_snapshot()
+    return {"ok": True, "enabled": bool(MONITOR_ENABLED)}
+
+
+def _resource_failure_detail(text: object) -> bool:
+    detail = str(text or "").strip().lower()
+    if not detail:
+        return False
+    indicators = (
+        "out of memory",
+        "memory",
+        "vram",
+        "allocation",
+        "killed",
+        "signal",
+        "timed out",
+        "timeout",
+        "connection reset",
+        "connection refused",
+        "unexpected eof",
+    )
+    return any(indicator in detail for indicator in indicators)
+
+
+def _model_guard_state_for(model: str) -> dict[str, object]:
+    now = time.time()
+    with MODEL_GUARD_LOCK:
+        normalized = _normalize_whitespace(model).lower()
+        state = MODEL_GUARD_STATE.setdefault(
+            normalized,
+            {
+                "failure_count": 0,
+                "cooldown_until": 0.0,
+                "last_error": "",
+                "last_failed_at": 0.0,
+            },
+        )
+        return {
+            "model": normalized,
+            "failure_count": int(state.get("failure_count", 0) or 0),
+            "cooldown_until": float(state.get("cooldown_until", 0.0) or 0.0),
+            "last_error": str(state.get("last_error", "") or ""),
+            "last_failed_at": float(state.get("last_failed_at", 0.0) or 0.0),
+            "now": now,
+        }
+
+
+def _model_guard_remaining_seconds(model: str) -> int:
+    snapshot = _model_guard_state_for(model)
+    cooldown_until = float(snapshot.get("cooldown_until", 0.0) or 0.0)
+    now = float(snapshot.get("now", time.time()) or time.time())
+    if cooldown_until <= now:
+        return 0
+    return max(1, int(cooldown_until - now) + 1)
+
+
+def _model_guard_record_failure(model: str, detail: str) -> tuple[bool, int]:
+    normalized = _normalize_whitespace(model).lower()
+    now = time.time()
+    with MODEL_GUARD_LOCK:
+        state = MODEL_GUARD_STATE.setdefault(
+            normalized,
+            {
+                "failure_count": 0,
+                "cooldown_until": 0.0,
+                "last_error": "",
+                "last_failed_at": 0.0,
+            },
+        )
+        failure_count = int(state.get("failure_count", 0) or 0) + 1
+        state["failure_count"] = failure_count
+        state["last_error"] = str(detail or "")[:400]
+        state["last_failed_at"] = now
+
+        threshold = max(1, int(MODEL_FAILURE_THRESHOLD))
+        if failure_count >= threshold:
+            cooldown_until = now + \
+                float(max(1, int(MODEL_FAILURE_COOLDOWN_SECONDS)))
+            state["cooldown_until"] = cooldown_until
+            retry_after = max(1, int(cooldown_until - now) + 1)
+            return True, retry_after
+
+    return False, 0
+
+
+def _model_guard_clear(model: str) -> None:
+    normalized = _normalize_whitespace(model).lower()
+    with MODEL_GUARD_LOCK:
+        if normalized in MODEL_GUARD_STATE:
+            del MODEL_GUARD_STATE[normalized]
+
+
+def _model_guard_error_payload(
+    model: str,
+    detail: str,
+    retry_after_seconds: int,
+    guarded: bool,
+) -> dict:
+    retry_after = max(0, int(retry_after_seconds or 0))
+    detail_text = str(detail or "").strip()
+    if guarded:
+        error = (
+            f"Model '{model}' is temporarily paused after repeated failures. "
+            f"Retry in about {retry_after} seconds."
+        )
+    else:
+        error = detail_text or f"Model '{model}' request failed"
+
+    payload = {
+        "error": error,
+        "model": str(model),
+        "guarded": bool(guarded),
+        "retry_after_seconds": retry_after,
+    }
+    if detail_text:
+        payload["detail"] = detail_text[:500]
+    return payload
+
+
+def _load_pdf_source_override() -> str:
+    try:
+        if not PDF_SOURCE_OVERRIDE_PATH.is_file():
+            return ""
+        payload = json.loads(
+            PDF_SOURCE_OVERRIDE_PATH.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return ""
+        value = str(payload.get("pdf_source", "") or "").strip()
+        return os.path.expanduser(value) if value else ""
+    except Exception as exc:
+        LOGGER.warning("Failed to load PDF source override: %s", exc)
+        return ""
 
 
 def _persist_pdf_source_override_unlocked(source_path: str) -> None:
@@ -2127,6 +3291,58 @@ EPUB_READER_HTML = _load_template("epub-reader.html")
 
 
 class Handler(BaseHTTPRequestHandler):
+    def _set_request_meta(self, **values):
+        existing = getattr(self, "_request_meta", {})
+        if not isinstance(existing, dict):
+            existing = {}
+
+        for key, value in values.items():
+            if value is None:
+                continue
+            if isinstance(value, str):
+                existing[key] = value[:240]
+            elif isinstance(value, (int, float, bool)):
+                existing[key] = value
+            else:
+                existing[key] = str(value)[:240]
+
+        self._request_meta = existing
+
+    def _monitor_begin(self, method: str, route_path: str):
+        self._monitor_method = method
+        self._monitor_route = route_path
+        self._monitor_started_monotonic = time.perf_counter()
+        self._monitor_resource_before = _resource_snapshot()
+        self._response_status = None
+        self._response_bytes = 0
+        self._request_meta = {}
+
+    def _monitor_finalize(self):
+        if not MONITOR_ENABLED:
+            return
+
+        started = getattr(self, "_monitor_started_monotonic", None)
+        if started is None:
+            return
+
+        finished = time.perf_counter()
+        duration_ms = max(0.0, (finished - float(started)) * 1000.0)
+        status = int(getattr(self, "_response_status", 500) or 500)
+
+        event = {
+            "ts": int(time.time()),
+            "method": str(getattr(self, "_monitor_method", "GET")),
+            "path": str(getattr(self, "_monitor_route", "/")),
+            "status": status,
+            "duration_ms": round(duration_ms, 2),
+            "slow": bool(duration_ms >= float(MONITOR_SLOW_MS)),
+            "response_bytes": int(getattr(self, "_response_bytes", 0) or 0),
+            "resource_before": getattr(self, "_monitor_resource_before", None),
+            "resource_after": _resource_snapshot(),
+            "meta": getattr(self, "_request_meta", {}),
+        }
+        _record_request_metric(event)
+
     def _send_security_headers(self):
         script_src = "script-src 'self'"
 
@@ -2152,6 +3368,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send(self, code, body, content_type="text/plain; charset=utf-8"):
         payload = body.encode("utf-8")
+        self._response_status = int(code)
+        self._response_bytes = len(payload)
         self.send_response(code)
         self._send_security_headers()
         self.send_header("Content-Type", content_type)
@@ -2160,6 +3378,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def _send_bytes(self, code, payload, content_type, extra_headers=None):
+        self._response_status = int(code)
+        self._response_bytes = len(payload)
         self.send_response(code)
         self._send_security_headers()
         self.send_header("Content-Type", content_type)
@@ -2238,6 +3458,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send_file(self, file_path, content_type, extra_headers=None):
         size = os.path.getsize(file_path)
+        self._response_status = 200
+        self._response_bytes = int(size)
         self.send_response(200)
         self._send_security_headers()
         self.send_header("Content-Type", content_type)
@@ -2406,6 +3628,8 @@ class Handler(BaseHTTPRequestHandler):
 
         safe_query_path = quote(source_path, safe="")
         pdf_url = f"/api/pdf/file?path={safe_query_path}#page={page_num}"
+        self._response_status = 302
+        self._response_bytes = 0
         self.send_response(302)
         self._send_security_headers()
         self.send_header("Location", pdf_url)
@@ -2547,6 +3771,28 @@ class Handler(BaseHTTPRequestHandler):
             "application/json; charset=utf-8",
         )
 
+    def _handle_get_metrics(self, parsed_url):
+        params = parse_qs(parsed_url.query)
+        limit_raw = params.get("limit", ["200"])[0]
+        try:
+            limit = int(limit_raw)
+        except Exception:
+            limit = 200
+        payload = get_monitor_snapshot(limit=max(0, limit))
+        return self._send(
+            200,
+            json.dumps(payload, ensure_ascii=True),
+            "application/json; charset=utf-8",
+        )
+
+    def _handle_get_cooldown_status(self):
+        payload = {"ok": True, "cooldown": _cooldown_status_snapshot()}
+        return self._send(
+            200,
+            json.dumps(payload, ensure_ascii=True),
+            "application/json; charset=utf-8",
+        )
+
     def _handle_get_pdf_file(self, parsed_url):
         params = parse_qs(parsed_url.query)
         pdf_path = params.get("path", [""])[0]
@@ -2605,119 +3851,184 @@ class Handler(BaseHTTPRequestHandler):
 
     # POST route handlers
     def _handle_post_generate(self):
-        raw_length = self.headers.get("Content-Length", "0")
+        slot_block = _acquire_heavy_operation_slot("Generation")
+        if isinstance(slot_block, dict):
+            return self._send(
+                429,
+                json.dumps(slot_block, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
         try:
-            length = int(raw_length)
-        except ValueError:
-            return self._send(
-                400,
-                json.dumps({"error": "Invalid Content-Length"},
-                           ensure_ascii=True),
-                "application/json; charset=utf-8",
+            preflight_block = _preflight_heavy_operation_block("Generation")
+            if isinstance(preflight_block, dict):
+                return self._send(
+                    429,
+                    json.dumps(preflight_block, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+
+            payload = self._read_json_body()
+            if payload is None:
+                return
+
+            if not isinstance(payload, dict):
+                return self._send(
+                    400,
+                    json.dumps({"error": "JSON body must be an object"},
+                               ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+
+            model = _normalize_whitespace(payload.get("model", ""))
+            if not model:
+                return self._send(
+                    400,
+                    json.dumps({"error": "model is required"},
+                               ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+
+            remaining = _model_guard_remaining_seconds(model)
+            if remaining > 0:
+                return self._send(
+                    503,
+                    json.dumps(
+                        _model_guard_error_payload(
+                            model=model,
+                            detail="",
+                            retry_after_seconds=remaining,
+                            guarded=True,
+                        ),
+                        ensure_ascii=True,
+                    ),
+                    "application/json; charset=utf-8",
+                )
+
+            payload["model"] = model
+            payload = _apply_safe_generate_profile(payload)
+            self._set_request_meta(
+                model=model,
+                prompt_chars=len(str(payload.get("prompt", "") or "")),
+                stream=bool(payload.get("stream", False)),
             )
-        if length < 0:
-            return self._send(
-                400,
-                json.dumps({"error": "Invalid Content-Length"},
-                           ensure_ascii=True),
-                "application/json; charset=utf-8",
-            )
-        if length > MAX_BODY_BYTES:
-            return self._send(
-                413,
-                json.dumps({"error": "Request body too large"},
-                           ensure_ascii=True),
-                "application/json; charset=utf-8",
-            )
-        data = self.rfile.read(length) if length > 0 else b"{}"
-        return self._proxy("POST", "/api/generate", data)
+            data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            return self._proxy_generate(model, data)
+        finally:
+            _release_heavy_operation_slot()
 
     def _handle_post_abstract_evaluate(self):
-        payload = self._read_json_body()
-        if payload is None:
-            return
-
-        model = _normalize_whitespace(payload.get("model", ""))
-        research_need = str(payload.get("research_need", "") or "").strip()
-        abstract_text = str(payload.get("abstract", "") or "").strip()
-        instructions = str(payload.get("instructions", "") or "").strip()
-
-        if not model:
+        slot_block = _acquire_heavy_operation_slot("Abstract evaluation")
+        if isinstance(slot_block, dict):
             return self._send(
-                400,
-                json.dumps(
-                    {"ok": False, "error": "model is required"}, ensure_ascii=True),
-                "application/json; charset=utf-8",
-            )
-        if not research_need:
-            return self._send(
-                400,
-                json.dumps(
-                    {"ok": False, "error": "research_need is required"}, ensure_ascii=True),
-                "application/json; charset=utf-8",
-            )
-        if not abstract_text:
-            return self._send(
-                400,
-                json.dumps(
-                    {"ok": False, "error": "abstract is required"}, ensure_ascii=True),
-                "application/json; charset=utf-8",
-            )
-
-        if len(research_need) > ABSTRACT_NEED_MAX_CHARS:
-            return self._send(
-                400,
-                json.dumps(
-                    {
-                        "ok": False,
-                        "error": f"research_need exceeds {ABSTRACT_NEED_MAX_CHARS} characters",
-                    },
-                    ensure_ascii=True,
-                ),
-                "application/json; charset=utf-8",
-            )
-        if len(abstract_text) > ABSTRACT_TEXT_MAX_CHARS:
-            return self._send(
-                400,
-                json.dumps(
-                    {
-                        "ok": False,
-                        "error": f"abstract exceeds {ABSTRACT_TEXT_MAX_CHARS} characters",
-                    },
-                    ensure_ascii=True,
-                ),
+                429,
+                json.dumps(slot_block, ensure_ascii=True),
                 "application/json; charset=utf-8",
             )
 
         try:
-            result = evaluate_abstract_relevance(
+            preflight_block = _preflight_heavy_operation_block(
+                "Abstract evaluation")
+            if isinstance(preflight_block, dict):
+                return self._send(
+                    429,
+                    json.dumps(preflight_block, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+
+            payload = self._read_json_body()
+            if payload is None:
+                return
+
+            model = _normalize_whitespace(payload.get("model", ""))
+            research_need = str(payload.get("research_need", "") or "").strip()
+            abstract_text = str(payload.get("abstract", "") or "").strip()
+            instructions = str(payload.get("instructions", "") or "").strip()
+
+            if not model:
+                return self._send(
+                    400,
+                    json.dumps(
+                        {"ok": False, "error": "model is required"}, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+            if not research_need:
+                return self._send(
+                    400,
+                    json.dumps(
+                        {"ok": False, "error": "research_need is required"}, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+            if not abstract_text:
+                return self._send(
+                    400,
+                    json.dumps(
+                        {"ok": False, "error": "abstract is required"}, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+
+            if len(research_need) > ABSTRACT_NEED_MAX_CHARS:
+                return self._send(
+                    400,
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "error": f"research_need exceeds {ABSTRACT_NEED_MAX_CHARS} characters",
+                        },
+                        ensure_ascii=True,
+                    ),
+                    "application/json; charset=utf-8",
+                )
+            if len(abstract_text) > ABSTRACT_TEXT_MAX_CHARS:
+                return self._send(
+                    400,
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "error": f"abstract exceeds {ABSTRACT_TEXT_MAX_CHARS} characters",
+                        },
+                        ensure_ascii=True,
+                    ),
+                    "application/json; charset=utf-8",
+                )
+
+            self._set_request_meta(
                 model=model,
-                research_need=research_need,
-                abstract_text=abstract_text,
-                instructions=instructions,
-            )
-        except RuntimeError as exc:
-            LOGGER.warning("Abstract evaluation failed: %s", exc)
-            return self._send(
-                502,
-                json.dumps({"ok": False, "error": str(exc)},
-                           ensure_ascii=True),
-                "application/json; charset=utf-8",
-            )
-        except Exception:
-            LOGGER.exception("Unexpected abstract evaluation failure")
-            return self._send(
-                500,
-                json.dumps(
-                    {"ok": False, "error": "Unexpected evaluation error"}, ensure_ascii=True),
-                "application/json; charset=utf-8",
+                research_need_chars=len(research_need),
+                abstract_chars=len(abstract_text),
             )
 
-        return self._send(
-            200,
-            json.dumps(result, ensure_ascii=True),
-            "application/json; charset=utf-8",
-        )
+            try:
+                result = evaluate_abstract_relevance(
+                    model=model,
+                    research_need=research_need,
+                    abstract_text=abstract_text,
+                    instructions=instructions,
+                )
+            except RuntimeError as exc:
+                LOGGER.warning("Abstract evaluation failed: %s", exc)
+                return self._send(
+                    502,
+                    json.dumps({"ok": False, "error": str(exc)},
+                               ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+            except Exception:
+                LOGGER.exception("Unexpected abstract evaluation failure")
+                return self._send(
+                    500,
+                    json.dumps(
+                        {"ok": False, "error": "Unexpected evaluation error"}, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+
+            return self._send(
+                200,
+                json.dumps(result, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        finally:
+            _release_heavy_operation_slot()
 
     def _handle_post_history(self):
         payload = self._read_json_body()
@@ -2754,12 +4065,32 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, json.dumps({"ok": True}), "application/json; charset=utf-8")
 
     def _handle_post_pdf_index(self):
-        started = start_pdf_index_job()
-        return self._send(
-            200,
-            json.dumps({"ok": True, "started": started}, ensure_ascii=True),
-            "application/json; charset=utf-8",
-        )
+        slot_block = _acquire_heavy_operation_slot("PDF indexing")
+        if isinstance(slot_block, dict):
+            return self._send(
+                429,
+                json.dumps(slot_block, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        try:
+            preflight_block = _preflight_heavy_operation_block("PDF indexing")
+            if isinstance(preflight_block, dict):
+                return self._send(
+                    429,
+                    json.dumps(preflight_block, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+
+            started = start_pdf_index_job()
+            return self._send(
+                200,
+                json.dumps({"ok": True, "started": started},
+                           ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        finally:
+            _release_heavy_operation_slot()
 
     def _handle_post_pdf_index_pause(self):
         result = pause_pdf_index_job()
@@ -2850,55 +4181,84 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def _handle_post_pdf_ask(self):
-        payload = self._read_json_body()
-        if payload is None:
-            return
-
-        query = payload.get("query", "")
-        model = payload.get("model", "qwen2.5:14b")
-        try:
-            top_k = int(payload.get("top_k", PDF_TOP_K))
-        except Exception:
-            top_k = PDF_TOP_K
-        top_k = max(1, min(100, top_k))
-        include_paths = payload.get("include_paths", [])
-        exclude_paths = payload.get("exclude_paths", [])
-        debug_trace = bool(payload.get("debug_trace", False))
-        if not isinstance(include_paths, list):
-            include_paths = []
-        if not isinstance(exclude_paths, list):
-            exclude_paths = []
-
-        if not isinstance(query, str) or not query.strip():
+        slot_block = _acquire_heavy_operation_slot("PDF-grounded ask")
+        if isinstance(slot_block, dict):
             return self._send(
-                400,
-                json.dumps({"error": "query is required"}),
+                429,
+                json.dumps(slot_block, ensure_ascii=True),
                 "application/json; charset=utf-8",
             )
 
         try:
-            result = ask_pdf_library(
-                query.strip(),
-                str(model),
-                top_k,
-                include_paths=[str(x)
-                               for x in include_paths if isinstance(x, str)],
-                exclude_paths=[str(x)
-                               for x in exclude_paths if isinstance(x, str)],
-                debug_trace=debug_trace,
+            preflight_block = _preflight_heavy_operation_block(
+                "PDF-grounded ask")
+            if isinstance(preflight_block, dict):
+                return self._send(
+                    429,
+                    json.dumps(preflight_block, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+
+            payload = self._read_json_body()
+            if payload is None:
+                return
+
+            query = payload.get("query", "")
+            model = payload.get("model", "qwen2.5:14b")
+            try:
+                top_k = int(payload.get("top_k", PDF_TOP_K))
+            except Exception:
+                top_k = PDF_TOP_K
+            top_k = max(1, min(100, top_k))
+            include_paths = payload.get("include_paths", [])
+            exclude_paths = payload.get("exclude_paths", [])
+            debug_trace = bool(payload.get("debug_trace", False))
+            if not isinstance(include_paths, list):
+                include_paths = []
+            if not isinstance(exclude_paths, list):
+                exclude_paths = []
+
+            if not isinstance(query, str) or not query.strip():
+                return self._send(
+                    400,
+                    json.dumps({"error": "query is required"}),
+                    "application/json; charset=utf-8",
+                )
+
+            self._set_request_meta(
+                model=str(model),
+                query_chars=len(query.strip()),
+                top_k=int(top_k),
+                include_paths=len(include_paths),
+                exclude_paths=len(exclude_paths),
+                debug_trace=bool(debug_trace),
             )
-            normalized = normalize_pdf_ask_response_contract(result)
-            return self._send(
-                200,
-                json.dumps(normalized, ensure_ascii=True),
-                "application/json; charset=utf-8",
-            )
-        except Exception as exc:
-            return self._send(
-                502,
-                json.dumps({"error": str(exc)}, ensure_ascii=True),
-                "application/json; charset=utf-8",
-            )
+
+            try:
+                result = ask_pdf_library(
+                    query.strip(),
+                    str(model),
+                    top_k,
+                    include_paths=[str(x)
+                                   for x in include_paths if isinstance(x, str)],
+                    exclude_paths=[str(x)
+                                   for x in exclude_paths if isinstance(x, str)],
+                    debug_trace=debug_trace,
+                )
+                normalized = normalize_pdf_ask_response_contract(result)
+                return self._send(
+                    200,
+                    json.dumps(normalized, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+            except Exception as exc:
+                return self._send(
+                    502,
+                    json.dumps({"error": str(exc)}, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+        finally:
+            _release_heavy_operation_slot()
 
     def _handle_post_library_upload(self, parsed_url):
         params = parse_qs(parsed_url.query)
@@ -3026,6 +4386,54 @@ class Handler(BaseHTTPRequestHandler):
                 json.dumps({"error": str(exc)}, ensure_ascii=True),
                 "application/json; charset=utf-8",
             )
+
+    def _handle_post_metrics_reset(self):
+        payload = reset_monitor_snapshot()
+        return self._send(
+            200,
+            json.dumps(payload, ensure_ascii=True),
+            "application/json; charset=utf-8",
+        )
+
+    def _handle_post_cooldown(self):
+        payload = self._read_json_body()
+        if payload is None:
+            return
+
+        action = str(payload.get("action", "set") or "set").strip().lower()
+        if action in {"clear", "resume", "off"}:
+            result = clear_cooldown()
+            return self._send(
+                200,
+                json.dumps(result, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        raw_seconds = payload.get("seconds")
+        raw_minutes = payload.get("minutes")
+        try:
+            if raw_seconds is not None:
+                seconds = int(raw_seconds)
+            elif raw_minutes is not None:
+                seconds = int(float(raw_minutes) * 60)
+            else:
+                seconds = 300
+        except Exception:
+            return self._send(
+                400,
+                json.dumps(
+                    {"error": "minutes/seconds must be numeric"}, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+
+        seconds = max(30, min(7200, seconds))
+        reason = str(payload.get("reason", "manual") or "manual")
+        result = set_cooldown(seconds=seconds, reason=reason)
+        return self._send(
+            200,
+            json.dumps(result, ensure_ascii=True),
+            "application/json; charset=utf-8",
+        )
 
     # DELETE route handlers
     def _handle_delete_history(self):
@@ -3158,90 +4566,130 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed_url = urlparse(self.path)
         route_path = parsed_url.path
+        self._monitor_begin("GET", route_path)
 
-        if not self._require_api_auth_for_route(route_path):
-            return
+        try:
+            if not self._require_api_auth_for_route(route_path):
+                return
 
-        if route_path.startswith("/assets/"):
-            return self._handle_get_assets(route_path)
+            if route_path.startswith("/assets/"):
+                return self._handle_get_assets(route_path)
 
-        get_routes = {
-            "/": lambda: self._handle_get_root(),
-            "/epub-reader": lambda: self._handle_get_epub_reader(),
-            "/pdf-reader": lambda: self._handle_get_pdf_reader(parsed_url),
-            "/api/tags": lambda: self._handle_get_tags(),
-            "/api/history": lambda: self._handle_get_history(),
-            "/api/instructions": lambda: self._handle_get_instructions(),
-            "/api/library/docs": lambda: self._handle_get_library_docs(),
-            "/api/stash": lambda: self._handle_get_stash(parsed_url),
-            "/api/bibliography": lambda: self._handle_get_bibliography(parsed_url),
-            "/api/pdf/status": lambda: self._handle_get_pdf_status(),
-            "/api/update/status": lambda: self._handle_get_update_status(),
-            "/api/update/check": lambda: self._handle_get_update_check(),
-            "/api/update/events": lambda: self._handle_get_update_events(parsed_url),
-            "/api/pdf/file": lambda: self._handle_get_pdf_file(parsed_url),
-            "/api/epub/file": lambda: self._handle_get_epub_file(parsed_url),
-        }
+            get_routes = {
+                "/": lambda: self._handle_get_root(),
+                "/epub-reader": lambda: self._handle_get_epub_reader(),
+                "/pdf-reader": lambda: self._handle_get_pdf_reader(parsed_url),
+                "/api/tags": lambda: self._handle_get_tags(),
+                "/api/history": lambda: self._handle_get_history(),
+                "/api/instructions": lambda: self._handle_get_instructions(),
+                "/api/library/docs": lambda: self._handle_get_library_docs(),
+                "/api/stash": lambda: self._handle_get_stash(parsed_url),
+                "/api/bibliography": lambda: self._handle_get_bibliography(parsed_url),
+                "/api/pdf/status": lambda: self._handle_get_pdf_status(),
+                "/api/metrics": lambda: self._handle_get_metrics(parsed_url),
+                "/api/cooldown/status": lambda: self._handle_get_cooldown_status(),
+                "/api/update/status": lambda: self._handle_get_update_status(),
+                "/api/update/check": lambda: self._handle_get_update_check(),
+                "/api/update/events": lambda: self._handle_get_update_events(parsed_url),
+                "/api/pdf/file": lambda: self._handle_get_pdf_file(parsed_url),
+                "/api/epub/file": lambda: self._handle_get_epub_file(parsed_url),
+            }
 
-        handler = get_routes.get(route_path)
-        if handler:
-            return handler()
+            handler = get_routes.get(route_path)
+            if handler:
+                return handler()
 
-        return self._send(404, "Not found")
+            return self._send(404, "Not found")
+        except Exception:
+            LOGGER.exception("Unhandled GET error for path=%s", route_path)
+            return self._send(
+                500,
+                json.dumps({"error": "Internal server error"},
+                           ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        finally:
+            self._monitor_finalize()
 
     def do_POST(self):
         parsed_url = urlparse(self.path)
         route_path = parsed_url.path
+        self._monitor_begin("POST", route_path)
 
-        if not self._require_api_auth_for_route(route_path):
-            return
+        try:
+            if not self._require_api_auth_for_route(route_path):
+                return
 
-        if not self._require_same_origin_for_state_change(route_path):
-            return
+            if not self._require_same_origin_for_state_change(route_path):
+                return
 
-        post_routes = {
-            "/api/generate": lambda: self._handle_post_generate(),
-            "/api/abstract/evaluate": lambda: self._handle_post_abstract_evaluate(),
-            "/api/history": lambda: self._handle_post_history(),
-            "/api/instructions": lambda: self._handle_post_instructions(),
-            "/api/pdf/index": lambda: self._handle_post_pdf_index(),
-            "/api/pdf/index/pause": lambda: self._handle_post_pdf_index_pause(),
-            "/api/pdf/source": lambda: self._handle_post_pdf_source(),
-            "/api/pdf/source/pick": lambda: self._handle_post_pdf_source_pick(),
-            "/api/update/apply": lambda: self._handle_post_update_apply(),
-            "/api/update/check": lambda: self._handle_post_update_check(),
-            "/api/pdf/ask": lambda: self._handle_post_pdf_ask(),
-            "/api/library/upload": lambda: self._handle_post_library_upload(parsed_url),
-            "/api/stash": lambda: self._handle_post_stash(),
-        }
+            post_routes = {
+                "/api/generate": lambda: self._handle_post_generate(),
+                "/api/abstract/evaluate": lambda: self._handle_post_abstract_evaluate(),
+                "/api/history": lambda: self._handle_post_history(),
+                "/api/instructions": lambda: self._handle_post_instructions(),
+                "/api/pdf/index": lambda: self._handle_post_pdf_index(),
+                "/api/pdf/index/pause": lambda: self._handle_post_pdf_index_pause(),
+                "/api/pdf/source": lambda: self._handle_post_pdf_source(),
+                "/api/pdf/source/pick": lambda: self._handle_post_pdf_source_pick(),
+                "/api/update/apply": lambda: self._handle_post_update_apply(),
+                "/api/update/check": lambda: self._handle_post_update_check(),
+                "/api/pdf/ask": lambda: self._handle_post_pdf_ask(),
+                "/api/library/upload": lambda: self._handle_post_library_upload(parsed_url),
+                "/api/stash": lambda: self._handle_post_stash(),
+                "/api/metrics/reset": lambda: self._handle_post_metrics_reset(),
+                "/api/cooldown": lambda: self._handle_post_cooldown(),
+            }
 
-        handler = post_routes.get(route_path)
-        if handler:
-            return handler()
+            handler = post_routes.get(route_path)
+            if handler:
+                return handler()
 
-        return self._send(404, "Not found")
+            return self._send(404, "Not found")
+        except Exception:
+            LOGGER.exception("Unhandled POST error for path=%s", route_path)
+            return self._send(
+                500,
+                json.dumps({"error": "Internal server error"},
+                           ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        finally:
+            self._monitor_finalize()
 
     def do_DELETE(self):
         parsed_url = urlparse(self.path)
         route_path = parsed_url.path
+        self._monitor_begin("DELETE", route_path)
 
-        if not self._require_api_auth_for_route(route_path):
-            return
+        try:
+            if not self._require_api_auth_for_route(route_path):
+                return
 
-        if not self._require_same_origin_for_state_change(route_path):
-            return
+            if not self._require_same_origin_for_state_change(route_path):
+                return
 
-        delete_routes = {
-            "/api/history": lambda: self._handle_delete_history(),
-            "/api/stash": lambda: self._handle_delete_stash(parsed_url),
-            "/api/bibliography": lambda: self._handle_delete_bibliography(parsed_url),
-        }
+            delete_routes = {
+                "/api/history": lambda: self._handle_delete_history(),
+                "/api/stash": lambda: self._handle_delete_stash(parsed_url),
+                "/api/bibliography": lambda: self._handle_delete_bibliography(parsed_url),
+            }
 
-        handler = delete_routes.get(route_path)
-        if handler:
-            return handler()
+            handler = delete_routes.get(route_path)
+            if handler:
+                return handler()
 
-        return self._send(404, "Not found")
+            return self._send(404, "Not found")
+        except Exception:
+            LOGGER.exception("Unhandled DELETE error for path=%s", route_path)
+            return self._send(
+                500,
+                json.dumps({"error": "Internal server error"},
+                           ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
+        finally:
+            self._monitor_finalize()
 
     def _proxy(self, method, path, data):
         req = Request(
@@ -3259,6 +4707,55 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(exc.code, detail, "application/json; charset=utf-8")
         except URLError as exc:
             return self._send(502, json.dumps({"error": str(exc)}), "application/json; charset=utf-8")
+
+    def _proxy_generate(self, model, data):
+        req = Request(
+            f"{OLLAMA_BASE}/api/generate",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(req, timeout=GENERATE_TIMEOUT) as resp:
+                body = resp.read().decode("utf-8", errors="replace")
+                _model_guard_clear(model)
+                return self._send(resp.status, body, "application/json; charset=utf-8")
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            if exc.code >= 500 or _resource_failure_detail(detail):
+                guarded, retry_after_seconds = _model_guard_record_failure(
+                    model, detail)
+                if guarded:
+                    return self._send(
+                        503,
+                        json.dumps(
+                            _model_guard_error_payload(
+                                model=model,
+                                detail=detail,
+                                retry_after_seconds=retry_after_seconds,
+                                guarded=True,
+                            ),
+                            ensure_ascii=True,
+                        ),
+                        "application/json; charset=utf-8",
+                    )
+            return self._send(exc.code, detail, "application/json; charset=utf-8")
+        except URLError as exc:
+            detail = str(exc)
+            guarded, retry_after_seconds = _model_guard_record_failure(
+                model, detail)
+            status = 503 if guarded else 502
+            payload = _model_guard_error_payload(
+                model=model,
+                detail=detail,
+                retry_after_seconds=retry_after_seconds,
+                guarded=guarded,
+            )
+            return self._send(
+                status,
+                json.dumps(payload, ensure_ascii=True),
+                "application/json; charset=utf-8",
+            )
 
 
 def main():

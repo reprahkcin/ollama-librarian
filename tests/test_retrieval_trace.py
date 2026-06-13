@@ -119,6 +119,51 @@ class RetrievalTraceTests(unittest.TestCase):
         self.assertEqual(page, 2)
         self.assertIn("Depression", text)
 
+    def test_format_ollama_http_error_for_gpu_runtime_failure(self):
+        message = self.indexer._format_ollama_http_error(
+            "/api/generate",
+            500,
+            '{"error":"an error was encountered while running the model: CUDA error\\nCUDA error: an illegal instruction was encountered"}',
+        )
+
+        self.assertIn("GPU/CUDA", message)
+        self.assertIn("smaller model", message)
+        self.assertIn("HTTP 500", message)
+
+    def test_extract_ollama_error_text_prefers_json_error_field(self):
+        detail = '{"error":"backend overloaded"}'
+        text = self.indexer._extract_ollama_error_text(detail)
+        self.assertEqual(text, "backend overloaded")
+
+    def test_candidate_answer_models_prioritizes_primary_and_dedupes(self):
+        models = self.indexer._candidate_answer_models(
+            "qwen2.5:14b",
+            ["qwen2.5:7b", "qwen2.5:14b", "qwen2.5:3b"],
+            available_models=None,
+            pressure_level="normal",
+        )
+        self.assertEqual(models, ["qwen2.5:14b", "qwen2.5:7b", "qwen2.5:3b"])
+
+    def test_candidate_answer_models_filters_by_available_models(self):
+        models = self.indexer._candidate_answer_models(
+            "qwen2.5:14b",
+            ["qwen2.5:7b", "llama3.2:3b"],
+            available_models=["qwen2.5:7b", "llama3.2:3b"],
+            pressure_level="normal",
+        )
+        # Primary is retained first for explicit user choice, then available fallbacks.
+        self.assertEqual(models, ["qwen2.5:14b", "qwen2.5:7b", "llama3.2:3b"])
+
+    def test_candidate_answer_models_keeps_primary_first_on_high_pressure(self):
+        models = self.indexer._candidate_answer_models(
+            "qwen2.5:14b",
+            ["qwen2.5:7b", "qwen2.5:3b", "llama3.2:1b"],
+            available_models=None,
+            pressure_level="high",
+        )
+        self.assertEqual(
+            models, ["qwen2.5:14b", "qwen2.5:7b", "qwen2.5:3b", "llama3.2:1b"])
+
 
 if __name__ == "__main__":
     unittest.main()

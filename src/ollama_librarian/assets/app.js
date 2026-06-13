@@ -73,6 +73,13 @@ const pdfStatusCountsEl = document.getElementById("pdfStatusCounts");
 const pdfStatusTimingEl = document.getElementById("pdfStatusTiming");
 const pdfStatusAdaptiveEl = document.getElementById("pdfStatusAdaptive");
 const pdfStatusErrorEl = document.getElementById("pdfStatusError");
+const perfSummaryEl = document.getElementById("perfSummary");
+const perfSystemEl = document.getElementById("perfSystem");
+const perfRequestEl = document.getElementById("perfRequest");
+const perfHotRouteEl = document.getElementById("perfHotRoute");
+const perfCooldownEl = document.getElementById("perfCooldown");
+const cooldownMinutesEl = document.getElementById("cooldownMinutes");
+const cooldownToggleEl = document.getElementById("cooldownToggle");
 const messagesEl = document.getElementById("messages");
 const statusDotEl = document.getElementById("statusDot");
 const statusTextEl = document.getElementById("statusText");
@@ -106,6 +113,7 @@ let promptHistory = [];
 let promptHistoryIndex = -1;
 let pinnedPrompts = [];
 let syncSnapshot = null;
+let cooldownActive = false;
 
 const DOC_FILTER_STORAGE_KEY = "ollama_web_excluded_docs_v1";
 const PROMPT_HISTORY_STORAGE_KEY = "ollama_web_prompt_history_v1";
@@ -965,8 +973,18 @@ function renderMarkdown(text) {
       return token;
     },
   );
+  withPlaceholders = withPlaceholders.replace(
+    /\\\[([\s\S]*?)\\\]/g,
+    (_, expr) => {
+      const token = `@@MATHBLOCK_${mathBlocks.length}@@`;
+      mathBlocks.push(`<div class="math-block">\\[${expr.trim()}\\]</div>`);
+      return token;
+    },
+  );
 
-  const rawLines = withPlaceholders.split(/\r?\n|\\n/);
+  // Split only on real newlines; splitting on literal "\\n" corrupts LaTeX commands
+  // like \neq and \nabla.
+  const rawLines = withPlaceholders.split(/\r?\n/);
   const lines = [];
   for (const rawLine of rawLines) {
     const line = String(rawLine || "");
@@ -1117,13 +1135,15 @@ function renderMarkdown(text) {
       continue;
     }
 
-    if (/^\d+\.\s+/.test(t)) {
+    const orderedMatch = t.match(/^(\d+)\.\s+(.*)$/);
+    if (orderedMatch) {
+      const startAt = Math.max(1, Number(orderedMatch[1]) || 1);
       if (!inOl) {
         closeLists();
-        html.push("<ol>");
+        html.push(`<ol start="${startAt}">`);
         inOl = true;
       }
-      html.push(`<li>${renderInlineMarkdown(t.replace(/^\d+\.\s+/, ""))}</li>`);
+      html.push(`<li>${renderInlineMarkdown(orderedMatch[2])}</li>`);
       continue;
     }
 
@@ -2112,6 +2132,285 @@ function formatEpoch(ts) {
   return d.toLocaleString();
 }
 
+function formatPerfMb(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return "n/a";
+  return `${Math.round(n)} MB`;
+}
+
+function formatPerfPct(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return "n/a";
+  return `${Math.round(n)}%`;
+}
+
+function formatPerfTempC(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return "n/a";
+  return `${Math.round(n)} C`;
+}
+
+function perfBandLabel(band) {
+  if (band === "bad") return "Overloaded";
+  if (band === "warn") return "Warm";
+  return "Good";
+}
+
+function perfBandClass(band) {
+  if (band === "bad") return "perf-chip-bad";
+  if (band === "warn") return "perf-chip-warn";
+  return "perf-chip-good";
+}
+
+function rateBand(value, goodMax, warnMax) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "warn";
+  if (n <= goodMax) return "good";
+  if (n <= warnMax) return "warn";
+  return "bad";
+}
+
+function countBand(value, goodMin, warnMin) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "warn";
+  if (n >= goodMin) return "good";
+  if (n >= warnMin) return "warn";
+  return "bad";
+}
+
+function bandChipHtml(label, band) {
+  return `<span class="perf-chip ${perfBandClass(band)}">${label}: ${perfBandLabel(band)}</span>`;
+}
+
+function perfFactHtml(label, value) {
+  return `<span class="perf-fact"><span class="perf-fact-label">${label}</span><span class="perf-fact-value">${value}</span></span>`;
+}
+
+function applyCooldownUi(cooldown) {
+  const active = Boolean(cooldown && cooldown.active);
+  cooldownActive = active;
+
+  if (cooldownToggleEl) {
+    cooldownToggleEl.textContent = active
+      ? "Resume Heavy Work"
+      : "Pause Heavy Work";
+  }
+
+  if (!activeRequestController) {
+    sendEl.disabled = active;
+    sendEl.textContent = active ? "Paused" : "Send";
+  }
+
+  if (
+    syncPdfLibraryEl &&
+    !String(syncPdfLibraryEl.dataset.indexAction || "").includes("pause")
+  ) {
+    syncPdfLibraryEl.disabled = active;
+  }
+}
+
+function renderPerformanceDashboard(metrics) {
+  const safe = metrics && typeof metrics === "object" ? metrics : {};
+  const resource =
+    safe.last_resource && typeof safe.last_resource === "object"
+      ? safe.last_resource
+      : {};
+  const cooldown =
+    safe.cooldown && typeof safe.cooldown === "object" ? safe.cooldown : {};
+  const hotRoutes = Array.isArray(safe.hot_routes) ? safe.hot_routes : [];
+  const topRoute = hotRoutes.length ? hotRoutes[0] : null;
+
+  const cpuPctNow = Number(resource.cpu_usage_pct_now);
+  const cpuPct1m = Number(resource.cpu_load_pct_1m);
+  const cpuPct =
+    Number.isFinite(cpuPctNow) && cpuPctNow >= 0 ? cpuPctNow : cpuPct1m;
+  const memAvail = Number(resource.mem_available_mb);
+  const rss = Number(resource.process_rss_mb);
+  const diskFree = Number(resource.disk_free_mb);
+  const gpuMonitoring = String(resource.gpu_monitoring || "");
+  const gpuPresent = Boolean(resource.gpu_present);
+  const gpuUtil = Number(resource.gpu_util_pct_max);
+  const gpuMemUtil = Number(resource.gpu_mem_util_pct_max);
+  const gpuTemp = Number(resource.gpu_temp_c_max);
+  const gpuCount = Number(resource.gpu_count || 0);
+  const total = Number(safe.requests_total || 0);
+  const errors = Number(safe.requests_error || 0);
+  const slow = Number(safe.requests_slow || 0);
+  const errorRate = total > 0 ? errors / total : 0;
+  const slowRate = total > 0 ? slow / total : 0;
+
+  const cpuBand = rateBand(cpuPct, 55, 80);
+  const memBand = countBand(memAvail, 4096, 2048);
+  const rssBand = rateBand(rss, 1400, 2800);
+  const diskBand = countBand(diskFree, 10240, 4096);
+  const gpuUtilBand = rateBand(gpuUtil, 60, 85);
+  const gpuMemBand = rateBand(gpuMemUtil, 75, 90);
+  const gpuTempBand = rateBand(gpuTemp, 72, 82);
+  const errBand = rateBand(errorRate, 0.03, 0.1);
+  const slowBand = rateBand(slowRate, 0.2, 0.4);
+
+  const bands = [cpuBand, memBand, rssBand, diskBand, errBand, slowBand];
+  if (gpuMonitoring === "ok" && gpuPresent) {
+    bands.push(gpuUtilBand, gpuMemBand, gpuTempBand);
+  }
+  const overallBand = bands.includes("bad")
+    ? "bad"
+    : bands.includes("warn")
+      ? "warn"
+      : "good";
+
+  const cpuDetail =
+    Number.isFinite(cpuPctNow) && cpuPctNow >= 0
+      ? `${formatPerfPct(cpuPctNow)} now${Number.isFinite(cpuPct1m) && cpuPct1m >= 0 ? ` (1m ${formatPerfPct(cpuPct1m)})` : ""}`
+      : `${formatPerfPct(cpuPct1m)} load`;
+
+  if (perfSummaryEl) {
+    perfSummaryEl.innerHTML = `${bandChipHtml("Overall", overallBand)} <span class="perf-facts">${perfFactHtml("Requests", total)}${perfFactHtml("Slow", slow)}${perfFactHtml("Errors", errors)}</span>`;
+    perfSummaryEl.classList.remove("perf-alert", "perf-ok");
+  }
+
+  if (perfSystemEl) {
+    const metricsHtml = [
+      `<span class="perf-metric">${bandChipHtml("CPU", cpuBand)}<span class="perf-metric-value">${cpuDetail}</span></span>`,
+      `<span class="perf-metric">${bandChipHtml("Free RAM", memBand)}<span class="perf-metric-value">${formatPerfMb(memAvail)}</span></span>`,
+      `<span class="perf-metric">${bandChipHtml("App RAM", rssBand)}<span class="perf-metric-value">${formatPerfMb(rss)}</span></span>`,
+      `<span class="perf-metric">${bandChipHtml("Disk", diskBand)}<span class="perf-metric-value">${formatPerfMb(diskFree)} free</span></span>`,
+    ];
+
+    if (gpuMonitoring === "ok" && gpuPresent) {
+      metricsHtml.push(
+        `<span class="perf-metric">${bandChipHtml("GPU", gpuUtilBand)}<span class="perf-metric-value">${formatPerfPct(gpuUtil)} util (${Math.max(1, gpuCount)} gpu)</span></span>`,
+      );
+      metricsHtml.push(
+        `<span class="perf-metric">${bandChipHtml("VRAM", gpuMemBand)}<span class="perf-metric-value">${formatPerfPct(gpuMemUtil)}</span></span>`,
+      );
+      metricsHtml.push(
+        `<span class="perf-metric">${bandChipHtml("GPU Temp", gpuTempBand)}<span class="perf-metric-value">${formatPerfTempC(gpuTemp)}</span></span>`,
+      );
+    } else {
+      const monitorLabel =
+        gpuMonitoring === "unavailable"
+          ? "No NVIDIA telemetry"
+          : gpuMonitoring === "timeout"
+            ? "GPU telemetry timeout"
+            : gpuMonitoring === "error"
+              ? "GPU telemetry error"
+              : "GPU telemetry n/a";
+      metricsHtml.push(
+        `<span class="perf-facts">${perfFactHtml("GPU monitor", monitorLabel)}</span>`,
+      );
+    }
+
+    perfSystemEl.innerHTML = `<span class="perf-metric-grid">${metricsHtml.join("")}</span>`;
+  }
+
+  if (perfRequestEl) {
+    const threshold = Number(safe.slow_threshold_ms || 0);
+    perfRequestEl.innerHTML = `<span class="perf-metric-grid">${[
+      `<span class="perf-metric">${bandChipHtml("Errors", errBand)}<span class="perf-metric-value">${(errorRate * 100).toFixed(1)}%</span></span>`,
+      `<span class="perf-metric">${bandChipHtml("Slow", slowBand)}<span class="perf-metric-value">${(slowRate * 100).toFixed(1)}%</span></span>`,
+    ].join(
+      "",
+    )}</span><span class="perf-facts">${perfFactHtml("Threshold", `${threshold} ms`)}</span>`;
+  }
+
+  if (perfHotRouteEl) {
+    if (topRoute) {
+      perfHotRouteEl.innerHTML = `<span class="perf-facts">${perfFactHtml("Hot route", topRoute.route)}${perfFactHtml("Count", Number(topRoute.count || 0))}${perfFactHtml("Slow", Number(topRoute.slow || 0))}${perfFactHtml("Errors", Number(topRoute.errors || 0))}</span>`;
+    } else {
+      perfHotRouteEl.innerHTML = `<span class="perf-facts">${perfFactHtml("Hot route", "n/a")}</span>`;
+    }
+  }
+
+  if (perfCooldownEl) {
+    const cooldownReason = String(cooldown.reason || "").trim();
+    if (cooldown.active) {
+      const remaining = Number(cooldown.remaining_seconds || 0);
+      const reasonHtml = cooldownReason
+        ? perfFactHtml("Reason", cooldownReason)
+        : "";
+      perfCooldownEl.innerHTML = `${bandChipHtml("Cooldown", "bad")} <span class="perf-facts">${perfFactHtml("Remaining", `${Math.max(1, Math.ceil(remaining / 60))} min`)}${reasonHtml}</span>`;
+      perfCooldownEl.classList.add("perf-alert");
+      perfCooldownEl.classList.remove("perf-ok");
+    } else {
+      perfCooldownEl.innerHTML = `${bandChipHtml("Cooldown", "good")} <span class="perf-facts">${perfFactHtml("Status", "Inactive")}</span>`;
+      perfCooldownEl.classList.remove("perf-alert");
+      perfCooldownEl.classList.add("perf-ok");
+    }
+  }
+
+  applyCooldownUi(cooldown);
+}
+
+async function refreshPerformanceDashboard() {
+  try {
+    const res = await fetch("/api/metrics?limit=40");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    renderPerformanceDashboard(data || {});
+  } catch (err) {
+    if (perfSummaryEl) {
+      perfSummaryEl.textContent = `Performance: status error - ${err.message}`;
+      perfSummaryEl.classList.add("perf-alert");
+    }
+    if (perfSystemEl) {
+      perfSystemEl.textContent = "";
+    }
+    if (perfRequestEl) {
+      perfRequestEl.textContent = "";
+    }
+    if (perfHotRouteEl) {
+      perfHotRouteEl.textContent = "";
+    }
+    if (perfCooldownEl) {
+      perfCooldownEl.textContent = "";
+    }
+  }
+}
+
+async function toggleCooldown() {
+  if (!cooldownToggleEl) return;
+
+  cooldownToggleEl.disabled = true;
+  cooldownToggleEl.textContent = cooldownActive ? "Resuming..." : "Pausing...";
+
+  try {
+    const payload = cooldownActive
+      ? { action: "clear" }
+      : {
+          minutes: Number(
+            cooldownMinutesEl && cooldownMinutesEl.value
+              ? cooldownMinutesEl.value
+              : 5,
+          ),
+          reason: "manual dashboard cooldown",
+        };
+
+    const res = await fetch("/api/cooldown", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+
+    await refreshPdfStatus();
+    await refreshPerformanceDashboard();
+    metaEl.textContent = cooldownActive
+      ? "Cooldown enabled; heavy workload paused"
+      : "Heavy workload resumed";
+  } catch (err) {
+    addMessage("system", `Cooldown toggle failed: ${err.message}`);
+  } finally {
+    cooldownToggleEl.disabled = false;
+    cooldownToggleEl.textContent = cooldownActive
+      ? "Resume Heavy Work"
+      : "Pause Heavy Work";
+  }
+}
+
 function summarizeIndexError(rawError) {
   if (!rawError) return "";
   const text = String(rawError).replace(/\\r/g, "");
@@ -2449,6 +2748,10 @@ async function applyUpdate() {
 }
 
 async function syncPdfLibrary() {
+  if (cooldownActive) {
+    metaEl.textContent = "Cooldown active: resume heavy work before syncing";
+    return;
+  }
   if (!confirmSyncSafety()) {
     metaEl.textContent = "Sync canceled";
     return;
@@ -2593,7 +2896,7 @@ async function togglePdfLibrarySyncPause() {
 }
 
 function setBusy(isBusy) {
-  sendEl.disabled = isBusy;
+  sendEl.disabled = isBusy || cooldownActive;
   promptUseSelectedEl.disabled = isBusy;
   promptPinSelectedEl.disabled = isBusy;
   promptClearHistoryEl.disabled = isBusy;
@@ -2607,12 +2910,16 @@ function setBusy(isBusy) {
   pdfSourcePathEl.disabled = isBusy;
   browsePdfSourceEl.disabled = isBusy;
   savePdfSourceEl.disabled = isBusy;
-  syncPdfLibraryEl.disabled = isBusy;
+  syncPdfLibraryEl.disabled = isBusy || cooldownActive;
   uploadLibraryDocsEl.disabled = isBusy;
   openLibraryDocsEl.disabled = isBusy;
   openStashEl.disabled = isBusy;
   clearEl.disabled = isBusy;
-  sendEl.textContent = isBusy ? "Thinking..." : "Send";
+  sendEl.textContent = isBusy
+    ? "Thinking..."
+    : cooldownActive
+      ? "Paused"
+      : "Send";
 }
 
 function cancelPromptRequest() {
@@ -2694,6 +3001,14 @@ async function loadHistory() {
 
 async function sendPrompt() {
   if (activeRequestController) return;
+  if (cooldownActive) {
+    addMessage(
+      "system",
+      "Cooldown is active. Resume heavy work in the Performance section before sending new requests.",
+      { showAssistantTools: false },
+    );
+    return;
+  }
 
   const prompt = promptEl.value.trim();
   const model = modelEl.value;
@@ -2751,8 +3066,10 @@ async function sendPrompt() {
           exclude_paths: filters.excludePaths,
         }),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
       if (data.ok === false && data.error) {
         throw new Error(data.error);
       }
@@ -2781,8 +3098,8 @@ async function sendPrompt() {
           keep_alive: "60s",
         }),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       answer = data.response || "[no response field]";
       await addMessageAndStore("assistant", answer);
     }
@@ -2883,6 +3200,9 @@ abstractTextEl.addEventListener("keydown", (e) => {
   }
 });
 syncPdfLibraryEl.addEventListener("click", togglePdfLibrarySyncPause);
+if (cooldownToggleEl) {
+  cooldownToggleEl.addEventListener("click", toggleCooldown);
+}
 checkUpdatesEl.addEventListener("click", checkForUpdates);
 applyUpdateEl.addEventListener("click", applyUpdate);
 uploadLibraryDocsEl.addEventListener("click", () => {
@@ -2968,6 +3288,8 @@ loadHistory();
 loadInstructions();
 loadModels();
 refreshPdfStatus();
+refreshPerformanceDashboard();
 refreshUpdateStatus();
 setInterval(refreshPdfStatus, 15000);
+setInterval(refreshPerformanceDashboard, 3000);
 setInterval(refreshUpdateStatus, 30000);

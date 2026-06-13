@@ -86,6 +86,81 @@ Core network/auth:
 - `OLLAMA_WEB_API_KEY` (default: empty)
 - `OLLAMA_WEB_MAX_BODY_BYTES` (default: `1048576`)
 - `OLLAMA_WEB_MAX_UPLOAD_BYTES` (default: `536870912`)
+- `OLLAMA_WEB_GENERATE_TIMEOUT` (default: `90`; per-request timeout for `/api/generate` upstream calls)
+- `OLLAMA_WEB_MODEL_FAILURE_THRESHOLD` (default: `2`; failures before temporarily pausing a model)
+- `OLLAMA_WEB_MODEL_FAILURE_COOLDOWN_SECONDS` (default: `180`; cooldown after repeated model failures)
+- `OLLAMA_WEB_MONITOR_ENABLED` (default: `1`; enables in-process request/resource monitoring)
+- `OLLAMA_WEB_MONITOR_MAX_EVENTS` (default: `1000`; number of recent request events to keep in memory)
+- `OLLAMA_WEB_MONITOR_SLOW_MS` (default: `2500`; request latency threshold marked as slow)
+- `OLLAMA_WEB_MONITOR_LOG_JSONL` (default: `1`; append monitor events to JSONL log)
+- `OLLAMA_WEB_MONITOR_LOG_PATH` (default: state-dir `perf-events.jsonl`; monitor event log file)
+- `OLLAMA_WEB_PDF_ANSWER_TIMEOUT` (default: `360`; seconds per model attempt for grounded answers)
+Safe-mode startup defaults (non-technical friendly):
+
+- Start scripts use conservative defaults unless you override them:
+  - `OLLAMA_WEB_GENERATE_TIMEOUT=60`
+  - `OLLAMA_WEB_MODEL_FAILURE_THRESHOLD=1`
+  - `OLLAMA_WEB_MODEL_FAILURE_COOLDOWN_SECONDS=300`
+- This means a model is paused quickly after an upstream failure, reducing repeated crash loops.
+- If a favorite model gets paused too aggressively, raise `OLLAMA_WEB_MODEL_FAILURE_THRESHOLD` to `2`.
+
+Quick override examples:
+
+- Linux:
+
+```bash
+OLLAMA_WEB_MODEL_FAILURE_THRESHOLD=2 ./scripts/librarian-start-linux.sh
+```
+
+- macOS:
+
+```bash
+OLLAMA_WEB_MODEL_FAILURE_THRESHOLD=2 ./scripts/librarian-start-macos.sh
+```
+
+- Windows (PowerShell):
+
+```powershell
+$env:OLLAMA_WEB_MODEL_FAILURE_THRESHOLD='2'; .\scripts\librarian-start-windows.ps1
+```
+
+One-command test reset (Linux):
+
+```bash
+./scripts/librarian-reset-linux.sh
+```
+
+Run a test immediately after reset (single command flow):
+
+```bash
+./scripts/librarian-reset-linux.sh -- python scripts/run_quality_benchmark.py --limit 1
+```
+
+Preload a model during reset to reduce first-query cold-start latency:
+
+```bash
+./scripts/librarian-reset-linux.sh --warmup-model qwen2.5:14b
+```
+
+Optional hard reset mode (also wipes the PDF index database before restart):
+
+```bash
+./scripts/librarian-reset-linux.sh --wipe-index
+```
+
+A/B performance benchmark runner (Linux workflow):
+
+```bash
+python scripts/run_quality_ab_benchmark.py --warmup --limit 4
+```
+
+This runs the benchmark across a fixed profile matrix (`top_k`, `num_predict`, `answer_timeout`) with a full reset between profiles and writes a ranked summary under `tests/quality/results/ab-<timestamp>/`.
+
+To prevent a stuck profile from blocking the full matrix, set a hard profile timeout:
+
+```bash
+python scripts/run_quality_ab_benchmark.py --warmup --limit 4 --profile-timeout-seconds 900
+```
 
 Content/index paths and OCR:
 
@@ -106,6 +181,7 @@ Content/index paths and OCR:
 - `OLLAMA_WEB_PDF_DYNAMIC_DELAY_STEP_MS` (default: `50`; adaptive delay adjustment increment)
 - `OLLAMA_WEB_PDF_DYNAMIC_MIN_THREADS` (default: `1`; lower bound for adaptive embed threads)
 - `OLLAMA_WEB_PDF_DYNAMIC_MAX_THREADS` (default: `3`; upper bound for adaptive embed threads)
+- `OLLAMA_WEB_PDF_ANSWER_FALLBACK_MODELS` (default: `qwen2.5:7b,qwen2.5:3b,llama3.2:3b`; comma-separated fallbacks used when heavy answer models fail)
 
 Updater behavior:
 
@@ -115,6 +191,23 @@ Updater behavior:
 - `OLLAMA_WEB_UPDATE_BRANCH` (default: `main`)
 - `OLLAMA_WEB_UPDATE_APPLY_MODE` (default: `git`, options: `git` or `script`)
 - `OLLAMA_WEB_UPDATE_EVENTS_MAX` (default: `200`)
+
+Performance monitoring endpoints:
+
+- `GET /api/metrics?limit=200`: request counters, hot routes, recent request timings, and latest CPU/RAM/disk snapshot.
+- `POST /api/metrics/reset`: clears in-memory monitor counters/events.
+- `GET /api/cooldown/status`: current cooldown state (`active`, remaining seconds).
+- `POST /api/cooldown`: set or clear cooldown. Examples:
+  - Set: `{"minutes":5,"reason":"manual dashboard cooldown"}`
+  - Clear: `{"action":"clear"}`
+- JSONL event log (`perf-events.jsonl`) is appended automatically when `OLLAMA_WEB_MONITOR_LOG_JSONL=1`.
+
+When cooldown is active, heavy operations are paused/blocked:
+
+- `/api/generate`
+- `/api/pdf/ask`
+- `/api/pdf/index`
+- `/api/abstract/evaluate`
 
 ## Update Flow Smoke Test
 

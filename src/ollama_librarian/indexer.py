@@ -358,9 +358,23 @@ class RagCliConfig:
     web_host: str = "127.0.0.1"
     web_port: int = 8088
     ask_answer_timeout: int = 600
+    ask_answer_num_predict: int = 768
+    answer_fallback_models: tuple[str, ...] = ()
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "RagCliConfig":
+        fallback_raw = str(
+            env.get(
+                "OLLAMA_WEB_PDF_ANSWER_FALLBACK_MODELS",
+                "qwen2.5:7b,qwen2.5:3b,llama3.2:3b",
+            )
+        )
+        fallback_models = tuple(
+            model
+            for model in [part.strip() for part in fallback_raw.split(",")]
+            if model
+        )
+
         return cls(
             ollama_base=str(env.get("OLLAMA_BASE_URL",
                             "http://127.0.0.1:11434")),
@@ -377,6 +391,8 @@ class RagCliConfig:
             ask_top_k=max(1, _env_int(env, "OLLAMA_WEB_PDF_TOP_K", 6)),
             ask_answer_timeout=max(30, _env_int(
                 env, "OLLAMA_WEB_PDF_ANSWER_TIMEOUT", 600)),
+            ask_answer_num_predict=max(0, _env_int(
+                env, "OLLAMA_WEB_PDF_ANSWER_NUM_PREDICT", 768)),
             ocr_lang=str(env.get("OLLAMA_WEB_PDF_OCR_LANG", "eng")),
             ocr_jobs=max(1, _env_int(env, "OLLAMA_WEB_PDF_OCR_JOBS", 2)),
             ocr_timeout=max(60, _env_int(
@@ -401,6 +417,7 @@ class RagCliConfig:
                 env, "OLLAMA_WEB_PDF_DYNAMIC_MAX_THREADS", 3)),
             web_host=str(env.get("OLLAMA_WEB_HOST", "127.0.0.1")).strip(),
             web_port=max(1, _env_int(env, "OLLAMA_WEB_PORT", 8088)),
+            answer_fallback_models=fallback_models,
         )
 
 
@@ -496,6 +513,51 @@ def now_ts() -> int:
     return int(time.time())
 
 
+def _extract_ollama_error_text(detail: str) -> str:
+    raw = str(detail or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            msg = str(parsed.get("error", "")).strip()
+            return msg or raw
+    except Exception:
+        pass
+    return raw
+
+
+def _is_gpu_runtime_error(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    signals = (
+        "cuda error",
+        "cuda",
+        "vram",
+        "illegal instruction",
+        "out of memory",
+        "cudnn",
+        "rocblas",
+    )
+    return any(signal in lowered for signal in signals)
+
+
+def _format_ollama_http_error(endpoint: str, status_code: int, detail: str) -> str:
+    extracted = _extract_ollama_error_text(detail)
+    if _is_gpu_runtime_error(extracted):
+        return (
+            "Ollama model runtime error (GPU/CUDA). "
+            f"Endpoint {endpoint} returned HTTP {status_code}: {extracted}. "
+            "Try a smaller model, pause heavy work to cool down, then retry."
+        )
+
+    cleaned = extracted.replace("\r", " ").replace("\n", " ").strip()
+    if len(cleaned) > 420:
+        cleaned = f"{cleaned[:417]}..."
+    return f"HTTP {status_code} from {endpoint}: {cleaned}"
+
+
 def http_post_json(base_url: str, endpoint: str, payload: dict, timeout: int = 180) -> dict:
     body = json.dumps(payload).encode("utf-8")
     req = Request(
@@ -511,7 +573,7 @@ def http_post_json(base_url: str, endpoint: str, payload: dict, timeout: int = 1
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(
-            f"HTTP {exc.code} from {endpoint}: {detail}") from exc
+            _format_ollama_http_error(endpoint, int(exc.code), detail)) from exc
     except URLError as exc:
         raise RuntimeError(
             f"Cannot reach Ollama at {base_url}: {exc}") from exc
@@ -541,18 +603,96 @@ def embed_text(base_url: str, model: str, text: str, num_thread: int = 3) -> lis
 
 
 def generate_answer(base_url: str, model: str, prompt: str, timeout: int = 180) -> str:
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        "keep_alive": "60s",
+    }
+
+    num_predict = int(getattr(RAG_CONFIG, "ask_answer_num_predict", 0) or 0)
+    if num_predict > 0:
+        payload["options"] = {"num_predict": num_predict}
+
     data = http_post_json(
         base_url,
         "/api/generate",
-        {
-            "model": model,
-            "prompt": prompt,
-            "stream": False,
-            "keep_alive": "60s",
-        },
+        payload,
         timeout=timeout,
     )
     return str(data.get("response", "")).strip()
+
+
+def _model_size_hint_b(model_name: str) -> float:
+    text = normalize_text(model_name).lower()
+    match = re.search(r":(\d+(?:\.\d+)?)b\b", text)
+    if match:
+        try:
+            return float(match.group(1))
+        except Exception:
+            return 999.0
+    return 999.0
+
+
+def _resource_pressure_level() -> str:
+    # Conservative stability heuristic for local single-user machines.
+    cpu_pct = 0.0
+    mem_available_mb = 0.0
+
+    try:
+        load_1m = float(os.getloadavg()[0])
+        cpu_count = float(os.cpu_count() or 1)
+        cpu_pct = (load_1m / cpu_count) * 100.0
+    except Exception:
+        cpu_pct = 0.0
+
+    if platform.system().lower() == "linux":
+        try:
+            with open("/proc/meminfo", "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("MemAvailable:"):
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            mem_available_mb = float(parts[1]) / 1024.0
+                            break
+        except Exception:
+            mem_available_mb = 0.0
+
+    if cpu_pct >= 80.0 or (mem_available_mb > 0 and mem_available_mb < 2048.0):
+        return "high"
+    if cpu_pct >= 60.0 or (mem_available_mb > 0 and mem_available_mb < 4096.0):
+        return "medium"
+    return "normal"
+
+
+def _candidate_answer_models(
+    primary_model: str,
+    fallback_models: list[str],
+    available_models: list[str] | None = None,
+    pressure_level: str | None = None,
+) -> list[str]:
+    primary = normalize_text(primary_model)
+    configured = [normalize_text(model)
+                  for model in fallback_models if normalize_text(model)]
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for model in [primary] + configured:
+        if model and model not in seen:
+            seen.add(model)
+            ordered.append(model)
+
+    level = normalize_text(pressure_level) or _resource_pressure_level()
+
+    if not available_models:
+        return ordered
+
+    available = {normalize_text(model)
+                 for model in available_models if normalize_text(model)}
+    filtered = [model for model in ordered if model in available]
+    if primary and primary not in filtered:
+        filtered.insert(0 if level != "high" else len(filtered), primary)
+    return filtered
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -1394,7 +1534,8 @@ def retrieve_top_chunks_filtered(
             emb = json.loads(emb_json)
         except Exception:
             continue
-        candidates.append((path, normalize_text(title), int(page_num), str(text), emb))
+        candidates.append((path, normalize_text(title),
+                          int(page_num), str(text), emb))
 
     scored = []
     if _NP and candidates:
@@ -1571,16 +1712,13 @@ def ask_command(args) -> int:
     prompt = (
         "You are answering questions using retrieved excerpts from a local document library. "
         "Use only the provided context. If the context is insufficient, say so clearly. "
-        "Always include citations in the form [source path, location].\n\n"
+        "For explanatory questions, provide a comprehensive and well-structured answer that covers the major rules or concepts in the context, "
+        "using formulas and brief worked examples when available. "
+        "Always include concrete citations with real values from context entries in the form [<source>, <location>] (for example [/path/doc.pdf, 42]); "
+        "never output placeholder citation text.\n\n"
         f"Question:\n{args.query}\n\n"
         f"Context:\n{context}\n\n"
         "Answer:"
-    )
-    answer = generate_answer(
-        args.ollama_base,
-        args.answer_model,
-        prompt,
-        timeout=max(1, int(getattr(args, "answer_timeout", 180))),
     )
     metadata_map = load_document_metadata_map(
         conn, [path for _, path, _, _ in top])
@@ -1600,11 +1738,72 @@ def ask_command(args) -> int:
         for score, path, page, _ in top
     ]
 
+    configured_fallbacks = [
+        str(model).strip()
+        for model in getattr(args, "fallback_answer_model", [])
+        if isinstance(model, str) and str(model).strip()
+    ]
+
+    available_models: list[str] | None = None
+    try:
+        available_models = _fetch_ollama_model_names(
+            args.ollama_base, timeout=10)
+    except Exception:
+        available_models = None
+
+    candidate_models = _candidate_answer_models(
+        str(args.answer_model), configured_fallbacks, available_models=available_models
+    )
+    if not candidate_models:
+        candidate_models = [str(args.answer_model)]
+
+    answer = ""
+    used_answer_model = ""
+    generation_errors: list[dict[str, str]] = []
+    for candidate_model in candidate_models:
+        try:
+            answer = generate_answer(
+                args.ollama_base,
+                candidate_model,
+                prompt,
+                timeout=max(1, int(getattr(args, "answer_timeout", 180))),
+            )
+            used_answer_model = candidate_model
+            break
+        except RuntimeError as exc:
+            message = str(exc)
+            generation_errors.append(
+                {"model": candidate_model, "error": message[:400]})
+            if _is_gpu_runtime_error(message):
+                continue
+            raise
+
+    if not used_answer_model:
+        fallback_list = ", ".join(candidate_models)
+        final_error = generation_errors[-1]["error"] if generation_errors else "unknown error"
+        summary = (
+            "Unable to generate grounded answer with available models. "
+            f"Tried: {fallback_list}. Last error: {final_error}"
+        )
+        if getattr(args, "json_output", False):
+            print(json.dumps({
+                "ok": False,
+                "answer": "",
+                "sources": sources,
+                "error": summary,
+                "attempted_answer_models": candidate_models,
+                "generation_errors": generation_errors,
+            }, ensure_ascii=True))
+            return 0
+        print(summary, file=sys.stderr)
+        return 1
     if getattr(args, "json_output", False):
         payload = {
             "ok": True,
             "answer": answer,
             "sources": sources,
+            "answer_model_used": used_answer_model or str(args.answer_model),
+            "answer_models_considered": candidate_models,
         }
         if retrieval_trace_rows is not None:
             payload["debug_trace"] = {
@@ -2152,6 +2351,12 @@ def build_parser(config: RagCliConfig | None = None):
     p_ask.add_argument("--top-k", type=int, default=resolved.ask_top_k)
     p_ask.add_argument("--answer-model", default="qwen2.5:14b")
     p_ask.add_argument(
+        "--fallback-answer-model",
+        action="append",
+        default=list(resolved.answer_fallback_models),
+        help="Fallback answer model to try when the primary model fails due to resource/runtime issues (repeatable)",
+    )
+    p_ask.add_argument(
         "--answer-timeout",
         type=int,
         default=resolved.ask_answer_timeout,
@@ -2263,20 +2468,24 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
 
-    if args.cmd == "index":
-        return index_command(args)
-    if args.cmd == "search":
-        return search_command(args)
-    if args.cmd == "ask":
-        return ask_command(args)
-    if args.cmd == "status":
-        return status_command(args)
-    if args.cmd == "verify":
-        return verify_command(args)
-    if args.cmd == "metadata-sync":
-        return metadata_sync_command(args)
-    if args.cmd == "doctor":
-        return doctor_command(args)
+    try:
+        if args.cmd == "index":
+            return index_command(args)
+        if args.cmd == "search":
+            return search_command(args)
+        if args.cmd == "ask":
+            return ask_command(args)
+        if args.cmd == "status":
+            return status_command(args)
+        if args.cmd == "verify":
+            return verify_command(args)
+        if args.cmd == "metadata-sync":
+            return metadata_sync_command(args)
+        if args.cmd == "doctor":
+            return doctor_command(args)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
 
     parser.print_help()
     return 1

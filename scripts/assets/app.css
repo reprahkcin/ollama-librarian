@@ -730,6 +730,114 @@ textarea {
   color: var(--danger);
   font-weight: 600;
 }
+.perf-alert {
+  color: var(--danger);
+  font-weight: 700;
+}
+.perf-ok {
+  color: var(--ok);
+  font-weight: 700;
+}
+.perf-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.16rem 0.56rem;
+  border: 1px solid var(--border);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  margin-right: 0;
+}
+.perf-chip-good {
+  background: #d4eac8;
+  border-color: #6a945e;
+  color: var(--osu-dark-bg);
+}
+.perf-chip-warn {
+  background: #ffe8b3;
+  border-color: #cf9b2e;
+  color: var(--osu-dark-bg);
+}
+.perf-chip-bad {
+  background: #f5c8c3;
+  border-color: #c96c62;
+  color: var(--osu-dark-bg);
+}
+.perf-panel {
+  display: grid;
+  gap: 0.36rem;
+}
+.perf-row {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-inset);
+  padding: 0.42rem 0.5rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.perf-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.24rem 0.64rem;
+  align-items: baseline;
+}
+.perf-fact {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.26rem;
+  min-width: 0;
+}
+.perf-fact-label {
+  color: var(--ink-muted);
+  font-weight: 700;
+}
+.perf-fact-value {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.perf-metric-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.42rem;
+}
+.perf-metric {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.16rem;
+  min-width: 0;
+}
+.perf-metric-value {
+  display: block;
+  padding-left: 0.15rem;
+  font-variant-numeric: tabular-nums;
+  min-width: 0;
+}
+.perf-row .perf-chip {
+  display: flex;
+  width: 100%;
+  justify-content: flex-start;
+  margin-bottom: 0.22rem;
+}
+.cooldown-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.4rem;
+}
+.cooldown-actions select {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.44rem 0.48rem;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 0.76rem;
+}
+.cooldown-actions .btn-soft {
+  margin: 0;
+  white-space: nowrap;
+}
 .stash-item-actions {
   display: flex;
   justify-content: flex-end;

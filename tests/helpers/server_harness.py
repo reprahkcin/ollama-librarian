@@ -30,6 +30,7 @@ def running_server(host: str = "127.0.0.1", api_key: str = "", extra_env: dict |
             "OLLAMA_WEB_PORT": "8088",
             "OLLAMA_WEB_API_KEY": api_key,
             "OLLAMA_BASE_URL": "http://127.0.0.1:11434",
+            "OLLAMA_WEB_SOFT_THROTTLE_ENABLED": "0",
             "OLLAMA_WEB_HISTORY_PATH": str(state_dir / "history.json"),
             "OLLAMA_WEB_STASH_PATH": str(state_dir / "stash.json"),
             "OLLAMA_WEB_PDF_INDEX_DB": str(state_dir / "pdf-rag.sqlite"),

@@ -1,0 +1,12 @@
+{
+  "state": "completed",
+  "started_at_utc": "2026-06-11T21:20:02+00:00",
+  "updated_at_utc": "2026-06-11T21:20:03+00:00",
+  "fixture": "/home/nick/GIT/ollama-librarian/tests/quality/fixtures/benchmark_v1.json",
+  "completed_prompts": 2,
+  "total_prompts": 2,
+  "percent_complete": 100.0,
+  "last_prompt_id": "bf_002",
+  "last_latency_ms": 1,
+  "last_error": "HTTP Error 429: Too Many Requests"
+}

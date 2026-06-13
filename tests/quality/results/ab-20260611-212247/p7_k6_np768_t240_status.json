@@ -1,0 +1,12 @@
+{
+  "state": "running",
+  "started_at_utc": "2026-06-11T21:28:55+00:00",
+  "updated_at_utc": "2026-06-11T21:28:55+00:00",
+  "fixture": "/home/nick/GIT/ollama-librarian/tests/quality/fixtures/benchmark_v1.json",
+  "completed_prompts": 0,
+  "total_prompts": 1,
+  "percent_complete": 0.0,
+  "last_prompt_id": null,
+  "last_latency_ms": null,
+  "last_error": null
+}
