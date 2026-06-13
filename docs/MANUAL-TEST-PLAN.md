@@ -73,6 +73,7 @@ A code fix was committed after Cycle 1 completed. Restart the waterfall from Mac
 **Commit:** `ad7289f` — `feat(hardware): add VRAM detection to constrain model recommendations on discrete-GPU machines`
 
 **What changed:**
+
 - `src/ollama_librarian/hardware.py`: VRAM detection via `nvidia-smi` added to `detect_hardware_profile()`. `recommend_model()` now uses `min(ram_budget, vram_budget)` on discrete-GPU machines. `HardwareProfile` and `to_dict()` now include `gpu_vram_total_gb`.
 - `tests/test_hardware_profile.py`: 2 new unit tests added.
 - `docs/MANUAL-TEST-PLAN.md`: Linux evidence block updated (FAIL→PASS after fix).
@@ -82,6 +83,7 @@ A code fix was committed after Cycle 1 completed. Restart the waterfall from Mac
 **Impact on Windows:** If the Windows 10 PC has an NVIDIA GPU, `gpu_vram_total_gb` will now appear in `/api/system/profile` and model safety ratings may change. If there is no NVIDIA GPU, behaviour is identical to Cycle 1. Note the new field in your evidence block either way.
 
 **What to watch for:**
+
 - `/api/system/profile` returns `ok: true` with `hardware.gpu_vram_total_gb` present (non-null on NVIDIA machines, null on others).
 - `recommendation.safe_budget_gb` is plausible for the hardware (not inflated to 55% of RAM on a VRAM-limited machine).
 - `recommended_model` is a model that fits within the safe budget.
