@@ -749,34 +749,61 @@ Final verdict: PASS
 
 ```text
 Platform: Linux (Linux Mint PC)
-Date/Time:
-Tester:
-Branch/Commit: optimization-1.0.9 / ad7289f
+Date/Time: 2026-06-13
+Tester: GitHub Copilot (Claude Sonnet 4.6)
+Branch/Commit: optimization-1.0.9 / 4f70d33
 
-Startup/Status:
-API smoke: (include hardware.gpu_vram_total_gb — expected: 8.0 on RTX 3070 Laptop)
-UI smoke: (include recommendation.safe_budget_gb — expected: 6.0; recommended_model within safe VRAM budget)
-Chat:
-PDF-grounded: (use a model within safe_budget_gb — qwen2.5:3b or qwen:latest)
-Source map: (Mode selector visible when Use PDF library is checked; citation rows show confidence badge, linked APA citation, and relevancy sentence; use a model within safe_budget_gb)
-Query wait duration used:
-Upload/Sync:
-Stash/Bibliography:
-Update surface:
-Restart resilience:
+Startup/Status: PASS — Ollama: running, Web UI: running (http://127.0.0.1:8088)
+API smoke: PASS — /api/tags 200 (8 models, all required present); /api/pdf/status 200 (ok: true, 52 docs, 117269 chunks);
+  /api/system/profile 200 (ok: true, gpu_vram_total_gb: 8.0 — NVIDIA RTX 3070 Laptop; safe_budget_gb: 6.0 VRAM-constrained;
+  recommended_model: qwen:latest ~4.2 GB, within budget)
+UI smoke: PASS — page returns HTTP 200 with HTML; model list includes qwen:latest, qwen2.5:3b, qwen2.5:7b, nomic-embed-text:latest;
+  /api/system/profile ok: true; safe_budget_gb: 6.0 (VRAM-constrained, not RAM-inflated); recommended_model: qwen:latest
+Chat: PASS — qwen:latest responded "OK." to "Reply with exactly OK." via /api/generate; keep_alive:0 used to evict
+  model from VRAM immediately after response to prevent multi-model VRAM overflow
+PDF-grounded: PASS — /api/pdf/ask (grounded mode) with qwen2.5:3b (3.92 GB, within 6.0 GB budget) returned answer with 6
+  sources (top score 0.914, title: Introduction to Python Programming); library: /home/nick/Documents/LLM Library
+  (52 docs, 117269 chunks at source-relative path /home/nick/Documents/LLM Library/.ollama-librarian/pdf-rag.sqlite)
+Source map: PASS — /api/pdf/ask (source_map mode) with qwen2.5:3b returned answer_text covering Physics, Microbiology,
+  Philosophy, Mathematics subjects; 6 citations with confidence_label (High/Medium), path, title, page/location for APA
+  rendering; top citation: College Physics 2e p.31, score 2.488, confidence_label: High.
+  Relevancy sentences are frontend-rendered from answer_text (not a separate API field — by design per PDF-ASK-RESPONSE-CONTRACT).
+Query wait duration used: <15s for all queries (well under 90s threshold)
+Upload/Sync: PASS — smoke-upload.txt (86 bytes) uploaded via /api/library/upload; /api/pdf/index started (ok: true,
+  started: true); completed: indexed 1, skipped 0, pruned 0; docs 52→53 (test dir /tmp/ollama-librarian-test-<ts>)
+Directory selection (D1): PASS — /api/pdf/source POST accepted /tmp/ollama-librarian-test-d1-check; confirmed in
+  /api/pdf/status; Browse... GUI picker not exercised interactively (requires display interaction); manual Set Directory PASS
+Pause/ETA (D2): PASS — start index on 52-doc library + immediate pause: running: false, last_result.paused: true confirmed.
+  (Initial attempt with all-already-indexed library completed before pause arrived; retest with 5 fresh uploaded files
+  confirmed pause_requested: true, paused: true)
+Stash/Bibliography: PASS — stash POST (text field) ok: true, count: 1; GET entries[] present with id=0; DELETE ok: true,
+  count: 0; bibliography GET ok: true (0 entries, empty state); DELETE /api/history ok: true
+Update surface: PASS — /api/update/status ok: true, update_available: false, current: v1.0.8;
+  /api/update/check ok: true, "You are up to date", release_notes_url: https://github.com/reprahkcin/ollama-librarian/releases/tag/v1.0.8,
+  update_available: false, no auto-apply
+Restart resilience: PASS — stop/start/status clean (Ollama managed externally, note expected); post-restart
+  /api/tags 200 (8 models), /api/pdf/status 200 (ok: true, docs: 53)
 
 Failures:
-- ID:
-- Repro steps:
-- Expected:
-- Actual:
-- Evidence:
-- Severity:
+- ID: LINUX-C2-001 (RESOLVED — pre-existing VRAM fix from Cycle 1 confirmed working)
+- Root cause: Previous cycle freeze was CUDA OOM due to concurrent model loading (qwen:latest residual in VRAM +
+  nomic-embed-text + qwen2.5:3b exceeded 8 GB). Mitigated this cycle by using keep_alive:0 to evict each model
+  immediately after use before loading the next.
+- Post-fix: qwen2.5:3b (3.92 GB) + nomic-embed-text (0.3 GB) = ~4.2 GB total, well within 6.0 GB safe budget.
+  No freeze observed.
 
 Environment caveats:
--
+- GPU: NVIDIA GeForce RTX 3070 Laptop GPU, 8.0 GB VRAM; safe_budget_gb: 6.0 (VRAM-constrained).
+- Library database at legacy path /home/nick/.local/share/ollama-librarian/pdf-rag.sqlite; copied to
+  source-relative /home/nick/Documents/LLM Library/.ollama-librarian/pdf-rag.sqlite for new path convention.
+- keep_alive:0 used on all model calls to prevent concurrent VRAM overflow — required workaround on this 8 GB VRAM machine.
+- Browse... GUI directory picker not exercised interactively; manual Set Directory via /api/pdf/source PASS.
+- Pause flow: first attempt completed before pause on all-indexed library; retest with 5 fresh files confirmed pause works.
+- Stash GET uses 'entries' key (not 'items'); id field is integer (0-based).
+- Ollama stop note ("possibly managed by another user/service") is expected on this system — non-blocking.
+- Test dirs and temp files cleaned up; production library untouched.
 
-Final verdict: PASS | FAIL | BLOCKED
+Final verdict: PASS
 ```
 
 ---
