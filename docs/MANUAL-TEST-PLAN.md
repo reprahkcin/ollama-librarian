@@ -1,10 +1,10 @@
 # Manual Test Plan (Agent-Operable)
 
-Purpose: define a repeatable, low-noise manual test workflow that any agent can execute and hand off.
+Purpose: define a repeatable, low-noise manual test workflow that any agent or human tester can execute and hand off.
 
 Scope:
 
-- Platform order: macOS -> Windows -> Linux
+- Platform order: macOS (Mac Mini) → Windows 10 PC → Linux Mint PC
 - Product surface: startup, UI load, model loading, PDF index visibility, chat flows, upload/index flows, update/status flows, and stop/start scripts
 - Excludes: performance benchmarking and deep model-quality evaluation
 
@@ -30,11 +30,12 @@ Scope:
 
 Common preconditions (all platforms):
 
-- Repository is available locally.
+- Repository is on branch `optimization-1.0.9` (or the branch under test).
 - Python environment is set up and dependencies installed.
 - Ollama is installed and reachable.
 - At least these models are available:
-  - `qwen2.5:14b`
+  - `qwen2.5:7b`
+  - `qwen2.5:3b`
   - `nomic-embed-text:latest`
 - PDF index exists or test docs are available for indexing.
 
@@ -53,7 +54,19 @@ Use these exact statuses per test item:
 - BLOCKED: cannot execute due to missing prereq/environment limitation
 - N/A: not applicable on current platform
 
-## 4) macOS Test Sequence
+## 4) Waterfall Machine Order
+
+Run one machine at a time, in this order:
+
+| # | Machine | Platform | Status |
+| --- | --- | --- | --- |
+| 1 | Mac Mini | macOS | pending |
+| 2 | Windows 10 PC | Windows | pending |
+| 3 | Linux Mint PC | Linux Mint | pending |
+
+The cycle is complete only when all three machines have a PASS verdict. If any machine produces FAIL, stop the waterfall, fix and commit, then restart from Machine 1.
+
+## 5) macOS Test Sequence (Mac Mini — Run First)
 
 ### A. Startup and Health
 
@@ -97,7 +110,7 @@ Use these exact statuses per test item:
 - Action: click Refresh models
 - Expected:
   - model list populated
-  - `qwen2.5:14b` available/selectable
+  - `qwen2.5:7b` available/selectable
 
 1. PDF status panel
 
@@ -155,11 +168,6 @@ Use these exact statuses per test item:
   - path accepted and normalized
   - no JS/backend error
   - updated path is reflected in `/api/pdf/status`
-
-Linux note:
-
-- If picker fails to open, verify one of `zenity`, `kdialog`, or `yad` is installed.
-- If none are installed, mark picker step BLOCKED and continue with manual fallback path set.
 
 ### D2. Pause and ETA Validation
 
@@ -236,14 +244,56 @@ Linux note:
   - startup successful
   - model load and PDF status still work after restart
 
-## 5) Windows Test Sequence
+### H. macOS Handoff to Windows 10 PC
 
-Run the same functional flow as macOS, substituting script commands:
+When macOS is PASS, give the Windows tester this payload:
 
-- Start: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File '<REPO_PATH>\\scripts\\librarian-start-windows.ps1'`
-- Stop: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File '<REPO_PATH>\\scripts\\librarian-stop-windows.ps1'`
-- Status: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File '<REPO_PATH>\\scripts\\librarian-status-windows.ps1'`
-- Open UI: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File '<REPO_PATH>\\scripts\\librarian-open-ui-windows.ps1'`
+```text
+Handoff from: macOS (Mac Mini)
+Handoff to: Windows 10 PC
+Date/Time:
+Branch/Commit:
+
+macOS result: PASS | FAIL | BLOCKED
+macOS evidence summary:
+- Startup/Status:
+- API smoke:
+- UI smoke:
+- Chat:
+- PDF-grounded:
+- Query wait duration used:
+- Upload/Sync:
+- Stash/Bibliography:
+- Update surface:
+- Restart resilience:
+
+Environment caveats (macOS):
+-
+
+Open failures to watch on Windows:
+-
+
+Next immediate action for Windows tester:
+1. Ensure repo is on branch: <branch>
+2. Ensure models pulled: qwen2.5:7b, qwen2.5:3b, nomic-embed-text
+3. Run Section 6 (Windows Test Sequence) start to finish
+4. Record evidence block in Section 10
+5. If PASS: hand off to Linux Mint PC using Section 6 → I handoff template
+6. If FAIL: stop, report to macOS operator, do not continue to Linux
+```
+
+## 6) Windows Test Sequence (Windows 10 PC — Run Second)
+
+Run the same functional flow as macOS (sections A through G above), substituting script commands:
+
+- Start: `.\scripts\librarian-start-windows.ps1`
+- Stop: `.\scripts\librarian-stop-windows.ps1`
+- Status: `.\scripts\librarian-status-windows.ps1`
+- Open UI: `.\scripts\librarian-open-ui-windows.ps1`
+
+If running from Git Bash instead of PowerShell, use:
+
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass -File '<REPO_PATH>\\scripts\\librarian-start-windows.ps1'`
 
 Windows shell note:
 
@@ -258,18 +308,50 @@ Windows-specific checks:
 - Directory picker behavior: clicking `Browse...` must not remain stuck in `Opening...`; it should either resolve with a selected path or recover with a timeout/error message and re-enable controls.
 - If picker cannot open, UI should recover and show a recoverable message; manual `Set Directory` must still work.
 
-## 6) Current Handoff Notes (2026-05-27)
+### Windows Handoff to Linux Mint PC
 
-- macOS focused fix landed for native directory picker hangs:
-  - picker subprocess calls now time out safely instead of hanging indefinitely
-  - timeout/failure returns recoverable JSON so UI resets from `Opening...`
-  - manual `Set Directory` remains the required fallback path
-- In headless/automated environments, native dialogs may still time out; this is expected and should be treated as non-blocking if UI recovery + manual fallback pass.
-- Windows validation result (2026-05-27): in automation, `Browse...` can remain in `Opening...` until picker timeout, then recovers with a non-blocking timeout message; manual `Set Directory` succeeds and `/api/pdf/status.source_path` updates.
+When Windows is PASS, give the Linux tester this payload:
 
-## 7) Linux Test Sequence
+```text
+Handoff from: Windows 10 PC
+Handoff to: Linux Mint PC
+Date/Time:
+Branch/Commit:
 
-Run the same functional flow as macOS, substituting script commands:
+Windows result: PASS | FAIL | BLOCKED
+Windows evidence summary:
+- Startup/Status:
+- API smoke:
+- UI smoke:
+- Chat:
+- PDF-grounded:
+- Query wait duration used:
+- Upload/Sync:
+- Stash/Bibliography:
+- Update surface:
+- Restart resilience:
+
+macOS result (from prior handoff): PASS | FAIL | BLOCKED
+
+Environment caveats (Windows):
+-
+
+Open failures to watch on Linux:
+-
+
+Next immediate action for Linux Mint tester:
+1. Ensure repo is on branch: <branch>
+2. Ensure models pulled: qwen2.5:7b, qwen2.5:3b, nomic-embed-text
+3. Install one of zenity, kdialog, or yad for directory picker
+4. Run Section 7 (Linux Test Sequence) start to finish
+5. Record evidence block in Section 10
+6. If PASS: waterfall complete — all three platforms green
+7. If FAIL: stop, report to Windows/macOS operator, do not mark cycle complete
+```
+
+## 7) Linux Test Sequence (Linux Mint PC — Run Third)
+
+Run the same functional flow as macOS (sections A through G above), substituting script commands:
 
 - Start: `./scripts/librarian-start-linux.sh`
 - Stop: `./scripts/librarian-stop-linux.sh`
@@ -280,6 +362,7 @@ Linux-specific checks:
 
 - XDG/home path defaults behave as expected.
 - Script permissions and shebang execution are clean.
+- Directory picker: install one of `zenity`, `kdialog`, or `yad` before testing. If none are installed, mark picker step BLOCKED and continue with manual fallback path set.
 
 ## 8) Failure Isolation Playbook
 
@@ -304,96 +387,7 @@ If models/PDF status fail in UI:
 - capture exact status code and response body
 - check service status scripts
 
-## 9) Evidence Template (per platform)
-
-Record this block after each platform run:
-
-```text
-Platform:
-Date/Time:
-Agent:
-Branch/Commit:
-
-Startup/Status:
-API smoke:
-UI smoke:
-Chat:
-PDF-grounded:
-Query wait duration used:
-Upload/Sync:
-Stash/Bibliography:
-Update surface:
-Restart resilience:
-
-Failures:
-- ID:
-- Repro steps:
-- Expected:
-- Actual:
-- Evidence:
-- Severity:
-
-Final verdict: PASS | FAIL | BLOCKED
-```
-
-Latest captured run (Windows, 2026-05-27):
-
-```text
-Platform: Windows
-Date/Time: 2026-05-27
-Agent: GitHub Copilot (GPT-5.3-Codex)
-Branch/Commit: performance-adjustments / 7ca95f1
-
-Startup/Status: PASS (Ollama running, Web UI running on http://127.0.0.1:8088)
-API smoke: PASS (/api/tags 200, /api/pdf/status 200)
-UI smoke: PASS after full refresh (restart + cache-busting URL)
-Chat: PASS (ungrounded prompt returned "OK")
-PDF-grounded: PASS (response returned with source links)
-Query wait duration used: 90s
-Upload/Sync: PASS (uploaded 1 file; counts updated to docs 10/10, chunks 9171)
-Stash/Bibliography: PASS (stash CRUD + bibliography modal open/close)
-Update surface: PASS (already latest, release notes link present)
-Restart resilience: PASS (stop/start/status successful; post-restart APIs remained 200)
-
-Failures:
-- ID: none
-- Repro steps: n/a
-- Expected: n/a
-- Actual: n/a
-- Evidence: n/a
-- Severity: n/a
-
-Environment caveats:
-- `Browse...` directory picker stayed in `Opening...` until timeout in this automation run.
-- UI recovered with timeout message and manual `Set Directory` succeeded.
-- `/api/pdf/status.source_path` reflected the updated path.
-
-Final verdict: PASS
-```
-
-## 10) Agent Handoff Template
-
-Use this exact handoff payload between agents:
-
-```text
-Current platform: <macOS|Windows|Linux>
-Completed test IDs:
-Remaining test IDs:
-Open failures:
-Environment caveats:
-Last known good commit:
-Next immediate action:
-```
-
-## 11) Exit Criteria
-
-Testing cycle is complete when:
-
-- macOS, Windows, Linux each have a full evidence block
-- no untriaged FAIL items remain
-- any accepted residual issues are explicitly documented with severity and follow-up owner
-
-## 12) Exact Reproduction Flow (Match Prior Agent Run)
+## 9) Exact Reproduction Flow
 
 Use this section when handing off to a new agent on a different machine and you want a near-identical execution path.
 
@@ -401,13 +395,13 @@ Use this section when handing off to a new agent on a different machine and you 
 
 - App URL: `http://127.0.0.1:8088`
 - Ollama URL: `http://127.0.0.1:11434`
-- Preferred model in UI: `qwen2.5:14b`
+- Preferred model in UI: `qwen2.5:7b`
 - Quick chat prompt: `Reply with exactly OK.`
 - Temporary upload file path:
   - macOS/Linux: `/tmp/ollama-librarian-smoke-upload.txt`
   - Windows: `$env:TEMP\\ollama-librarian-smoke-upload.txt`
 
-### B. Exact macOS Command Sequence
+### B. Exact Command Sequence (macOS)
 
 Run in repo root:
 
@@ -449,13 +443,31 @@ Expected minimum signals:
 
 ### D. Exact Restart Verification
 
+macOS:
+
 1. `./scripts/librarian-stop-macos.sh`
 2. `./scripts/librarian-start-macos.sh`
 3. `./scripts/librarian-status-macos.sh`
 4. `curl -sS -i http://127.0.0.1:8088/api/tags`
 5. `curl -sS -i http://127.0.0.1:8088/api/pdf/status`
 
-Expected minimum signals:
+Windows:
+
+1. `.\scripts\librarian-stop-windows.ps1`
+2. `.\scripts\librarian-start-windows.ps1`
+3. `.\scripts\librarian-status-windows.ps1`
+4. `curl http://127.0.0.1:8088/api/tags`
+5. `curl http://127.0.0.1:8088/api/pdf/status`
+
+Linux:
+
+1. `./scripts/librarian-stop-linux.sh`
+2. `./scripts/librarian-start-linux.sh`
+3. `./scripts/librarian-status-linux.sh`
+4. `curl -sS -i http://127.0.0.1:8088/api/tags`
+5. `curl -sS -i http://127.0.0.1:8088/api/pdf/status`
+
+Expected minimum signals (all platforms):
 
 - stop/start scripts succeed without manual cleanup
 - status script reports both services running
@@ -465,53 +477,178 @@ Expected minimum signals:
 
 macOS/Linux:
 
-1. `cat > /tmp/ollama-librarian-smoke-upload.txt <<'EOF'`
-2. `Ollama Librarian smoke upload file.`
-3. `This is a disposable test document for manual QA.`
-4. `EOF`
-5. cleanup: `rm -f /tmp/ollama-librarian-smoke-upload.txt`
+```bash
+cat > /tmp/ollama-librarian-smoke-upload.txt <<'EOF'
+Ollama Librarian smoke upload file.
+This is a disposable test document for manual QA.
+EOF
+```
+
+Cleanup: `rm -f /tmp/ollama-librarian-smoke-upload.txt`
 
 Windows PowerShell:
 
-1. `Set-Content -Path "$env:TEMP\\ollama-librarian-smoke-upload.txt" -Value @("Ollama Librarian smoke upload file.","This is a disposable test document for manual QA.")`
-2. cleanup: `Remove-Item "$env:TEMP\\ollama-librarian-smoke-upload.txt" -ErrorAction SilentlyContinue`
-
-### F. Cross-Machine Handoff Payload (Required)
-
-When handing to the next agent, include this exact payload:
-
-```text
-Platform: <macOS|Windows|Linux>
-App URL used: http://127.0.0.1:8088
-Ollama URL used: http://127.0.0.1:11434
-Commands executed (in order):
-1) ...
-2) ...
-3) ...
-UI actions executed (in order):
-1) ...
-2) ...
-3) ...
-Observed confirmations:
-- Startup/status:
-- API 200 checks:
-- Chat response text:
-- Query wait duration used:
-- Upload/sync status text:
-- Update status text:
-- Clear conversation text:
-Deviations from expected flow:
--
-Blocking issues:
--
-Next immediate action for receiving agent:
--
+```powershell
+Set-Content -Path "$env:TEMP\ollama-librarian-smoke-upload.txt" -Value @(
+  "Ollama Librarian smoke upload file.",
+  "This is a disposable test document for manual QA."
+)
 ```
 
-### G. Known Non-Blocking Variability
+Cleanup: `Remove-Item "$env:TEMP\ollama-librarian-smoke-upload.txt" -ErrorAction SilentlyContinue`
+
+### F. Known Non-Blocking Variability
 
 - Model selector keyboard navigation may be inconsistent in some automation harnesses; mouse selection is acceptable.
 - Index progress metrics can jump or look non-linear depending on existing library/index state.
 - Ungrounded confirm dialog can appear for send actions when PDF grounding is off; accepting it is part of the expected flow.
 - Chat responses can take a few seconds while model/runtime state warms up; avoid early cancellation.
 - Browser `net::ERR_ABORTED` observed immediately after pressing `Cancel` indicates client-side abort, not a confirmed backend failure.
+- On Windows, `Browse...` may stay in `Opening...` until picker timeout; UI recovery + manual `Set Directory` success is PASS for that step.
+
+## 10) Evidence Blocks
+
+Record one block per platform per cycle. Keep prior cycles below as history.
+
+---
+
+### Cycle 1 — Branch: optimization-1.0.9
+
+#### macOS (Mac Mini)
+
+```text
+Platform: macOS (Mac Mini)
+Date/Time:
+Tester:
+Branch/Commit:
+
+Startup/Status:
+API smoke:
+UI smoke:
+Chat:
+PDF-grounded:
+Query wait duration used:
+Upload/Sync:
+Stash/Bibliography:
+Update surface:
+Restart resilience:
+
+Failures:
+- ID:
+- Repro steps:
+- Expected:
+- Actual:
+- Evidence:
+- Severity:
+
+Environment caveats:
+-
+
+Final verdict: PASS | FAIL | BLOCKED
+```
+
+#### Windows (Windows 10 PC)
+
+```text
+Platform: Windows (Windows 10 PC)
+Date/Time:
+Tester:
+Branch/Commit:
+
+Startup/Status:
+API smoke:
+UI smoke:
+Chat:
+PDF-grounded:
+Query wait duration used:
+Upload/Sync:
+Stash/Bibliography:
+Update surface:
+Restart resilience:
+
+Failures:
+- ID:
+- Repro steps:
+- Expected:
+- Actual:
+- Evidence:
+- Severity:
+
+Environment caveats:
+-
+
+Final verdict: PASS | FAIL | BLOCKED
+```
+
+#### Linux (Linux Mint PC)
+
+```text
+Platform: Linux (Linux Mint PC)
+Date/Time:
+Tester:
+Branch/Commit:
+
+Startup/Status:
+API smoke:
+UI smoke:
+Chat:
+PDF-grounded:
+Query wait duration used:
+Upload/Sync:
+Stash/Bibliography:
+Update surface:
+Restart resilience:
+
+Failures:
+- ID:
+- Repro steps:
+- Expected:
+- Actual:
+- Evidence:
+- Severity:
+
+Environment caveats:
+-
+
+Final verdict: PASS | FAIL | BLOCKED
+```
+
+---
+
+### Archive — Prior Cycle (Branch: performance-adjustments / 7ca95f1)
+
+Windows result from 2026-05-27 (different branch, kept for reference):
+
+```text
+Platform: Windows
+Date/Time: 2026-05-27
+Agent: GitHub Copilot (GPT-5.3-Codex)
+Branch/Commit: performance-adjustments / 7ca95f1
+
+Startup/Status: PASS (Ollama running, Web UI running on http://127.0.0.1:8088)
+API smoke: PASS (/api/tags 200, /api/pdf/status 200)
+UI smoke: PASS after full refresh (restart + cache-busting URL)
+Chat: PASS (ungrounded prompt returned "OK")
+PDF-grounded: PASS (response returned with source links)
+Query wait duration used: 90s
+Upload/Sync: PASS (uploaded 1 file; counts updated to docs 10/10, chunks 9171)
+Stash/Bibliography: PASS (stash CRUD + bibliography modal open/close)
+Update surface: PASS (already latest, release notes link present)
+Restart resilience: PASS (stop/start/status successful; post-restart APIs remained 200)
+
+Environment caveats:
+- Browse... directory picker stayed in Opening... until timeout in this automation run.
+- UI recovered with timeout message and manual Set Directory succeeded.
+- /api/pdf/status.source_path reflected the updated path.
+
+Final verdict: PASS
+```
+
+## 11) Exit Criteria
+
+Testing cycle is complete when:
+
+- macOS, Windows, and Linux each have a full evidence block for the current branch
+- no untriaged FAIL items remain
+- any accepted residual issues are explicitly documented with severity and follow-up owner
+- all three final verdicts are PASS

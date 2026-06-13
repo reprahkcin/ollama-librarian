@@ -75,8 +75,8 @@ OLLAMA_HOST=127.0.0.1:11434 ollama serve
 In Terminal #2:
 
 ```bash
-ollama pull qwen2.5:14b
 ollama pull qwen2.5:7b
+ollama pull qwen2.5:3b
 ollama pull nomic-embed-text
 ```
 
