@@ -27,7 +27,7 @@
         <h1 class="title">Ollama Librarian</h1>
         <div class="meta">Endpoint: %OLLAMA_BASE%</div>
         <div id="status" class="status">
-          <div class="status-bubble">
+          <div id="statusBubble" class="status-bubble">
             <span id="statusDot" class="dot" aria-hidden="true"></span>
             <span id="statusMain" class="status-main">Checking service...</span>
           </div>
@@ -94,8 +94,38 @@
           </div>
         </details>
 
-        <section class="sidebar-section" aria-label="PDF processing section">
-          <h3 class="sidebar-section-title">PDF Processing</h3>
+        <section class="sidebar-section" aria-label="Query options">
+          <h3 class="sidebar-section-title">Query Options</h3>
+          <label
+            class="checkrow"
+            for="usePdfLibrary"
+            title="Use retrieval from your indexed document library instead of plain model-only responses."
+          >
+            <input
+              id="usePdfLibrary"
+              type="checkbox"
+              checked
+              title="Use retrieval from your indexed document library instead of plain model-only responses."
+            />
+            Use document library
+          </label>
+          <div id="pdfModeRow" class="checkrow pdf-mode-row">
+            <label for="pdfSearchMode" class="tiny">Mode:</label>
+            <select
+              id="pdfSearchMode"
+              title="Grounded answer: full LLM response grounded in your library. Source map: quick relevancy summary per document, no long response."
+            >
+              <option value="grounded">Grounded answer</option>
+              <option value="sourcemap" selected>Source map</option>
+            </select>
+          </div>
+        </section>
+
+        <section
+          class="sidebar-section"
+          aria-label="Document processing section"
+        >
+          <h3 class="sidebar-section-title">Document Processing</h3>
           <div class="tiny">Library Directory</div>
           <input
             id="pdfSourcePath"
@@ -103,7 +133,7 @@
             type="text"
             spellcheck="false"
             placeholder="/path/to/your/library"
-            title="Directory containing your PDF and document library"
+            title="Directory containing your document library"
           />
           <div class="path-actions">
             <button id="browsePdfSource" class="btn-soft" type="button">
@@ -113,36 +143,13 @@
               Set Directory
             </button>
           </div>
-          <label
-            class="checkrow"
-            for="usePdfLibrary"
-            title="Use retrieval from your indexed PDF library instead of plain model-only responses."
-          >
-            <input
-              id="usePdfLibrary"
-              type="checkbox"
-              checked
-              title="Use retrieval from your indexed PDF library instead of plain model-only responses."
-            />
-            Use PDF library
-          </label>
-          <div id="pdfModeRow" class="checkrow pdf-mode-row">
-            <label for="pdfSearchMode" class="tiny">Mode:</label>
-            <select
-              id="pdfSearchMode"
-              title="Grounded answer: full LLM response grounded in your library. Source map: quick relevancy summary per document, no long response."
-            >
-              <option value="grounded">Grounded answer</option>
-              <option value="sourcemap">Source map</option>
-            </select>
-          </div>
           <button
             id="syncPdfLibrary"
             class="btn-soft"
             type="button"
-            title="Indexes new or changed PDFs. OCR fallback is used for scanned/text-only images when available."
+            title="Indexes new or changed documents in the configured library. OCR fallback is used for scanned/text-only images when available."
           >
-            Sync New PDFs
+            Sync Library
           </button>
           <button
             id="uploadLibraryDocs"
@@ -156,7 +163,9 @@
             Library Docs
           </button>
           <div id="pdfStatus" class="pdf-status-panel">
-            <div id="pdfStatusSummary" class="tiny">PDF index: checking...</div>
+            <div id="pdfStatusSummary" class="tiny">
+              Library index: checking...
+            </div>
             <div id="pdfStatusCounts" class="tiny"></div>
             <div id="pdfStatusTiming" class="tiny"></div>
             <div id="pdfStatusAdaptive" class="tiny"></div>
@@ -256,7 +265,7 @@
               id="makeBibliography"
               class="btn-soft"
               type="button"
-              title="Generates an APA bibliography from the latest PDF-grounded answer and opens bibliography stash."
+              title="Generates an APA bibliography from the latest library-grounded answer and opens bibliography stash."
             >
               Generate Bibliography
             </button>

@@ -43,13 +43,13 @@ For non-technical users, use:
 
 ## Notes
 
-- OCR fallback applies to PDFs.
+- OCR fallback applies to scanned documents (e.g., PDFs).
 - The web UI requires Python 3.10+.
 - Math rendering is fully offline via vendored KaTeX files served from `/assets`.
 - EPUB citations open in an in-app EPUB reader at section-level locations (EPUB does not have universal PDF-style page numbers).
 - You can upload supported documents directly from the sidebar with `Upload Documents`, then sync/index from the same UI.
-- PDF indexing controls, document upload, Library Docs, and the processing dashboard are grouped under a `PDF Processing` sidebar section.
-- You can set or change the library directory directly in the `PDF Processing` section; the app creates the folder if needed and remembers it for future runs.
+- Document indexing controls, document upload, Library Docs, and the processing dashboard are grouped under a `Document Processing` sidebar section.
+- You can set or change the library directory directly in the `Document Processing` section; the app creates the folder if needed and remembers it for future runs.
 - Use `Browse...` to open a folder picker dialog and set the library directory without typing full paths.
 - On Linux, the folder picker requires one of: `zenity`, `kdialog`, or `yad`. If none are installed, use the path field and click `Set Directory`.
 - `App Updates` is in a collapsed-by-default sidebar section for less frequent use.
@@ -59,9 +59,9 @@ For non-technical users, use:
 
 - Current validated release: `v1.0.5`
 - Cross-platform manual validation completed on macOS, Windows, and Linux.
-- Source PDF/EPUB citation links were fixed to open correctly again.
-- PDF source links now resolve cleanly in Chrome/Firefox without CSP frame errors.
-- Added route-level regression coverage for PDF inline serving and source-link route resolution.
+- Source document/EPUB citation links were fixed to open correctly again.
+- Document source links now resolve cleanly in Chrome/Firefox without CSP frame errors.
+- Added route-level regression coverage for document inline serving and source-link route resolution.
 
 ## Security Defaults
 

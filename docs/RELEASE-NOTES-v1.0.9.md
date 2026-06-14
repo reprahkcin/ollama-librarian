@@ -42,7 +42,7 @@ This release adds hardware profile detection with VRAM constraints for discrete 
 
 - Fixed model version inconsistencies in setup guides (standardized to current model tags)
 - Fixed model cache path test isolation to prevent cross-test contamination
-- Fixed status text separator rendering in PDF processing panel
+- Fixed status text separator rendering in document processing panel
 - Fixed template parity between src and scripts directories
 - Added `*.egg-info/` to .gitignore for cleaner repository state
 - Fixed Linux evidence block in manual test plan after hardware profile changes

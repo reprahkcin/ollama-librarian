@@ -623,7 +623,7 @@ textarea {
   border: 1px solid var(--border);
   border-radius: 14px;
   background: linear-gradient(180deg, var(--surface), var(--surface-inset));
-  padding: 0.6rem;
+  padding: 0.45rem;
   display: grid;
   gap: 0.48rem;
 }
@@ -639,6 +639,24 @@ textarea {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 0.4rem;
+}
+
+/* Compact controls for sidebar sections to reduce visual bulk */
+.sidebar-section input.path-input,
+.sidebar-section select,
+.sidebar-section button {
+  padding: 0.42rem 0.5rem;
+  border-radius: 10px;
+  font-size: 0.88rem;
+}
+
+.sidebar-section .btn-soft {
+  padding: 0.38rem 0.5rem;
+  font-weight: 700;
+}
+
+.sidebar-section .path-actions .btn-soft {
+  padding: 0.36rem 0.45rem;
 }
 .checkrow input[type="checkbox"] {
   width: 1rem;

@@ -142,8 +142,8 @@ http://127.0.0.1:8088
 
 From the UI:
 
-1. Enable Use PDF-grounded answers
-2. In `PDF Processing`, confirm or change `Library Directory`:
+1. Enable Use library-grounded answers
+2. In `Document Processing`, confirm or change `Library Directory`:
 
 - Preferred: click `Browse...` and pick a folder
 - Linux picker requirement: install one of `zenity`, `kdialog`, or `yad`
@@ -154,7 +154,7 @@ From the UI:
 - Copying files into your library folder, or
 - Clicking Upload Documents in the sidebar
 
-1. Click Sync New PDFs
+1. Click Sync Library
 1. If needed, click Pause Processing to stop safely mid-run
 1. ETA behavior:
 

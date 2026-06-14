@@ -3636,6 +3636,90 @@ class Handler(BaseHTTPRequestHandler):
             "application/json; charset=utf-8",
         )
 
+    def _handle_post_ollama_stop(self):
+        """Stop Ollama service only (not the web server)."""
+        try:
+            system = platform.system().lower()
+
+            # Stop Ollama process directly
+            if system == "windows":
+                result = subprocess.run(
+                    ["taskkill", "/F", "/IM", "ollama.exe"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+            else:
+                # Use pkill to stop ollama processes
+                result = subprocess.run(
+                    ["pkill", "ollama"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+
+            return self._send(
+                200,
+                json.dumps({
+                    "ok": True,
+                    "action": "stop",
+                    "message": "Ollama service stopped"
+                }),
+                "application/json; charset=utf-8",
+            )
+        except subprocess.TimeoutExpired:
+            return self._send(
+                500,
+                json.dumps({"ok": False, "error": "Stop command timed out"}),
+                "application/json; charset=utf-8",
+            )
+        except Exception as e:
+            return self._send(
+                500,
+                json.dumps({"ok": False, "error": str(e)}),
+                "application/json; charset=utf-8",
+            )
+
+    def _handle_post_ollama_start(self):
+        """Start Ollama service only (not the web server)."""
+        try:
+            system = platform.system().lower()
+
+            # Start Ollama service
+            if system == "windows":
+                # On Windows, start ollama serve in background
+                subprocess.Popen(
+                    ["ollama", "serve"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(
+                        subprocess, 'CREATE_NO_WINDOW') else 0
+                )
+            else:
+                # On Unix, start ollama serve in background
+                subprocess.Popen(
+                    ["ollama", "serve"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True
+                )
+
+            return self._send(
+                200,
+                json.dumps({
+                    "ok": True,
+                    "action": "start",
+                    "message": "Ollama service started"
+                }),
+                "application/json; charset=utf-8",
+            )
+        except Exception as e:
+            return self._send(
+                500,
+                json.dumps({"ok": False, "error": str(e)}),
+                "application/json; charset=utf-8",
+            )
+
     def _handle_post_pdf_ask(self):
         payload = self._read_json_body()
         if payload is None:
@@ -3750,8 +3834,10 @@ class Handler(BaseHTTPRequestHandler):
                 query.strip(),
                 str(model),
                 top_k,
-                include_paths=[str(x) for x in include_paths if isinstance(x, str)],
-                exclude_paths=[str(x) for x in exclude_paths if isinstance(x, str)],
+                include_paths=[str(x)
+                               for x in include_paths if isinstance(x, str)],
+                exclude_paths=[str(x)
+                               for x in exclude_paths if isinstance(x, str)],
             )
             return self._send(
                 200,
@@ -4083,6 +4169,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/pdf/synthesize": lambda: self._handle_post_pdf_synthesize(),
             "/api/library/upload": lambda: self._handle_post_library_upload(parsed_url),
             "/api/stash": lambda: self._handle_post_stash(),
+            "/api/ollama/stop": lambda: self._handle_post_ollama_stop(),
+            "/api/ollama/start": lambda: self._handle_post_ollama_start(),
         }
 
         handler = post_routes.get(route_path)

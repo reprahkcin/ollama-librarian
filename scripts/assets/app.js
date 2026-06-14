@@ -1437,7 +1437,7 @@ function buildDocSelectionError(filters) {
   if (filters.includedChunkCount <= 0) {
     const sample = filters.zeroChunkIncluded.slice(0, 3).join(", ");
     const suffix = filters.zeroChunkIncluded.length > 3 ? ", ..." : "";
-    return `Selected document filter has no indexed text chunks (${sample}${suffix}). Include at least one document with chunks > 0 or OCR/re-index that PDF.`;
+    return `Selected document filter has no indexed text chunks (${sample}${suffix}). Include at least one document with chunks > 0 or OCR/re-index that document.`;
   }
   return "";
 }
@@ -2078,7 +2078,9 @@ function formatSourceMapAnswer(query, sources) {
     }
     lines.push("");
   }
-  lines.push(`${sources.length} source${sources.length !== 1 ? "s" : ""} found.`);
+  lines.push(
+    `${sources.length} source${sources.length !== 1 ? "s" : ""} found.`,
+  );
   return lines.join("\n");
 }
 
@@ -2167,7 +2169,7 @@ async function generateBibliographyFromLatestSources() {
   if (!Array.isArray(lastPdfSources) || !lastPdfSources.length) {
     addMessage(
       "system",
-      "No recent PDF-grounded sources found. Ask with PDF-grounded mode first.",
+      "No recent library-grounded sources found. Ask with library-grounded mode first.",
     );
     return;
   }
@@ -2228,55 +2230,46 @@ function summarizeIndexError(rawError) {
 function buildAdaptiveThrottleLine(data) {
   const adaptive = data && data.adaptive_throttle ? data.adaptive_throttle : {};
   const enabled = Boolean(adaptive.enabled);
-  if (!enabled) return "Adaptive throttle: off";
+  if (!enabled) return "Throttle: off";
 
   const minThreads = Number(adaptive.min_threads || 1);
   const maxThreads = Number(adaptive.max_threads || minThreads);
   const targetMs = Number(adaptive.target_embed_ms || 0);
-  const maxDelayMs = Number(adaptive.max_delay_ms || 0);
 
   const job =
     data && data.index_job && data.index_job.last_result
       ? data.index_job.last_result
       : {};
   const avgEmbedMs = Number(job.dynamic_avg_embed_ms || 0);
-  const finalThreads = Number(job.dynamic_final_embed_num_thread || 0);
-  const finalDelayMs = Number(job.dynamic_final_embed_delay_ms || 0);
   const adjustments = Number(job.dynamic_adjustments || 0);
 
-  const base = `Adaptive throttle: on | threads ${minThreads}-${maxThreads} | target ${targetMs}ms | max delay ${maxDelayMs}ms`;
-  if (!Number.isFinite(adjustments) || adjustments <= 0) {
-    return base;
+  const threadRange =
+    minThreads === maxThreads
+      ? `${minThreads} thread${minThreads === 1 ? "" : "s"}`
+      : `${minThreads}-${maxThreads} threads`;
+  const base = `${threadRange} | target ${targetMs}ms`;
+
+  if (Number.isFinite(avgEmbedMs) && avgEmbedMs > 0 && adjustments > 0) {
+    return `${base} | avg ${Math.round(avgEmbedMs)}ms`;
   }
-  return `${base} | last run avg ${Math.round(avgEmbedMs)}ms, final ${finalThreads} thread(s), ${finalDelayMs}ms delay, ${adjustments} adjustment(s)`;
+  return base;
 }
 
 function buildResourceStateLine(data) {
   const resource = data && data.resource_state ? data.resource_state : {};
   const policy = resource.policy || {};
-  const runtime = resource.runtime || {};
-  const monitor = runtime.monitor || {};
-  const pressure = policy.pressure || resource.pressure || "unknown";
-  const active = Number(runtime.active_generations || 0);
-  const slots = Number(runtime.max_concurrent_generations || 1);
-  const safeMode = runtime.safe_mode === false ? "off" : "on";
-  const monitorText = monitor.enabled
-    ? `monitor ${monitor.last_action || "sampling"}`
-    : "monitor off";
-  return `Resource guard: ${pressure} | safe mode ${safeMode} | active ${active}/${slots} | ${monitorText}`;
+  const pressure = policy.pressure || resource.pressure || "ok";
+
+  // Only show if there's a warning state
+  if (pressure !== "ok") {
+    return `Resource: ${pressure}`;
+  }
+  return null;
 }
 
 function buildModelCacheLine() {
-  const cache =
-    systemProfile && systemProfile.ollama && systemProfile.ollama.model_cache
-      ? systemProfile.ollama.model_cache
-      : null;
-  if (!cache || cache.cached_at === null || cache.cached_at === undefined) {
-    return "Model metadata: uncached";
-  }
-  const age = Number(cache.age_seconds || 0);
-  const ttl = Number(cache.ttl_seconds || 0);
-  return `Model metadata: cached ${Math.round(age)}s ago | ttl ${ttl}s`;
+  // Removed - not useful for end users
+  return null;
 }
 
 function confirmSyncSafety() {
@@ -2377,7 +2370,7 @@ async function refreshPdfStatus() {
       } else {
         syncPdfLibraryEl.dataset.indexAction = "sync";
         syncPdfLibraryEl.disabled = false;
-        syncPdfLibraryEl.textContent = "Sync New PDFs";
+        syncPdfLibraryEl.textContent = "Sync Library";
       }
     }
 
@@ -2426,14 +2419,14 @@ async function refreshPdfStatus() {
       const stateLabel = pauseRequested ? "pausing" : "running";
       if (hasDocTotal) {
         renderPdfStatusPanel(
-          `PDF index: ${stateLabel} (${completionPct}%)`,
+          `Library index: ${stateLabel} (${completionPct}%)`,
           `Docs: ${indexedDocs}/${totalDocs} | Remaining: ${remainingDocs} | Chunks: ${chunks} | +${chunkDelta} chunks this run`,
           `Elapsed: ${Math.ceil(elapsedSec / 60)} min | ${etaText} | ${chunksPerMin}/min`,
           throttleLine,
         );
       } else {
         renderPdfStatusPanel(
-          `PDF index: ${stateLabel}`,
+          `Library index: ${stateLabel}`,
           `Docs indexed: ${indexedDocs} (total unknown) | Chunks: ${chunks} | +${chunkDelta} chunks this run`,
           `Elapsed: ${Math.ceil(elapsedSec / 60)} min | ${chunksPerMin}/min`,
           throttleLine,
@@ -2446,7 +2439,7 @@ async function refreshPdfStatus() {
       const compactError = summarizeIndexError(job.last_error);
       if (hasDocTotal) {
         renderPdfStatusPanel(
-          `PDF index: ${running} (${completionPct}%)`,
+          `Library index: ${running} (${completionPct}%)`,
           `Docs: ${indexedDocs}/${totalDocs} | Remaining: ${remainingDocs} | Chunks: ${chunks}`,
           `Last indexed: ${idx}`,
           throttleLine,
@@ -2454,7 +2447,7 @@ async function refreshPdfStatus() {
         );
       } else {
         renderPdfStatusPanel(
-          `PDF index: ${running}`,
+          `Library index: ${running}`,
           `Docs: ${indexedDocs} | Chunks: ${chunks}`,
           `Last indexed: ${idx}`,
           throttleLine,
@@ -2466,10 +2459,10 @@ async function refreshPdfStatus() {
     pdfProgressEl.classList.add("hidden");
     pdfProgressBarEl.style.width = "0%";
     renderPdfStatusPanel(
-      "PDF index: status error",
+      "Library index: status error",
       "",
       "",
-      "Adaptive throttle: unknown",
+      "Throttle: unknown",
       err.message,
     );
   }
@@ -2703,12 +2696,12 @@ async function pausePdfLibrary() {
       throw new Error((data && data.error) || `HTTP ${res.status}`);
     }
     if (data.paused) {
-      metaEl.textContent = "Pause requested for PDF indexing";
+      metaEl.textContent = "Pause requested for library indexing";
     } else {
       metaEl.textContent = data.message || "Indexing is not currently running";
     }
   } catch (err) {
-    addMessage("system", `Failed to pause PDF sync: ${err.message}`);
+    addMessage("system", `Failed to pause library sync: ${err.message}`);
   } finally {
     refreshPdfStatus();
   }
@@ -2810,12 +2803,10 @@ async function loadModels(forceRefresh = false) {
     modelEl.value = preferred;
     setStatus(
       "ok",
-      recommended
-        ? `Online (${models.length} models, recommended ${recommended}) | ${buildModelCacheLine()}`
-        : `Online (${models.length} models)`,
+      `${models.length} Model${models.length !== 1 ? "s" : ""} Online`,
     );
   } catch (err) {
-    setStatus("err", "Service unreachable");
+    setStatus("err", "0 Models Offline");
     addMessage("system", `Failed to load models: ${err.message}`);
   }
 }
@@ -2848,7 +2839,10 @@ async function loadHistory() {
         lastUserPrompt = text;
       }
       const msgOpts = {};
-      if (Array.isArray(item.citation_entries) && item.citation_entries.length) {
+      if (
+        Array.isArray(item.citation_entries) &&
+        item.citation_entries.length
+      ) {
         msgOpts.citationEntries = item.citation_entries;
         msgOpts.citationQuery =
           typeof item.citation_query === "string" ? item.citation_query : "";
@@ -2878,11 +2872,11 @@ async function sendPrompt() {
 
   if (!usePdfLibrary) {
     const proceedUngrounded = confirm(
-      "Send this query without PDF grounding?\\n\\nThis app is optimized for PDF-grounded answers, and ungrounded queries are usually better handled by general chat tools.",
+      "Send this query without library grounding?\n\nThis app is optimized for library-grounded answers, and ungrounded queries are usually better handled by general chat tools.",
     );
     if (!proceedUngrounded) {
       usePdfLibraryEl.checked = true;
-      metaEl.textContent = "PDF-grounded mode re-enabled";
+      metaEl.textContent = "Library-grounded mode re-enabled";
       return;
     }
   }
@@ -2999,7 +2993,9 @@ async function sendPrompt() {
 
     const elapsedMs = Math.round(performance.now() - start);
     const pdfLabel = usePdfLibrary
-      ? (pdfSearchModeEl.value === "sourcemap" ? " + source map" : " + PDF")
+      ? pdfSearchModeEl.value === "sourcemap"
+        ? " + source map"
+        : " + PDF"
       : "";
     metaEl.textContent = `Model: ${model}${pdfLabel} | ${elapsedMs} ms`;
   } catch (err) {
@@ -3116,7 +3112,7 @@ usePdfLibraryEl.addEventListener("change", () => {
     return;
   }
   const proceedUngrounded = confirm(
-    "Turn off PDF library?\\n\\nOllama Librarian is intended primarily for PDF-grounded research. Continue with ungrounded mode?",
+    "Turn off document library?\n\nOllama Librarian is intended primarily for library-grounded research. Continue with ungrounded mode?",
   );
   if (!proceedUngrounded) {
     usePdfLibraryEl.checked = true;

@@ -244,7 +244,7 @@ A code fix was committed after Cycle 1 completed. Restart the waterfall from Mac
 
 1. Directory picker path set
 
-- Action: in `PDF Processing`, click `Browse...` and choose a folder
+- Action: in `Document Processing`, click `Browse...` and choose a folder
 - Expected:
   - path field updates to selected folder
   - status/meta confirms directory update
