@@ -21,6 +21,13 @@ from typing import Mapping
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from ollama_librarian.hardware import (
+    classify_resource_pressure,
+    detect_hardware_profile,
+    recommend_model,
+    safety_policy_for_pressure,
+)
+
 try:
     from pypdf import PdfReader
 except Exception:
@@ -352,6 +359,8 @@ class RagCliConfig:
     web_host: str = "127.0.0.1"
     web_port: int = 8088
     ask_answer_timeout: int = 600
+    answer_num_thread: int = 0
+    answer_keep_alive: str = "60s"
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "RagCliConfig":
@@ -395,6 +404,10 @@ class RagCliConfig:
                 env, "OLLAMA_WEB_PDF_DYNAMIC_MAX_THREADS", 3)),
             web_host=str(env.get("OLLAMA_WEB_HOST", "127.0.0.1")).strip(),
             web_port=max(1, _env_int(env, "OLLAMA_WEB_PORT", 8088)),
+            answer_num_thread=max(0, _env_int(
+                env, "OLLAMA_WEB_ANSWER_NUM_THREAD", 0)),
+            answer_keep_alive=str(
+                env.get("OLLAMA_WEB_ANSWER_KEEP_ALIVE", "60s")),
         )
 
 
@@ -534,16 +547,29 @@ def embed_text(base_url: str, model: str, text: str, num_thread: int = 3) -> lis
     raise RuntimeError("Unexpected embedding response format from Ollama")
 
 
-def generate_answer(base_url: str, model: str, prompt: str, timeout: int = 180) -> str:
+def generate_answer(
+    base_url: str,
+    model: str,
+    prompt: str,
+    timeout: int = 180,
+    num_thread: int = 0,
+    keep_alive: str = "60s",
+    format: str | None = None,
+) -> str:
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        "keep_alive": str(keep_alive or "60s"),
+    }
+    if int(num_thread or 0) > 0:
+        payload["options"] = {"num_thread": max(1, int(num_thread))}
+    if format:
+        payload["format"] = format
     data = http_post_json(
         base_url,
         "/api/generate",
-        {
-            "model": model,
-            "prompt": prompt,
-            "stream": False,
-            "keep_alive": "60s",
-        },
+        payload,
         timeout=timeout,
     )
     return str(data.get("response", "")).strip()
@@ -1082,6 +1108,37 @@ def index_command(args) -> int:
     removed = 0
     conn.commit()
     if args.prune:
+        # Safety check: verify all indexed documents are under current source directory
+        source_realpath = os.path.realpath(os.path.expanduser(args.source))
+        all_indexed_docs = conn.execute(
+            "SELECT id, path FROM documents").fetchall()
+
+        mismatched_paths = []
+        for doc_id, doc_path in all_indexed_docs:
+            doc_realpath = os.path.realpath(os.path.expanduser(doc_path))
+            try:
+                doc_is_under_source = (
+                    os.path.commonpath([doc_realpath, source_realpath])
+                    == source_realpath
+                )
+            except ValueError:
+                # Raised on Windows when paths are on different drives
+                doc_is_under_source = False
+            if not doc_is_under_source:
+                mismatched_paths.append(doc_path)
+
+        if mismatched_paths:
+            # Path mismatch detected - refuse to prune to prevent accidental deletions
+            error_msg = (
+                f"SAFETY CHECK FAILED: {len(mismatched_paths)} indexed documents "
+                f"are outside current source directory '{args.source}'. "
+                f"Refusing to prune to prevent data loss. "
+                f"First mismatched path: {mismatched_paths[0]}"
+            )
+            print(f"[ERROR] {error_msg}", file=sys.stderr)
+            raise RuntimeError(error_msg)
+
+        # Safe to prune - all indexed docs are under current source
         rows = conn.execute("SELECT id, path FROM documents").fetchall()
         for doc_id, path in rows:
             if path not in seen_paths:
@@ -1555,6 +1612,8 @@ def ask_command(args) -> int:
         args.answer_model,
         prompt,
         timeout=max(1, int(getattr(args, "answer_timeout", 180))),
+        num_thread=max(0, int(getattr(args, "answer_num_thread", 0) or 0)),
+        keep_alive=str(getattr(args, "answer_keep_alive", "60s") or "60s"),
     )
     metadata_map = load_document_metadata_map(
         conn, [path for _, path, _, _ in top])
@@ -1593,6 +1652,146 @@ def ask_command(args) -> int:
     print("\nSources:")
     for score, path, page, _ in top:
         print(f"- {path} (page {page}, score={score:.4f})")
+    return 0
+
+
+def build_synthesize_prompt(query: str, sources: list[dict]) -> str:
+    lines = [
+        "You are a research assistant. For each source document below, write exactly ONE sentence "
+        "explaining how it is relevant to the query.\n",
+        f"Query: {query}\n",
+        "Source documents:",
+    ]
+    for src in sources:
+        excerpt = str(src.get("excerpt", "")).strip().replace("\n", " ")
+        if len(excerpt) > 350:
+            excerpt = excerpt[:350] + "…"
+        lines.append(
+            f"\n[{src['citation_id']}] {src['path']} (loc {src['location']}, score {src['score']:.3f})\n"
+            f"Excerpt: {excerpt}"
+        )
+    cid_list = ", ".join(src["citation_id"] for src in sources)
+    lines.append(
+        f'\n\nRespond with one line per source in exactly this format — the citation ID, a colon, then one sentence:\n'
+        f'{sources[0]["citation_id"]}: This source is relevant because...\n'
+        f'Output lines for: {cid_list}\nNo other text.'
+    )
+    return "\n".join(lines)
+
+
+def synthesize_command(args) -> int:
+    index_db = Path(args.index_db).expanduser()
+    if not index_db.exists():
+        if getattr(args, "json_output", False):
+            print(json.dumps({
+                "ok": False,
+                "sources": [],
+                "error": f"Index DB not found: {index_db}",
+            }, ensure_ascii=True))
+            return 0
+        print(f"Index DB not found: {index_db}", file=sys.stderr)
+        return 1
+
+    conn = open_index_db(index_db)
+    q_emb = embed_text(
+        args.ollama_base,
+        args.embed_model,
+        args.query,
+        num_thread=args.embed_num_thread,
+    )
+    include_paths = {
+        str(p).strip()
+        for p in getattr(args, "include_path", [])
+        if isinstance(p, str) and str(p).strip()
+    }
+    exclude_paths = {
+        str(p).strip()
+        for p in getattr(args, "exclude_path", [])
+        if isinstance(p, str) and str(p).strip()
+    }
+    top = retrieve_top_chunks_filtered(
+        conn,
+        q_emb,
+        args.top_k,
+        args.query,
+        include_paths if include_paths else None,
+        exclude_paths if exclude_paths else None,
+    )
+
+    if not top:
+        payload = {"ok": False, "sources": [], "error": "No indexed chunks found."}
+        if getattr(args, "json_output", False):
+            print(json.dumps(payload, ensure_ascii=True))
+            return 0
+        print("No indexed chunks found.")
+        return 0
+
+    # One best chunk per unique document path
+    seen_paths: set[str] = set()
+    unique_sources: list[dict] = []
+    for score, path, page, text in top:
+        if path not in seen_paths:
+            seen_paths.add(path)
+            unique_sources.append({
+                "citation_id": f"c{len(unique_sources) + 1}",
+                "path": path,
+                "location": page,
+                "score": score,
+                "excerpt": text,
+            })
+
+    prompt = build_synthesize_prompt(args.query, unique_sources)
+    raw_answer = generate_answer(
+        args.ollama_base,
+        args.answer_model,
+        prompt,
+        timeout=max(1, int(getattr(args, "answer_timeout", 90))),
+        num_thread=max(0, int(getattr(args, "answer_num_thread", 0) or 0)),
+        keep_alive=str(getattr(args, "answer_keep_alive", "15s") or "15s"),
+    )
+    print(f"[synthesize] raw_answer: {raw_answer!r}", file=sys.stderr)
+
+    # Parse "cX: sentence" lines — robust against any model output style.
+    relevancy_map: dict[str, str] = {}
+    for line in raw_answer.splitlines():
+        line = line.strip().lstrip("-•*# ")
+        m = re.match(r'^\[?(c\d+)\]?\s*[:\-]\s*(.+)$', line, re.IGNORECASE)
+        if m:
+            cid = m.group(1).lower()
+            rel = m.group(2).strip().rstrip(".")
+            if cid and rel:
+                relevancy_map[cid] = rel + "."
+
+    metadata_map = load_document_metadata_map(conn, list(seen_paths))
+    sources = []
+    for src in unique_sources:
+        path = src["path"]
+        meta = metadata_map.get(path) or {}
+        suffix = Path(path).suffix.lower()
+        sources.append({
+            "citation_id": src["citation_id"],
+            "path": path,
+            "doc_type": suffix.lstrip("."),
+            "title": meta.get("title", ""),
+            "authors": meta.get("authors", []),
+            "year": meta.get("year", ""),
+            "location": src["location"],
+            "location_type": "page" if suffix == ".pdf" else "section",
+            "score": src["score"],
+            "relevancy": relevancy_map.get(src["citation_id"], ""),
+        })
+
+    if getattr(args, "json_output", False):
+        print(json.dumps({"ok": True, "sources": sources}, ensure_ascii=True))
+        return 0
+
+    print(f'Source map for: "{args.query}"\n')
+    for src in sources:
+        label = src.get("title") or Path(src["path"]).name
+        print(f"• {label} (loc {src['location']}, score={src['score']:.3f})")
+        if src.get("relevancy"):
+            print(f"  → {src['relevancy']}")
+        print()
     return 0
 
 
@@ -1866,6 +2065,83 @@ def _doctor_check_ollama_and_models(base_url: str, required_models: list[str], t
     return checks
 
 
+def _doctor_check_hardware_profile() -> dict:
+    try:
+        hardware = detect_hardware_profile()
+        pressure = classify_resource_pressure(hardware)
+        policy = safety_policy_for_pressure(pressure)
+    except Exception as exc:
+        return _doctor_result(
+            "hardware_profile",
+            False,
+            f"Hardware profile detection failed: {exc}",
+        )
+
+    total_gb = hardware.to_dict().get("total_memory_gb")
+    available_gb = hardware.to_dict().get("available_memory_gb")
+    return _doctor_result(
+        "hardware_profile",
+        True,
+        (
+            f"Detected {hardware.os_name}/{hardware.machine}; "
+            f"cpu={hardware.cpu_count}; memory={total_gb}GB total, "
+            f"{available_gb}GB available; pressure={pressure}; "
+            f"safe action={policy.get('message', '')}"
+        ),
+    )
+
+
+def _doctor_check_model_recommendation(available_models: list[str]) -> dict:
+    if not available_models:
+        return _doctor_result(
+            "model_fit_recommendation",
+            True,
+            "Model fit recommendation skipped because no Ollama models were discovered",
+        )
+    try:
+        hardware = detect_hardware_profile()
+        recommendation = recommend_model(available_models, hardware)
+    except Exception as exc:
+        return _doctor_result(
+            "model_fit_recommendation",
+            False,
+            f"Model fit recommendation failed: {exc}",
+        )
+
+    recommended = str(recommendation.get("recommended_model") or "").strip()
+    if not recommended:
+        return _doctor_result(
+            "model_fit_recommendation",
+            False,
+            "No chat model recommendation is available; install a non-embedding model",
+        )
+
+    unsafe = [
+        str(item.get("name"))
+        for item in recommendation.get("models", [])
+        if isinstance(item, dict) and str(item.get("safety")) == "unsafe"
+    ]
+    caution = [
+        str(item.get("name"))
+        for item in recommendation.get("models", [])
+        if isinstance(item, dict) and str(item.get("safety")) == "caution"
+    ]
+    details = [
+        f"Recommended model: {recommended}",
+        f"reason={recommendation.get('reason', '')}",
+        f"safe_budget={recommendation.get('safe_budget_gb')}GB",
+    ]
+    if caution:
+        details.append(f"caution={', '.join(caution)}")
+    if unsafe:
+        details.append(f"unsafe={', '.join(unsafe)}")
+    return _doctor_result(
+        "model_fit_recommendation",
+        True,
+        "; ".join(details),
+    )
+
+
 def _doctor_check_index_db_writable(index_db: str) -> dict:
     path = Path(index_db).expanduser()
     parent = path.parent
@@ -1958,6 +2234,13 @@ def doctor_command(args) -> int:
     checks.extend(_doctor_check_dependency_imports())
     checks.extend(_doctor_check_ollama_and_models(
         args.ollama_base, required_models, timeout=args.timeout))
+    checks.append(_doctor_check_hardware_profile())
+    try:
+        discovered_models = _fetch_ollama_model_names(
+            args.ollama_base, timeout=args.timeout)
+    except Exception:
+        discovered_models = []
+    checks.append(_doctor_check_model_recommendation(discovered_models))
     checks.append(_doctor_check_index_db_writable(args.index_db))
     checks.append(_doctor_check_source_dir(args.source))
     checks.append(_doctor_check_port_available(args.web_host, args.web_port))
@@ -2075,6 +2358,17 @@ def build_parser(config: RagCliConfig | None = None):
         default=resolved.index_db,
         help="Local sqlite index path",
     )
+    parser.add_argument(
+        "--answer-num-thread",
+        type=int,
+        default=resolved.answer_num_thread,
+        help="Optional thread cap for answer generation calls; 0 lets Ollama choose",
+    )
+    parser.add_argument(
+        "--answer-keep-alive",
+        default=resolved.answer_keep_alive,
+        help="Ollama keep_alive value for answer generation calls",
+    )
 
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -2156,6 +2450,32 @@ def build_parser(config: RagCliConfig | None = None):
         action="store_true",
         help="Include retrieval score-component trace in JSON output",
     )
+
+    p_synthesize = sub.add_parser(
+        "synthesize", help="Map relevant source documents with one-sentence relevancy summaries")
+    p_synthesize.add_argument("--query", required=True)
+    p_synthesize.add_argument("--top-k", type=int, default=resolved.ask_top_k)
+    p_synthesize.add_argument("--answer-model", default="qwen2.5:14b")
+    p_synthesize.add_argument(
+        "--answer-timeout",
+        type=int,
+        default=90,
+        help="Network timeout in seconds for the synthesis LLM call",
+    )
+    p_synthesize.add_argument(
+        "--include-path",
+        action="append",
+        default=[],
+        help="Only include chunks from this exact document path (repeatable)",
+    )
+    p_synthesize.add_argument(
+        "--exclude-path",
+        action="append",
+        default=[],
+        help="Exclude chunks from this exact document path (repeatable)",
+    )
+    p_synthesize.add_argument("--json-output", action="store_true",
+                              help="Print JSON source map payload")
 
     sub.add_parser("status", help="Print JSON index status")
 
@@ -2243,6 +2563,8 @@ def main() -> int:
         return search_command(args)
     if args.cmd == "ask":
         return ask_command(args)
+    if args.cmd == "synthesize":
+        return synthesize_command(args)
     if args.cmd == "status":
         return status_command(args)
     if args.cmd == "verify":

@@ -107,6 +107,30 @@ Content/index paths and OCR:
 - `OLLAMA_WEB_PDF_DYNAMIC_MIN_THREADS` (default: `1`; lower bound for adaptive embed threads)
 - `OLLAMA_WEB_PDF_DYNAMIC_MAX_THREADS` (default: `3`; upper bound for adaptive embed threads)
 
+Hardware safety and model selection:
+
+- `OLLAMA_WEB_SAFE_MODE` (default: `1`; enables hardware-aware recommendations, one-heavy-query-at-a-time admission control, and safer indexing defaults under pressure)
+- `OLLAMA_WEB_ALLOW_UNSAFE_MODEL` (default: `0`; when `0`, blocks models classified as unsafe for the detected memory budget)
+- `OLLAMA_WEB_MAX_CONCURRENT_GENERATIONS` (default: `1`; upper bound for simultaneous heavy `/api/generate` and `/api/pdf/ask` work)
+- `OLLAMA_WEB_FORCE_PRESSURE` (default: empty; optional manual test override: `ok`, `warm`, `throttled`, or `critical`)
+- `OLLAMA_WEB_ANSWER_KEEP_ALIVE` (default: `60s`; normal Ollama model residency after answer generation)
+- `OLLAMA_WEB_SAFE_ANSWER_KEEP_ALIVE` (default: `15s`; shorter model residency used when safe mode detects warm/throttled pressure)
+- `OLLAMA_WEB_RESOURCE_MONITOR` (default: `1`; enables a background pressure monitor while the web app is running)
+- `OLLAMA_WEB_RESOURCE_MONITOR_POLL_SECONDS` (default: `5`; monitor sampling interval)
+- `OLLAMA_WEB_RESOURCE_MONITOR_CRITICAL_SAMPLES` (default: `2`; sustained critical samples required before the monitor pauses an active index job)
+- `OLLAMA_WEB_MODEL_CACHE_SECONDS` (default: `60`; in-memory and persisted Ollama model metadata cache TTL)
+
+The safety APIs are available at `/api/system/profile` and `/api/system/health`. The profile includes detected hardware, installed-model safety labels, the recommended model, current pressure, and monitor state. Time is treated as less important than stability: under pressure the app lowers thread counts, increases delays/cooldowns, and may pause indexing instead of pushing the machine harder.
+
+Model metadata discovered from Ollama `/api/tags` and `/api/show` is cached in memory and persisted as `model-cache.json` under the app state directory. Use the UI Refresh button or `/api/system/profile?refresh=1` after installing/removing models to bypass the cache immediately.
+
+For manual safety validation, start the web app with `OLLAMA_WEB_FORCE_PRESSURE=throttled` or `OLLAMA_WEB_FORCE_PRESSURE=critical` to exercise throttled/blocked behavior without stressing the machine. Leave it empty for normal hardware-based pressure detection.
+
+Hardware-aware preflight:
+
+- `scripts/pdf_library_rag.py doctor --json-output` reports dependency health, Ollama reachability, required model availability, detected hardware, current pressure, and the recommended installed chat model for the machine.
+- Use the doctor output before long syncs or after changing installed Ollama models; it is designed to surface unsafe large-model choices before the web app is put under sustained load.
+
 Updater behavior:
 
 - `OLLAMA_WEB_UPDATE_REPO_OWNER` (default: `reprahkcin`)

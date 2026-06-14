@@ -72,8 +72,8 @@ ollama serve
 In PowerShell #2:
 
 ```powershell
-ollama pull qwen2.5:14b
 ollama pull qwen2.5:7b
+ollama pull qwen2.5:3b
 ollama pull nomic-embed-text
 ```
 

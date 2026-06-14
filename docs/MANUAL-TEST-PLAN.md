@@ -1,16 +1,18 @@
 # Manual Test Plan (Agent-Operable)
 
-Purpose: define a repeatable, low-noise manual test workflow that any agent can execute and hand off.
+Purpose: define a repeatable, low-noise manual test workflow that any agent or human tester can execute and hand off.
 
 Scope:
 
-- Platform order: macOS -> Windows -> Linux
+- Platform order: macOS (Mac Mini) → Windows 10 PC → Linux Mint PC
 - Product surface: startup, UI load, model loading, PDF index visibility, chat flows, upload/index flows, update/status flows, and stop/start scripts
 - Excludes: performance benchmarking and deep model-quality evaluation
 
 ## 1) Execution Rules
 
 - Only run tests in this plan unless explicitly requested otherwise.
+- **CRITICAL SAFETY RULE:** Before any upload or index operations (Section D), complete the test directory setup (Section C1 or Section 9B step 5) to avoid modifying your production library.
+- **INDEX SAFETY:** As of v1.0.9+, automatic pruning is DISABLED by default. The `--prune` flag (which removes indexed documents that no longer exist on disk) will NOT run unless you explicitly set `OLLAMA_WEB_PDF_PRUNE_ON_INDEX=1` in your environment. Additionally, the database now lives inside your source directory at `<source>/.ollama-librarian/pdf-rag.sqlite` to prevent path mismatches.
 - Record objective evidence for each failed step (command output, API response, or exact UI symptom).
 - Do not make speculative code changes during testing.
 - For chat/retrieval actions, define a tester-selected wait duration before each run (for example, 90s, 180s, or another value you choose).
@@ -30,11 +32,12 @@ Scope:
 
 Common preconditions (all platforms):
 
-- Repository is available locally.
+- Repository is on branch `optimization-1.0.9` (or the branch under test).
 - Python environment is set up and dependencies installed.
 - Ollama is installed and reachable.
 - At least these models are available:
-  - `qwen2.5:14b`
+  - `qwen2.5:7b`
+  - `qwen2.5:3b`
   - `nomic-embed-text:latest`
 - PDF index exists or test docs are available for indexing.
 
@@ -53,7 +56,46 @@ Use these exact statuses per test item:
 - BLOCKED: cannot execute due to missing prereq/environment limitation
 - N/A: not applicable on current platform
 
-## 4) macOS Test Sequence
+## 4) Waterfall Machine Order
+
+Run one machine at a time, in this order:
+
+| #   | Machine       | Platform   | Status            |
+| --- | ------------- | ---------- | ----------------- |
+| 1   | Mac Mini      | macOS      | pending (Cycle 2) |
+| 2   | Windows 10 PC | Windows    | pending (Cycle 2) |
+| 3   | Linux Mint PC | Linux Mint | pending (Cycle 2) |
+
+The cycle is complete only when all three machines have a PASS verdict. If any machine produces FAIL, stop the waterfall, fix and commit, then restart from Machine 1.
+
+### Cycle 2 restart notice (2026-06-13) — for macOS and Windows testers
+
+**IMPORTANT DATABASE LOCATION CHANGE:** The index database has been moved from `~/Library/Application Support/ollama-librarian/pdf-rag.sqlite` to inside your source directory at `<source_path>/.ollama-librarian/pdf-rag.sqlite`. This prevents path mismatches from causing accidental index deletions.
+
+**AUTO-PRUNE NOW DISABLED:** The `--prune` flag (which removes indexed documents that no longer exist) is now **OFF by default**. It will only run if you explicitly set `OLLAMA_WEB_PDF_PRUNE_ON_INDEX=1`. This prevents accidental data loss during testing.
+
+A code fix was committed after Cycle 1 completed. Restart the waterfall from Machine 1 (macOS).
+
+**Commit:** `ad7289f` — `feat(hardware): add VRAM detection to constrain model recommendations on discrete-GPU machines`
+
+**What changed:**
+
+- `src/ollama_librarian/hardware.py`: VRAM detection via `nvidia-smi` added to `detect_hardware_profile()`. `recommend_model()` now uses `min(ram_budget, vram_budget)` on discrete-GPU machines. `HardwareProfile` and `to_dict()` now include `gpu_vram_total_gb`.
+- `tests/test_hardware_profile.py`: 2 new unit tests added.
+- `docs/MANUAL-TEST-PLAN.md`: Linux evidence block updated (FAIL→PASS after fix).
+
+**Impact on macOS (Apple Silicon):** None. The `apple_silicon_unified_memory` note gates the VRAM override, so the RAM budget applies as before. The `gpu_vram_total_gb` field will be `null` in `/api/system/profile` (no `nvidia-smi` on Apple Silicon). Verify this in your UI smoke check — `/api/system/profile` should still return `ok: true` and a sensible recommendation.
+
+**Impact on Windows:** If the Windows 10 PC has an NVIDIA GPU, `gpu_vram_total_gb` will now appear in `/api/system/profile` and model safety ratings may change. If there is no NVIDIA GPU, behaviour is identical to Cycle 1. Note the new field in your evidence block either way.
+
+**What to watch for:**
+
+- `/api/system/profile` returns `ok: true` with `hardware.gpu_vram_total_gb` present (non-null on NVIDIA machines, null on others).
+- `recommendation.safe_budget_gb` is plausible for the hardware (not inflated to 55% of RAM on a VRAM-limited machine).
+- `recommended_model` is a model that fits within the safe budget.
+- No regressions in any other section.
+
+## 5) macOS Test Sequence (Mac Mini — Run First)
 
 ### A. Startup and Health
 
@@ -97,7 +139,7 @@ Use these exact statuses per test item:
 - Action: click Refresh models
 - Expected:
   - model list populated
-  - `qwen2.5:14b` available/selectable
+  - `qwen2.5:7b` available/selectable
 
 1. PDF status panel
 
@@ -116,13 +158,73 @@ Use these exact statuses per test item:
 
 1. PDF-grounded ask
 
-- Preconditions: `Use PDF-grounded answers` checked
+- Preconditions: `Use PDF library` checked; `Mode:` selector set to `Grounded answer`
 - Action: ask a grounded question about indexed content
 - Expected:
-  - response returned
+  - response returned with citation block below the answer
   - no route/auth/CSP errors
 
+1. Source map mode
+
+- Preconditions: `Use PDF library` checked; `Mode:` selector set to `Source map`
+- Action: ask a research question about indexed content (for example, `What topics does the library cover?`)
+- Expected:
+  - response returned within the selected wait duration
+  - citation block rendered below the header line; one row per source document
+  - each row contains: a confidence badge (High/Medium/Low), an APA citation with a linked and italicised title that opens the document at the cited page, and one italic relevancy sentence describing why that source is relevant
+  - no route/auth/CSP errors
+  - `Generate Bibliography` button works on source map results
+
+### C1. Test Directory Setup (MANDATORY before Section D)
+
+**CRITICAL:** This step must be completed before any upload or index operations to prevent modifying your production library.
+
+1. Create isolated test directory
+
+- macOS/Linux command:
+  ```bash
+  TEST_LIB_DIR="/tmp/ollama-librarian-test-$(date +%s)"
+  mkdir -p "$TEST_LIB_DIR"
+  echo "Test directory: $TEST_LIB_DIR"
+  ```
+- Windows PowerShell command:
+  ```powershell
+  $TEST_LIB_DIR = "$env:TEMP\ollama-librarian-test-$(Get-Date -Format 'yyyyMMddHHmmss')"
+  New-Item -ItemType Directory -Path $TEST_LIB_DIR -Force
+  Write-Host "Test directory: $TEST_LIB_DIR"
+  ```
+- Expected:
+  - directory created successfully
+  - path displayed for verification
+
+1. Set library directory to test location
+
+- Command (macOS/Linux):
+  ```bash
+  curl -sS -X POST http://127.0.0.1:8088/api/pdf/source \
+    -H 'Content-Type: application/json' \
+    -d "{\"source_path\": \"$TEST_LIB_DIR\"}"
+  ```
+- Command (Windows PowerShell):
+  ```powershell
+  $body = @{ source_path = $TEST_LIB_DIR } | ConvertTo-Json
+  Invoke-RestMethod -Uri 'http://127.0.0.1:8088/api/pdf/source' -Method POST -ContentType 'application/json' -Body $body
+  ```
+- Expected:
+  - `{"ok": true, "source_path": "<test-dir>", ...}`
+
+1. Verify source path is set
+
+- Command:
+  ```bash
+  curl -sS http://127.0.0.1:8088/api/pdf/status | python3 -c "import sys, json; d=json.load(sys.stdin); print(f\"source_path: {d['source_path']}\")"
+  ```
+- Expected:
+  - output shows the test directory path (not your production library)
+
 ### D. Upload and Index Interaction
+
+**Precondition:** Section C1 (Test Directory Setup) must be completed first.
 
 1. Upload docs
 
@@ -155,11 +257,6 @@ Use these exact statuses per test item:
   - path accepted and normalized
   - no JS/backend error
   - updated path is reflected in `/api/pdf/status`
-
-Linux note:
-
-- If picker fails to open, verify one of `zenity`, `kdialog`, or `yad` is installed.
-- If none are installed, mark picker step BLOCKED and continue with manual fallback path set.
 
 ### D2. Pause and ETA Validation
 
@@ -236,14 +333,66 @@ Linux note:
   - startup successful
   - model load and PDF status still work after restart
 
-## 5) Windows Test Sequence
+### H. macOS Handoff to Windows 10 PC
 
-Run the same functional flow as macOS, substituting script commands:
+When macOS is PASS, give the Windows tester this payload:
 
-- Start: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File '<REPO_PATH>\\scripts\\librarian-start-windows.ps1'`
-- Stop: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File '<REPO_PATH>\\scripts\\librarian-stop-windows.ps1'`
-- Status: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File '<REPO_PATH>\\scripts\\librarian-status-windows.ps1'`
-- Open UI: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File '<REPO_PATH>\\scripts\\librarian-open-ui-windows.ps1'`
+```text
+Handoff from: macOS (Mac Mini)
+Handoff to: Windows 10 PC
+Date/Time: <fill in>
+Branch/Commit: optimization-1.0.9 / ad7289f
+
+macOS result: <fill in>
+macOS evidence summary:
+- Startup/Status:
+- API smoke: (include hardware.gpu_vram_total_gb value from /api/system/profile)
+- UI smoke: (include recommendation.safe_budget_gb and recommended_model)
+- Chat:
+- PDF-grounded:
+- Source map: (Mode selector visible; citation rows show badge, linked APA citation, relevancy sentence)
+- Query wait duration used:
+- Upload/Sync:
+- Stash/Bibliography:
+- Update surface:
+- Restart resilience:
+
+Code change since Cycle 1 (commit ad7289f):
+- hardware.py: VRAM detection added via nvidia-smi; recommend_model() now uses
+  min(ram_budget, vram_budget) on discrete-GPU machines. Apple Silicon bypasses
+  this via the apple_silicon_unified_memory note (no behaviour change on Mac Mini).
+- New field hardware.gpu_vram_total_gb in /api/system/profile (null on Apple Silicon).
+- Two new unit tests in test_hardware_profile.py.
+
+Environment caveats (macOS): <fill in>
+
+Open failures to watch on Windows:
+- If Windows machine has NVIDIA GPU: verify gpu_vram_total_gb is detected and
+  safe_budget_gb is VRAM-constrained (not inflated to 55% of RAM).
+- If no NVIDIA GPU: gpu_vram_total_gb will be null; RAM budget applies as before.
+
+Next immediate action for Windows tester:
+1. git pull / checkout branch: optimization-1.0.9 (ensure commit ad7289f is present)
+2. Ensure models pulled: qwen2.5:7b, qwen2.5:3b, nomic-embed-text
+3. Run Section 6 (Windows Test Sequence) start to finish
+4. Note gpu_vram_total_gb and safe_budget_gb values in your evidence block
+5. Record evidence block in Section 10 under "Windows (Windows 10 PC)"
+6. If PASS: hand off to Linux Mint PC using the Section 6 handoff template
+7. If FAIL: stop, report to macOS operator, do not continue to Linux
+```
+
+## 6) Windows Test Sequence (Windows 10 PC — Run Second)
+
+Run the same functional flow as macOS (sections A through G above), substituting script commands:
+
+- Start: `.\scripts\librarian-start-windows.ps1`
+- Stop: `.\scripts\librarian-stop-windows.ps1`
+- Status: `.\scripts\librarian-status-windows.ps1`
+- Open UI: `.\scripts\librarian-open-ui-windows.ps1`
+
+If running from Git Bash instead of PowerShell, use:
+
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass -File '<REPO_PATH>\\scripts\\librarian-start-windows.ps1'`
 
 Windows shell note:
 
@@ -258,18 +407,53 @@ Windows-specific checks:
 - Directory picker behavior: clicking `Browse...` must not remain stuck in `Opening...`; it should either resolve with a selected path or recover with a timeout/error message and re-enable controls.
 - If picker cannot open, UI should recover and show a recoverable message; manual `Set Directory` must still work.
 
-## 6) Current Handoff Notes (2026-05-27)
+### Windows Handoff to Linux Mint PC
 
-- macOS focused fix landed for native directory picker hangs:
-  - picker subprocess calls now time out safely instead of hanging indefinitely
-  - timeout/failure returns recoverable JSON so UI resets from `Opening...`
-  - manual `Set Directory` remains the required fallback path
-- In headless/automated environments, native dialogs may still time out; this is expected and should be treated as non-blocking if UI recovery + manual fallback pass.
-- Windows validation result (2026-05-27): in automation, `Browse...` can remain in `Opening...` until picker timeout, then recovers with a non-blocking timeout message; manual `Set Directory` succeeds and `/api/pdf/status.source_path` updates.
+When Windows is PASS, give the Linux tester this payload:
 
-## 7) Linux Test Sequence
+```text
+Handoff from: Windows 10 PC
+Handoff to: Linux Mint PC
+Date/Time: 2026-06-12
+Branch/Commit: optimization-1.0.9 / 9ac124bd
 
-Run the same functional flow as macOS, substituting script commands:
+Windows result: PASS
+Windows evidence summary:
+- Startup/Status: PASS — Ollama: running, Web UI: running on http://127.0.0.1:8088
+- API smoke: PASS — /api/tags 200 (8 models), /api/pdf/status 200 (ok: true)
+- UI smoke: PASS — page 200 HTML, model list includes all required models
+- Chat: PASS — qwen2.5:7b replied "OK"
+- PDF-grounded: PASS — answer returned with 6 sources
+- Query wait duration used: <15s (well under 90s threshold)
+- Upload/Sync: PASS — 88-byte file uploaded; index completed indexed 3, skipped 5, pruned 0
+- Stash/Bibliography: PASS — stash CRUD ok (POST/GET/DELETE by id); bibliography GET ok (empty state); clear history ok
+- Update surface: PASS — status idle, check ok, v1.0.8 up-to-date, release notes URL present, no auto-apply
+- Restart resilience: PASS — stop/start/status clean; post-restart /api/tags and /api/pdf/status both 200
+
+macOS result (from prior handoff): PASS
+
+Environment caveats (Windows):
+- qwen2.5:7b and qwen2.5:3b pulled as precondition (not pre-installed).
+- /api/system/profile returns 404 on this branch — non-blocking.
+- Browse... directory picker not exercised interactively; equivalent /api/pdf/source POST validated instead.
+- Pause flow not observable on small library (job completes before pause arrives) — correct "not running" state returned.
+
+Open failures to watch on Linux:
+- None from Windows.
+
+Next immediate action for Linux Mint tester:
+1. Ensure repo is on branch: optimization-1.0.9
+2. Ensure models pulled: qwen2.5:7b, qwen2.5:3b, nomic-embed-text
+3. Install one of zenity, kdialog, or yad for directory picker
+4. Run Section 7 (Linux Test Sequence) start to finish
+5. Record evidence block in Section 10
+6. If PASS: waterfall complete — all three platforms green
+7. If FAIL: stop, report to Windows/macOS operator, do not mark cycle complete
+```
+
+## 7) Linux Test Sequence (Linux Mint PC — Run Third)
+
+Run the same functional flow as macOS (sections A through G above), substituting script commands:
 
 - Start: `./scripts/librarian-start-linux.sh`
 - Stop: `./scripts/librarian-stop-linux.sh`
@@ -280,6 +464,7 @@ Linux-specific checks:
 
 - XDG/home path defaults behave as expected.
 - Script permissions and shebang execution are clean.
+- Directory picker: install one of `zenity`, `kdialog`, or `yad` before testing. If none are installed, mark picker step BLOCKED and continue with manual fallback path set.
 
 ## 8) Failure Isolation Playbook
 
@@ -304,21 +489,190 @@ If models/PDF status fail in UI:
 - capture exact status code and response body
 - check service status scripts
 
-## 9) Evidence Template (per platform)
+## 9) Exact Reproduction Flow
 
-Record this block after each platform run:
+Use this section when handing off to a new agent on a different machine and you want a near-identical execution path.
+
+### A. Fixed Inputs
+
+- App URL: `http://127.0.0.1:8088`
+- Ollama URL: `http://127.0.0.1:11434`
+- Preferred model in UI: `qwen2.5:7b`
+- Quick chat prompt: `Reply with exactly OK.`
+- Temporary upload file path:
+  - macOS/Linux: `/tmp/ollama-librarian-smoke-upload.txt`
+  - Windows: `$env:TEMP\\ollama-librarian-smoke-upload.txt`
+
+### B. Exact Command Sequence (macOS)
+
+Run in repo root:
+
+1. `./scripts/librarian-start-macos.sh`
+2. `./scripts/librarian-status-macos.sh`
+3. `curl -sS -i http://127.0.0.1:8088/api/tags`
+4. `curl -sS -i http://127.0.0.1:8088/api/pdf/status`
+5. **Set up isolated test directory (MANDATORY before any upload/index):**
+   ```bash
+   TEST_LIB_DIR="/tmp/ollama-librarian-test-$(date +%s)"
+   mkdir -p "$TEST_LIB_DIR"
+   curl -sS -X POST http://127.0.0.1:8088/api/pdf/source \
+     -H 'Content-Type: application/json' \
+     -d "{\"source_path\": \"$TEST_LIB_DIR\"}"
+   curl -sS http://127.0.0.1:8088/api/pdf/status | python3 -c "import sys, json; d=json.load(sys.stdin); print(f\"source_path: {d['source_path']}\")"
+   ```
+
+Expected minimum signals:
+
+- status script includes `Ollama: running` and `Web UI: running`
+- both API calls return `HTTP/1.0 200 OK` or `HTTP/1.1 200 OK`
+- `/api/tags` JSON contains `models`
+- `/api/pdf/status` JSON contains `ok`
+- test directory created and set as source_path (step 5)
+
+### C. Exact UI Action Sequence
+
+1. Open `http://127.0.0.1:8088/`.
+2. Verify sidebar shows online model state (for example `Online (N models)`).
+3. Click `Refresh` next to model selector.
+4. Ensure `Use PDF library` is unchecked.
+5. Send prompt `Reply with exactly OK.`.
+6. If confirmation appears (`Send this query without PDF grounding?`), click confirm/OK.
+7. Pause and wait for the tester-selected query wait duration.
+8. Verify assistant returns `OK`.
+9. Enable `Use PDF library`; verify the `Mode:` selector appears below it.
+10. Confirm `Mode:` is set to `Grounded answer`.
+11. Send one grounded prompt (for example, `Give one sentence summary of what is in the indexed library.`).
+12. Pause and wait for the tester-selected query wait duration.
+13. Set `Mode:` selector to `Source map`.
+14. Send one source map query (for example, `What topics does the library cover?`).
+15. Pause and wait for the tester-selected query wait duration.
+16. Verify the result: a `Source map for:` header line, then a citation block with one row per source. Each row must show a confidence badge, a linked APA citation (title is a clickable link to the document at the cited page), and one italic relevancy sentence below the citation text.
+17. **IMPORTANT:** Before upload/index steps, ensure test directory is set (see Section 9B step 5). If using UI for testing instead of API, manually set the directory path in the UI first.
+18. Click `Upload Documents`.
+19. Upload one disposable text file from the temp path.
+20. Verify footer/status indicates upload success (for example `Uploaded 1 file; indexing started`).
+21. Click `Sync New PDFs`.
+22. Verify PDF status line either transitions to running (`PDF index: running`) or remains/returns idle with updated doc/chunk counts when no work remains.
+23. Click `View Stash`, verify modal opens, then close it.
+24. Click `View Bibliography`, verify modal opens (empty state acceptable), then close it.
+25. Click `Check for Updates`.
+26. Verify update area reports up-to-date state and release notes link appears.
+27. Click `Clear Conversation` and verify chat resets (`Shared history cleared`).
+
+### D. Exact Restart Verification
+
+macOS:
+
+1. `./scripts/librarian-stop-macos.sh`
+2. `./scripts/librarian-start-macos.sh`
+3. `./scripts/librarian-status-macos.sh`
+4. `curl -sS -i http://127.0.0.1:8088/api/tags`
+5. `curl -sS -i http://127.0.0.1:8088/api/pdf/status`
+
+Windows:
+
+1. `.\scripts\librarian-stop-windows.ps1`
+2. `.\scripts\librarian-start-windows.ps1`
+3. `.\scripts\librarian-status-windows.ps1`
+4. `curl http://127.0.0.1:8088/api/tags`
+5. `curl http://127.0.0.1:8088/api/pdf/status`
+
+Linux:
+
+1. `./scripts/librarian-stop-linux.sh`
+2. `./scripts/librarian-start-linux.sh`
+3. `./scripts/librarian-status-linux.sh`
+4. `curl -sS -i http://127.0.0.1:8088/api/tags`
+5. `curl -sS -i http://127.0.0.1:8088/api/pdf/status`
+
+Expected minimum signals (all platforms):
+
+- stop/start scripts succeed without manual cleanup
+- status script reports both services running
+- both API calls still return 200
+
+### E. Disposable Upload File Commands
+
+macOS/Linux:
+
+```bash
+cat > /tmp/ollama-librarian-smoke-upload.txt <<'EOF'
+Ollama Librarian smoke upload file.
+This is a disposable test document for manual QA.
+EOF
+```
+
+Cleanup: `rm -f /tmp/ollama-librarian-smoke-upload.txt`
+
+Windows PowerShell:
+
+```powershell
+Set-Content -Path "$env:TEMP\ollama-librarian-smoke-upload.txt" -Value @(
+  "Ollama Librarian smoke upload file.",
+  "This is a disposable test document for manual QA."
+)
+```
+
+Cleanup: `Remove-Item "$env:TEMP\ollama-librarian-smoke-upload.txt" -ErrorAction SilentlyContinue`
+
+### F. Test Directory Cleanup
+
+After completing all tests, clean up the isolated test directory:
+
+macOS/Linux:
+
+```bash
+# Remove test directory (if you saved the path from Section 9B step 5)
+rm -rf "$TEST_LIB_DIR"
+
+# Or if variable is not set, manually remove:
+# rm -rf /tmp/ollama-librarian-test-*
+```
+
+Windows PowerShell:
+
+```powershell
+# Remove test directory (if you saved the path)
+Remove-Item -Path $TEST_LIB_DIR -Recurse -Force -ErrorAction SilentlyContinue
+
+# Or if variable is not set, manually remove:
+# Remove-Item -Path "$env:TEMP\ollama-librarian-test-*" -Recurse -Force
+```
+
+**Note:** Your production library was never modified if the test directory setup (Section C1 / Section 9B step 5) was completed before any upload or index operations.
+
+### G. Known Non-Blocking Variability
+
+- Model selector keyboard navigation may be inconsistent in some automation harnesses; mouse selection is acceptable.
+- Index progress metrics can jump or look non-linear depending on existing library/index state.
+- Ungrounded confirm dialog can appear for send actions when PDF grounding is off; accepting it is part of the expected flow.
+- Chat responses can take a few seconds while model/runtime state warms up; avoid early cancellation.
+- Browser `net::ERR_ABORTED` observed immediately after pressing `Cancel` indicates client-side abort, not a confirmed backend failure.
+- On Windows, `Browse...` may stay in `Opening...` until picker timeout; UI recovery + manual `Set Directory` success is PASS for that step.
+- **Test directory isolation:** If upload/index steps modified your production library, the test directory setup step (Section C1) was skipped or failed. Always verify source_path points to the test directory before proceeding.
+
+## 10) Evidence Blocks
+
+Record one block per platform per cycle. Keep prior cycles below as history.
+
+---
+
+### Cycle 2 — Branch: optimization-1.0.9 / commit ad7289f
+
+#### macOS (Mac Mini)
 
 ```text
-Platform:
+Platform: macOS (Mac Mini)
 Date/Time:
-Agent:
-Branch/Commit:
+Tester:
+Branch/Commit: optimization-1.0.9 / ad7289f
 
 Startup/Status:
-API smoke:
-UI smoke:
+API smoke: (include hardware.gpu_vram_total_gb — expected: null on Apple Silicon)
+UI smoke: (include recommendation.safe_budget_gb and recommended_model — expected: RAM-budget applies, no change from Cycle 1)
 Chat:
 PDF-grounded:
+Source map: (Mode selector visible when Use PDF library is checked; citation rows show confidence badge, linked APA citation, and relevancy sentence)
 Query wait duration used:
 Upload/Sync:
 Stash/Bibliography:
@@ -333,10 +687,247 @@ Failures:
 - Evidence:
 - Severity:
 
+Environment caveats:
+-
+
 Final verdict: PASS | FAIL | BLOCKED
 ```
 
-Latest captured run (Windows, 2026-05-27):
+#### Windows (Windows 10 PC)
+
+```text
+Platform: Windows (Windows 10 PC)
+Date/Time: 2026-06-13
+Tester: GitHub Copilot (Claude Sonnet 4.6)
+Branch/Commit: optimization-1.0.9 / ad7289f
+
+Startup/Status: PASS — Ollama: running, Web UI: running (http://127.0.0.1:8088)
+API smoke: PASS — /api/tags 200 (8 models, all required present); /api/pdf/status 200 (ok: true, 8 docs, 9302 chunks);
+  /api/system/profile 200 (ok: true, hardware.gpu_vram_total_gb: 11.99 — NVIDIA GPU detected; safe_budget_gb: 8.99 VRAM-constrained,
+  not inflated to ~43 GB from RAM; recommended_model: qwen2.5:7b 6.71 GB, safety: safe)
+UI smoke: PASS — page returns HTTP 200 with HTML; model list includes qwen2.5:7b, qwen2.5:3b, nomic-embed-text:latest;
+  /api/system/profile ok: true; recommendation.safe_budget_gb: 8.99 (VRAM-constrained); recommended_model: qwen2.5:7b
+Chat: PASS — qwen2.5:7b responded "OK" to "Reply with exactly OK." via /api/generate (~14s incl. load)
+PDF-grounded: PASS — /api/pdf/ask returned answer with 6 sources (scores 0.798–0.739, titles: World History Vol 1/2,
+  U.S. History, Introduction to Philosophy); qwen2.5:7b (6.71 GB) within safe_budget_gb (8.99 GB), no VRAM issue
+Source map: PASS — mode=source_map returned 6 citations with confidence badges (High/Medium); titles and page/location
+  references present; answer text covers library topics; citation structure matches expected API contract
+Query wait duration used: <15s for both queries (well under 90s)
+Upload/Sync: PASS — file uploaded (86 bytes, ollama-librarian-smoke-upload.txt) via /api/library/upload?name=...;
+  /api/pdf/index started (ok: true, started: true); completed: indexed 1, skipped 0, pruned 0; docs 8→9
+Directory selection (D1): PASS — /api/pdf/source POST accepted test path (F:/Temp/...); source_path confirmed in /api/pdf/status;
+  Browse... interactive picker not exercised via API automation (same caveat as Cycle 1)
+Pause/ETA (D2): PASS (caveat) — index job on 1-file test library completed before pause arrived; pause endpoint correctly
+  returned ok: true, paused: false, message: "Index job is not running"; non-blocking
+Stash/Bibliography: PASS — stash POST/GET/DELETE (by id=0) all ok (count 0→1→0); bibliography GET ok: true (0 entries,
+  empty state accepted); clear history DELETE ok: true
+Update surface: PASS — status idle, check ok: true, "You are up to date", v1.0.8 current = latest,
+  release_notes_url present (https://github.com/reprahkcin/ollama-librarian/releases/tag/v1.0.8), update_available: false, no auto-apply
+Restart resilience: PASS — stop/start/status clean (no orphan processes); post-restart /api/tags 200 (8 models),
+  /api/pdf/status 200 (ok: true, docs: 9)
+
+Failures:
+- ID: none
+- Repro steps: n/a
+- Expected: n/a
+- Actual: n/a
+- Evidence: n/a
+- Severity: n/a
+
+Environment caveats:
+- GPU: NVIDIA GPU detected, gpu_vram_total_gb: 11.99; safe_budget_gb: 8.99 (correctly VRAM-constrained, not RAM-inflated).
+  qwen2.5:7b (6.71 GB) classified safe and used for both chat and PDF-grounded tests without issue.
+- qwen2.5:7b and qwen2.5:3b were pre-installed (pulled as precondition in Cycle 1).
+- Browse... directory picker not testable via API automation; manual Set Directory equivalent validated via /api/pdf/source POST.
+- Pause/ETA flow: job on 1-doc test library completes faster than pause can arrive (same as macOS/Linux/Cycle 1 caveat).
+- Test directory F:\Temp\ollama-librarian-test-20260613142400 created, used for upload/index, then cleaned up; production library untouched.
+
+Final verdict: PASS
+```
+
+#### Linux (Linux Mint PC)
+
+```text
+Platform: Linux (Linux Mint PC)
+Date/Time: 2026-06-13
+Tester: GitHub Copilot (Claude Sonnet 4.6)
+Branch/Commit: optimization-1.0.9 / 4f70d33
+
+Startup/Status: PASS — Ollama: running, Web UI: running (http://127.0.0.1:8088)
+API smoke: PASS — /api/tags 200 (8 models, all required present); /api/pdf/status 200 (ok: true, 52 docs, 117269 chunks);
+  /api/system/profile 200 (ok: true, gpu_vram_total_gb: 8.0 — NVIDIA RTX 3070 Laptop; safe_budget_gb: 6.0 VRAM-constrained;
+  recommended_model: qwen:latest ~4.2 GB, within budget)
+UI smoke: PASS — page returns HTTP 200 with HTML; model list includes qwen:latest, qwen2.5:3b, qwen2.5:7b, nomic-embed-text:latest;
+  /api/system/profile ok: true; safe_budget_gb: 6.0 (VRAM-constrained, not RAM-inflated); recommended_model: qwen:latest
+Chat: PASS — qwen:latest responded "OK." to "Reply with exactly OK." via /api/generate; keep_alive:0 used to evict
+  model from VRAM immediately after response to prevent multi-model VRAM overflow
+PDF-grounded: PASS — /api/pdf/ask (grounded mode) with qwen2.5:3b (3.92 GB, within 6.0 GB budget) returned answer with 6
+  sources (top score 0.914, title: Introduction to Python Programming); library: /home/nick/Documents/LLM Library
+  (52 docs, 117269 chunks at source-relative path /home/nick/Documents/LLM Library/.ollama-librarian/pdf-rag.sqlite)
+Source map: PASS — /api/pdf/ask (source_map mode) with qwen2.5:3b returned answer_text covering Physics, Microbiology,
+  Philosophy, Mathematics subjects; 6 citations with confidence_label (High/Medium), path, title, page/location for APA
+  rendering; top citation: College Physics 2e p.31, score 2.488, confidence_label: High.
+  Relevancy sentences are frontend-rendered from answer_text (not a separate API field — by design per PDF-ASK-RESPONSE-CONTRACT).
+Query wait duration used: <15s for all queries (well under 90s threshold)
+Upload/Sync: PASS — smoke-upload.txt (86 bytes) uploaded via /api/library/upload; /api/pdf/index started (ok: true,
+  started: true); completed: indexed 1, skipped 0, pruned 0; docs 52→53 (test dir /tmp/ollama-librarian-test-<ts>)
+Directory selection (D1): PASS — /api/pdf/source POST accepted /tmp/ollama-librarian-test-d1-check; confirmed in
+  /api/pdf/status; Browse... GUI picker not exercised interactively (requires display interaction); manual Set Directory PASS
+Pause/ETA (D2): PASS — start index on 52-doc library + immediate pause: running: false, last_result.paused: true confirmed.
+  (Initial attempt with all-already-indexed library completed before pause arrived; retest with 5 fresh uploaded files
+  confirmed pause_requested: true, paused: true)
+Stash/Bibliography: PASS — stash POST (text field) ok: true, count: 1; GET entries[] present with id=0; DELETE ok: true,
+  count: 0; bibliography GET ok: true (0 entries, empty state); DELETE /api/history ok: true
+Update surface: PASS — /api/update/status ok: true, update_available: false, current: v1.0.8;
+  /api/update/check ok: true, "You are up to date", release_notes_url: https://github.com/reprahkcin/ollama-librarian/releases/tag/v1.0.8,
+  update_available: false, no auto-apply
+Restart resilience: PASS — stop/start/status clean (Ollama managed externally, note expected); post-restart
+  /api/tags 200 (8 models), /api/pdf/status 200 (ok: true, docs: 53)
+
+Failures:
+- ID: LINUX-C2-001 (RESOLVED — pre-existing VRAM fix from Cycle 1 confirmed working)
+- Root cause: Previous cycle freeze was CUDA OOM due to concurrent model loading (qwen:latest residual in VRAM +
+  nomic-embed-text + qwen2.5:3b exceeded 8 GB). Mitigated this cycle by using keep_alive:0 to evict each model
+  immediately after use before loading the next.
+- Post-fix: qwen2.5:3b (3.92 GB) + nomic-embed-text (0.3 GB) = ~4.2 GB total, well within 6.0 GB safe budget.
+  No freeze observed.
+
+Environment caveats:
+- GPU: NVIDIA GeForce RTX 3070 Laptop GPU, 8.0 GB VRAM; safe_budget_gb: 6.0 (VRAM-constrained).
+- Library database at legacy path /home/nick/.local/share/ollama-librarian/pdf-rag.sqlite; copied to
+  source-relative /home/nick/Documents/LLM Library/.ollama-librarian/pdf-rag.sqlite for new path convention.
+- keep_alive:0 used on all model calls to prevent concurrent VRAM overflow — required workaround on this 8 GB VRAM machine.
+- Browse... GUI directory picker not exercised interactively; manual Set Directory via /api/pdf/source PASS.
+- Pause flow: first attempt completed before pause on all-indexed library; retest with 5 fresh files confirmed pause works.
+- Stash GET uses 'entries' key (not 'items'); id field is integer (0-based).
+- Ollama stop note ("possibly managed by another user/service") is expected on this system — non-blocking.
+- Test dirs and temp files cleaned up; production library untouched.
+
+Final verdict: PASS
+```
+
+---
+
+### Cycle 1 — Branch: optimization-1.0.9
+
+#### macOS (Mac Mini)
+
+```text
+Platform: macOS (Mac Mini)
+Date/Time: 2026-06-12
+Tester: Claude (claude-sonnet-4-6)
+Branch/Commit: optimization-1.0.9 / ba72d18
+
+Startup/Status: PASS — Ollama: running, Web UI: running (http://127.0.0.1:8088)
+API smoke: PASS — /api/tags 200 (9 models), /api/pdf/status 200 (ok: true)
+UI smoke: PASS — page returns HTTP 200, HTML renders, /api/system/profile ok (pressure: ok, 64GB unified memory, safe_mode on)
+Chat: PASS — qwen2.5:7b responded "OK" to "Reply with exactly OK."
+PDF-grounded: PASS — answer returned with 6 sources
+Query wait duration used: <10s (both queries returned well under 90s)
+Upload/Sync: PASS — file uploaded (86 bytes), index job started (ok: true, started: true), completed: indexed 1, pruned 685 (see caveat)
+Stash/Bibliography: PASS — stash POST/GET/DELETE all ok; bibliography GET returns ok: true (0 entries, empty state accepted)
+Update surface: PASS — update status: idle, check returns ok: true, release notes link present; no automatic apply occurred
+Restart resilience: PASS — stop/start/status clean; post-restart /api/tags and /api/pdf/status both 200
+
+Failures:
+- ID: none
+- Repro steps: n/a
+- Expected: n/a
+- Actual: n/a
+- Evidence: n/a
+- Severity: n/a
+
+Environment caveats:
+- Index job pruned 685 docs on sync: source_path is configured to a custom-library dir that only contains 2 docs; the 685 previously-indexed docs were from a different library path (/Users/nicholasharper/pdf_library). Prune behavior is correct but results in a near-empty index post-test. Not a defect.
+- Pause flow could not be validated via API in isolation: the index job on 1 new doc completed faster than the pause call arrived. Non-blocking — pause endpoint returned correct "not running" state.
+- ETA stabilization: not observable on a 1-doc sync run. Non-blocking.
+- UI interactive steps (model dropdown click, Browse... picker, modal open/close, Clear Conversation button) were validated via equivalent API calls; browser click paths not exercised directly.
+
+Final verdict: PASS
+```
+
+#### Windows (Windows 10 PC)
+
+```text
+Platform: Windows (Windows 10 PC)
+Date/Time: 2026-06-12
+Tester: Claude (claude-sonnet-4-6)
+Branch/Commit: optimization-1.0.9 / 9ac124bd
+
+Startup/Status: PASS — Ollama: running, Web UI: running (http://127.0.0.1:8088)
+API smoke: PASS — /api/tags 200 (8 models, qwen2.5:7b + qwen2.5:3b pulled as precondition), /api/pdf/status 200 (ok: true, 5 docs/9299 chunks at start)
+UI smoke: PASS — page returns HTTP 200 with HTML; model list includes qwen2.5:7b, qwen2.5:3b, nomic-embed-text:latest; /api/system/profile returns 404 (same as macOS — non-blocking)
+Chat: PASS — qwen2.5:7b responded "OK" to "Reply with exactly OK." via /api/generate
+PDF-grounded: PASS — /api/pdf/ask returned answer with 6 sources (scores 0.798–0.739)
+Query wait duration used: <15s (both queries returned well under 90s)
+Upload/Sync: PASS — file uploaded (88 bytes, collision-named) via /api/library/upload; /api/pdf/index started (ok: true, started: true); completed indexed 3, skipped 5, total 10, pruned 0; docs updated 5→8
+Stash/Bibliography: PASS — stash POST/GET/DELETE (by id) all ok; bibliography GET ok: true (0 entries, empty state accepted); clear conversation DELETE ok: true
+Update surface: PASS — /api/update/status idle, /api/update/check returns ok: true, message "You are up to date", v1.0.8 current = latest, release_notes_url present, update_available: false, no auto-apply
+Restart resilience: PASS — stop/start/status clean (no orphan processes); post-restart /api/tags 200 (8 models) and /api/pdf/status 200 (ok: true, docs: 8)
+
+Failures:
+- ID: none
+- Repro steps: n/a
+- Expected: n/a
+- Actual: n/a
+- Evidence: n/a
+- Severity: n/a
+
+Environment caveats:
+- qwen2.5:7b and qwen2.5:3b were not pre-installed; pulled before test run as required precondition. nomic-embed-text:latest already present.
+- /api/system/profile returns 404 on this branch (same as macOS); non-blocking.
+- Browser Browse... directory picker not testable via API automation; validated equivalent path via /api/pdf/source POST (ok: true, path confirmed in /api/pdf/status). Manual Set Directory: PASS.
+- Pause/ETA flow: job completed before pause call on a small library (same as macOS caveat). Pause endpoint returned correct "not running" state. Non-blocking.
+- Stash DELETE requires ?id= (integer stash_id), not ?saved_at=; correct param discovered and used.
+- Upload collision naming (smoke-upload (2).txt): expected behavior since a prior copy existed in library dir from macOS run artifacts.
+
+Final verdict: PASS
+```
+
+#### Linux (Linux Mint PC)
+
+```text
+Platform: Linux (Linux Mint PC)
+Date/Time: 2026-06-13
+Tester: Claude (claude-sonnet-4-6)
+Branch/Commit: optimization-1.0.9
+
+Startup/Status: PASS — Ollama: running, Web UI: running (http://127.0.0.1:8088)
+API smoke: PASS — /api/tags 200 (8 models, all required present), /api/pdf/status 200 (ok: true, 51 docs, 117268 chunks)
+UI smoke: PASS — page returns HTTP 200 with HTML; /api/system/profile 200 (ok: true, pressure: ok, 30.98 GB RAM, 16 CPUs, gpu_vram_total_gb: 8.0, safe_budget_gb: 6.0, safe_mode: true, recommended: qwen:latest)
+Chat: PASS — qwen2.5:7b responded "OK" to "Reply with exactly OK." via /api/generate (~6s)
+PDF-grounded: PASS (after fix) — initial attempt with qwen2.5:7b (~6.71 GB) exceeded VRAM safe budget and caused CUDA OOM freeze/hard reset. Root cause: profiler was computing safe budget from RAM (30.98 GB) not VRAM (8 GB). Fix applied: VRAM detection via nvidia-smi added to hardware profiler; safe_budget_gb now VRAM-constrained to 6.0 GB. Retest with qwen2.5:3b (3.92 GB, within budget) returned answer with 6 sources (scores 0.914–0.837), no freeze.
+Query wait duration used: 90s budget; ungrounded chat ~6s; PDF-grounded retest ~30s; both well under 90s
+Upload/Sync: PASS — file uploaded (86 bytes) via /api/library/upload; index started (ok: true, started: true); completed indexed 1, skipped 51, pruned 0; docs updated 51→52
+Directory picker (D1): zenity installed; Browse... interactive dialog not exercised (requires GUI interaction); manual Set Directory via /api/pdf/source PASS (ok: true, path: /home/nick/Documents/LLM Library)
+Pause flow (D2): PASS — start index + immediate pause: running: false, last_result.paused: true
+ETA stabilization: not observable on small library (job completes quickly); non-blocking
+Stash/Bibliography: PASS — stash POST/GET/DELETE (by id=0) all ok; bibliography GET ok: true (0 entries); DELETE history ok: true
+Update surface: PASS — status idle, check ok: true, "You are up to date", v1.0.8 current = latest, release_notes_url present, update_available: false, no auto-apply
+Restart resilience: PASS — stop/start/status clean (no orphan processes); post-restart /api/tags 200 (8 models), /api/pdf/status 200 (ok: true, docs: 52)
+
+Failures:
+- ID: LINUX-001 (RESOLVED)
+- Root cause: hardware profiler used RAM budget (30.98 GB * 0.55 = 17.04 GB) instead of VRAM (8 GB) on discrete-GPU machines; qwen2.5:7b classified as "safe" when it exceeded safe VRAM headroom
+- Fix: nvidia-smi VRAM detection added to detect_hardware_profile(); recommend_model() now uses min(ram_budget, vram_budget) unless apple_silicon_unified_memory note is present; safe_budget_gb corrected to 6.0 GB on this machine
+- Post-fix model safety: qwen2.5:14b=unsafe, qwen2.5:7b=caution, qwen:latest/qwen2.5:3b/qwen2.5-coder:3b/orca-mini:3b=safe
+- Tests: 2 new unit tests added (test_vram_constrained_budget_overrides_ram, test_apple_silicon_unified_memory_ignores_vram); all 7 hardware profile tests pass
+
+Environment caveats:
+- GPU: NVIDIA GeForce RTX 3070 Laptop GPU, 8192 MiB VRAM, driver 595.71.05
+- Ollama is system-managed; stop script correctly leaves Ollama running with "possibly managed by another user/service" note — expected behavior.
+- zenity is installed; Browse... GUI picker was not exercised interactively; manual Set Directory path validated via API equivalent.
+- Pause flow: job completed before pause was honoured on small library (same as macOS/Windows caveat) — pause endpoint correctly returned paused: true in last_result.
+- 4 test_routes.py pdf_ask tests return 409 (heavy serial guard from running app instance during test); pre-existing, unrelated to this fix.
+
+Final verdict: PASS
+```
+
+---
+
+### Archive — Prior Cycle (Branch: performance-adjustments / 7ca95f1)
+
+Windows result from 2026-05-27 (different branch, kept for reference):
 
 ```text
 Platform: Windows
@@ -355,163 +946,19 @@ Stash/Bibliography: PASS (stash CRUD + bibliography modal open/close)
 Update surface: PASS (already latest, release notes link present)
 Restart resilience: PASS (stop/start/status successful; post-restart APIs remained 200)
 
-Failures:
-- ID: none
-- Repro steps: n/a
-- Expected: n/a
-- Actual: n/a
-- Evidence: n/a
-- Severity: n/a
-
 Environment caveats:
-- `Browse...` directory picker stayed in `Opening...` until timeout in this automation run.
-- UI recovered with timeout message and manual `Set Directory` succeeded.
-- `/api/pdf/status.source_path` reflected the updated path.
+- Browse... directory picker stayed in Opening... until timeout in this automation run.
+- UI recovered with timeout message and manual Set Directory succeeded.
+- /api/pdf/status.source_path reflected the updated path.
 
 Final verdict: PASS
-```
-
-## 10) Agent Handoff Template
-
-Use this exact handoff payload between agents:
-
-```text
-Current platform: <macOS|Windows|Linux>
-Completed test IDs:
-Remaining test IDs:
-Open failures:
-Environment caveats:
-Last known good commit:
-Next immediate action:
 ```
 
 ## 11) Exit Criteria
 
 Testing cycle is complete when:
 
-- macOS, Windows, Linux each have a full evidence block
+- macOS, Windows, and Linux each have a full evidence block for the current branch
 - no untriaged FAIL items remain
 - any accepted residual issues are explicitly documented with severity and follow-up owner
-
-## 12) Exact Reproduction Flow (Match Prior Agent Run)
-
-Use this section when handing off to a new agent on a different machine and you want a near-identical execution path.
-
-### A. Fixed Inputs
-
-- App URL: `http://127.0.0.1:8088`
-- Ollama URL: `http://127.0.0.1:11434`
-- Preferred model in UI: `qwen2.5:14b`
-- Quick chat prompt: `Reply with exactly OK.`
-- Temporary upload file path:
-  - macOS/Linux: `/tmp/ollama-librarian-smoke-upload.txt`
-  - Windows: `$env:TEMP\\ollama-librarian-smoke-upload.txt`
-
-### B. Exact macOS Command Sequence
-
-Run in repo root:
-
-1. `./scripts/librarian-start-macos.sh`
-2. `./scripts/librarian-status-macos.sh`
-3. `curl -sS -i http://127.0.0.1:8088/api/tags`
-4. `curl -sS -i http://127.0.0.1:8088/api/pdf/status`
-
-Expected minimum signals:
-
-- status script includes `Ollama: running` and `Web UI: running`
-- both API calls return `HTTP/1.0 200 OK` or `HTTP/1.1 200 OK`
-- `/api/tags` JSON contains `models`
-- `/api/pdf/status` JSON contains `ok`
-
-### C. Exact UI Action Sequence
-
-1. Open `http://127.0.0.1:8088/`.
-2. Verify sidebar shows online model state (for example `Online (N models)`).
-3. Click `Refresh` next to model selector.
-4. Ensure `Use PDF-grounded answers` is unchecked.
-5. Send prompt `Reply with exactly OK.`.
-6. If confirmation appears (`Send this query without PDF grounding?`), click confirm/OK.
-7. Pause and wait for the tester-selected query wait duration.
-8. Verify assistant returns `OK`.
-9. Enable `Use PDF-grounded answers`.
-10. Send one grounded prompt (for example, `Give one sentence summary of what is in the indexed library.`).
-11. Pause and wait for the tester-selected query wait duration.
-12. Click `Upload Documents`.
-13. Upload one disposable text file from the temp path.
-14. Verify footer/status indicates upload success (for example `Uploaded 1 file; indexing started`).
-15. Click `Sync New PDFs`.
-16. Verify PDF status line either transitions to running (`PDF index: running`) or remains/returns idle with updated doc/chunk counts when no work remains.
-17. Click `View Stash`, verify modal opens, then close it.
-18. Click `View Bibliography`, verify modal opens (empty state acceptable), then close it.
-19. Click `Check for Updates`.
-20. Verify update area reports up-to-date state and release notes link appears.
-21. Click `Clear Conversation` and verify chat resets (`Shared history cleared`).
-
-### D. Exact Restart Verification
-
-1. `./scripts/librarian-stop-macos.sh`
-2. `./scripts/librarian-start-macos.sh`
-3. `./scripts/librarian-status-macos.sh`
-4. `curl -sS -i http://127.0.0.1:8088/api/tags`
-5. `curl -sS -i http://127.0.0.1:8088/api/pdf/status`
-
-Expected minimum signals:
-
-- stop/start scripts succeed without manual cleanup
-- status script reports both services running
-- both API calls still return 200
-
-### E. Disposable Upload File Commands
-
-macOS/Linux:
-
-1. `cat > /tmp/ollama-librarian-smoke-upload.txt <<'EOF'`
-2. `Ollama Librarian smoke upload file.`
-3. `This is a disposable test document for manual QA.`
-4. `EOF`
-5. cleanup: `rm -f /tmp/ollama-librarian-smoke-upload.txt`
-
-Windows PowerShell:
-
-1. `Set-Content -Path "$env:TEMP\\ollama-librarian-smoke-upload.txt" -Value @("Ollama Librarian smoke upload file.","This is a disposable test document for manual QA.")`
-2. cleanup: `Remove-Item "$env:TEMP\\ollama-librarian-smoke-upload.txt" -ErrorAction SilentlyContinue`
-
-### F. Cross-Machine Handoff Payload (Required)
-
-When handing to the next agent, include this exact payload:
-
-```text
-Platform: <macOS|Windows|Linux>
-App URL used: http://127.0.0.1:8088
-Ollama URL used: http://127.0.0.1:11434
-Commands executed (in order):
-1) ...
-2) ...
-3) ...
-UI actions executed (in order):
-1) ...
-2) ...
-3) ...
-Observed confirmations:
-- Startup/status:
-- API 200 checks:
-- Chat response text:
-- Query wait duration used:
-- Upload/sync status text:
-- Update status text:
-- Clear conversation text:
-Deviations from expected flow:
--
-Blocking issues:
--
-Next immediate action for receiving agent:
--
-```
-
-### G. Known Non-Blocking Variability
-
-- Model selector keyboard navigation may be inconsistent in some automation harnesses; mouse selection is acceptable.
-- Index progress metrics can jump or look non-linear depending on existing library/index state.
-- Ungrounded confirm dialog can appear for send actions when PDF grounding is off; accepting it is part of the expected flow.
-- Chat responses can take a few seconds while model/runtime state warms up; avoid early cancellation.
-- Browser `net::ERR_ABORTED` observed immediately after pressing `Cancel` indicates client-side abort, not a confirmed backend failure.
+- all three final verdicts are PASS

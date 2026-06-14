@@ -1,0 +1,91 @@
+{
+  "version": "1.0",
+  "captured_at_epoch": 1781275599,
+  "api_url": "http://127.0.0.1:8088/api/pdf/ask",
+  "model": "qwen2.5:14b",
+  "top_k": 6,
+  "metrics": {
+    "prompt_count": 4,
+    "request_timeout_seconds": 600,
+    "answer_nonempty_rate": 1.0,
+    "grounded_answer_pass_rate": 0.75,
+    "citation_link_valid_rate": 1.0,
+    "source_format_error_rate": 0.25,
+    "badge_distribution": {
+      "High": 23,
+      "Medium": 1,
+      "Low": 0
+    },
+    "p95_response_latency_ms": 152979,
+    "avg_response_latency_ms": 133879,
+    "category_pass_rates": {
+      "ambiguous_multi_doc": 0.75
+    }
+  },
+  "runs": [
+    {
+      "id": "amb_003",
+      "category": "ambiguous_multi_doc",
+      "http_status": 200,
+      "ok": true,
+      "latency_ms": 133530,
+      "answer_chars": 1364,
+      "answer_nonempty": true,
+      "requires_citation": true,
+      "sources_count": 6,
+      "valid_citations_count": 6,
+      "has_source_format_error": false,
+      "signal_match": true,
+      "answer_pass_heuristic": true,
+      "error": null
+    },
+    {
+      "id": "amb_004",
+      "category": "ambiguous_multi_doc",
+      "http_status": 200,
+      "ok": true,
+      "latency_ms": 125812,
+      "answer_chars": 739,
+      "answer_nonempty": true,
+      "requires_citation": true,
+      "sources_count": 6,
+      "valid_citations_count": 6,
+      "has_source_format_error": true,
+      "signal_match": true,
+      "answer_pass_heuristic": false,
+      "error": null
+    },
+    {
+      "id": "amb_008",
+      "category": "ambiguous_multi_doc",
+      "http_status": 200,
+      "ok": true,
+      "latency_ms": 131532,
+      "answer_chars": 1385,
+      "answer_nonempty": true,
+      "requires_citation": true,
+      "sources_count": 6,
+      "valid_citations_count": 6,
+      "has_source_format_error": false,
+      "signal_match": true,
+      "answer_pass_heuristic": true,
+      "error": null
+    },
+    {
+      "id": "amb_010",
+      "category": "ambiguous_multi_doc",
+      "http_status": 200,
+      "ok": true,
+      "latency_ms": 144644,
+      "answer_chars": 2488,
+      "answer_nonempty": true,
+      "requires_citation": true,
+      "sources_count": 6,
+      "valid_citations_count": 6,
+      "has_source_format_error": false,
+      "signal_match": true,
+      "answer_pass_heuristic": true,
+      "error": null
+    }
+  ]
+}

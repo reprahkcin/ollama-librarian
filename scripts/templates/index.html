@@ -27,8 +27,15 @@
         <h1 class="title">Ollama Librarian</h1>
         <div class="meta">Endpoint: %OLLAMA_BASE%</div>
         <div id="status" class="status">
-          <span id="statusDot" class="dot"></span>
-          <span id="statusText">Checking service...</span>
+          <div class="status-bubble">
+            <span id="statusDot" class="dot" aria-hidden="true"></span>
+            <span id="statusMain" class="status-main">Checking service...</span>
+          </div>
+          <span
+            id="statusMeta"
+            class="status-meta-outside"
+            aria-hidden="true"
+          ></span>
         </div>
 
         <label for="model">Model</label>
@@ -117,8 +124,18 @@
               checked
               title="Use retrieval from your indexed PDF library instead of plain model-only responses."
             />
-            Use PDF-grounded answers
+            Use PDF library
           </label>
+          <div id="pdfModeRow" class="checkrow pdf-mode-row">
+            <label for="pdfSearchMode" class="tiny">Mode:</label>
+            <select
+              id="pdfSearchMode"
+              title="Grounded answer: full LLM response grounded in your library. Source map: quick relevancy summary per document, no long response."
+            >
+              <option value="grounded">Grounded answer</option>
+              <option value="sourcemap">Source map</option>
+            </select>
+          </div>
           <button
             id="syncPdfLibrary"
             class="btn-soft"

@@ -41,6 +41,32 @@ class DoctorCommandTests(unittest.TestCase):
         self.assertFalse(self.rag._model_available(
             "mistral:7b", ["qwen2.5:latest"]))
 
+    def test_doctor_model_recommendation_reports_safe_choice(self):
+        original_detect = self.rag.detect_hardware_profile
+        original_recommend = self.rag.recommend_model
+
+        self.rag.detect_hardware_profile = lambda: object()
+        self.rag.recommend_model = lambda models, hardware: {
+            "recommended_model": "llama3.1:8b",
+            "reason": "best_safe_installed_model",
+            "safe_budget_gb": 8.8,
+            "models": [
+                {"name": "llama3.1:8b", "safety": "safe"},
+                {"name": "qwen2.5:14b", "safety": "unsafe"},
+            ],
+        }
+        try:
+            result = self.rag._doctor_check_model_recommendation(
+                ["llama3.1:8b", "qwen2.5:14b"])
+        finally:
+            self.rag.detect_hardware_profile = original_detect
+            self.rag.recommend_model = original_recommend
+
+        self.assertTrue(result.get("ok"))
+        self.assertEqual(result.get("check"), "model_fit_recommendation")
+        self.assertIn("llama3.1:8b", result.get("message", ""))
+        self.assertIn("unsafe=qwen2.5:14b", result.get("message", ""))
+
     def test_doctor_command_returns_success_when_all_checks_pass(self):
         with tempfile.TemporaryDirectory(prefix="doctor-test-") as td:
             tmp = Path(td)

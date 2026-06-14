@@ -378,6 +378,519 @@ class RouteBaselineTests(unittest.TestCase):
         self.assertIn("running", payload)
         self.assertIn("state", payload)
 
+    def test_get_system_profile_returns_recommendation_shape(self):
+        with running_server() as (app, base_url):
+            original_build = app.build_system_profile
+            original_fetch = app.fetch_ollama_model_items
+
+            def fake_build(models):
+                return {
+                    "ok": True,
+                    "hardware": {"total_memory_gb": 16},
+                    "resource_state": {"pressure": "ok"},
+                    "recommendation": {
+                        "recommended_model": "llama3.1:8b",
+                        "models": [
+                            {"name": "llama3.1:8b", "safety": "safe"},
+                        ],
+                    },
+                }
+
+            app.fetch_ollama_model_items = lambda timeout=10, force_refresh=False: [
+                {"name": "llama3.1:8b"},
+            ]
+            app.build_system_profile = fake_build
+            try:
+                status, payload, _ = _request_json(
+                    "GET", f"{base_url}/api/system/profile")
+            finally:
+                app.build_system_profile = original_build
+                app.fetch_ollama_model_items = original_fetch
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload.get("ok"))
+        self.assertEqual(
+            payload.get("recommendation", {}).get("recommended_model"),
+            "llama3.1:8b",
+        )
+        self.assertTrue(payload.get("ollama", {}).get("reachable"))
+
+    def test_get_system_profile_refresh_query_forces_model_refresh(self):
+        with running_server() as (app, base_url):
+            original_build = app.build_system_profile
+            original_fetch = app.fetch_ollama_model_items
+            calls = []
+
+            app.build_system_profile = lambda models: {
+                "ok": True,
+                "hardware": {},
+                "resource_state": {"pressure": "ok"},
+                "recommendation": {"recommended_model": "llama3.1:8b", "models": []},
+            }
+
+            def fake_fetch(timeout=10, force_refresh=False):
+                calls.append(bool(force_refresh))
+                return [{"name": "llama3.1:8b"}]
+
+            app.fetch_ollama_model_items = fake_fetch
+            try:
+                status, payload, _ = _request_json(
+                    "GET", f"{base_url}/api/system/profile?refresh=1")
+            finally:
+                app.build_system_profile = original_build
+                app.fetch_ollama_model_items = original_fetch
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload.get("ok"))
+        self.assertEqual(calls, [True])
+
+    def test_fetch_ollama_model_items_merges_show_metadata(self):
+        with running_server() as (app, _base_url):
+            original_urlopen = app.urlopen
+            original_base = app.OLLAMA_BASE
+            original_ttl = app.MODEL_CACHE_TTL_SECONDS
+
+            class FakeResponse:
+                def __init__(self, payload):
+                    self.payload = payload
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_args):
+                    return False
+
+                def read(self):
+                    return json.dumps(self.payload).encode("utf-8")
+
+            def fake_urlopen(req, timeout=10):
+                url = str(req.full_url)
+                if url.endswith("/api/tags"):
+                    return FakeResponse({
+                        "models": [{"name": "llama3.1:8b", "size": 5}]
+                    })
+                if url.endswith("/api/show"):
+                    return FakeResponse({
+                        "details": {
+                            "parameter_size": "8.0B",
+                            "quantization_level": "Q4_K_M",
+                            "family": "llama",
+                        },
+                        "model_info": {"llama.context_length": 8192},
+                    })
+                raise AssertionError(url)
+
+            app.urlopen = fake_urlopen
+            app.OLLAMA_BASE = "http://ollama.test"
+            app.MODEL_CACHE_TTL_SECONDS = 0
+            try:
+                models = app.fetch_ollama_model_items(timeout=3)
+            finally:
+                app.clear_model_cache()
+                app.urlopen = original_urlopen
+                app.OLLAMA_BASE = original_base
+                app.MODEL_CACHE_TTL_SECONDS = original_ttl
+
+        self.assertEqual(models[0].get(
+            "details", {}).get("parameter_size"), "8.0B")
+        self.assertEqual(models[0].get("model_info", {}).get(
+            "llama.context_length"), 8192)
+
+    def test_fetch_ollama_model_items_uses_cache_until_forced(self):
+        with running_server() as (app, _base_url):
+            original_urlopen = app.urlopen
+            original_base = app.OLLAMA_BASE
+            original_ttl = app.MODEL_CACHE_TTL_SECONDS
+            calls = {"tags": 0, "show": 0}
+
+            class FakeResponse:
+                def __init__(self, payload):
+                    self.payload = payload
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_args):
+                    return False
+
+                def read(self):
+                    return json.dumps(self.payload).encode("utf-8")
+
+            def fake_urlopen(req, timeout=10):
+                url = str(req.full_url)
+                if url.endswith("/api/tags"):
+                    calls["tags"] += 1
+                    return FakeResponse({
+                        "models": [{"name": "llama3.1:8b", "size": 5}]
+                    })
+                if url.endswith("/api/show"):
+                    calls["show"] += 1
+                    return FakeResponse({
+                        "details": {
+                            "parameter_size": "8.0B",
+                            "quantization_level": "Q4_K_M",
+                        },
+                    })
+                raise AssertionError(url)
+
+            app.urlopen = fake_urlopen
+            app.OLLAMA_BASE = "http://ollama-cache.test"
+            app.MODEL_CACHE_TTL_SECONDS = 60
+            app.clear_model_cache()
+            try:
+                first = app.fetch_ollama_model_items(timeout=3)
+                second = app.fetch_ollama_model_items(timeout=3)
+                refreshed = app.fetch_ollama_model_items(
+                    timeout=3, force_refresh=True)
+            finally:
+                app.clear_model_cache()
+                app.urlopen = original_urlopen
+                app.OLLAMA_BASE = original_base
+                app.MODEL_CACHE_TTL_SECONDS = original_ttl
+
+        self.assertEqual(first, second)
+        self.assertEqual(refreshed[0].get(
+            "details", {}).get("parameter_size"), "8.0B")
+        self.assertEqual(calls, {"tags": 2, "show": 2})
+
+    def test_fetch_ollama_model_items_persists_and_reloads_cache(self):
+        with running_server() as (app, _base_url):
+            original_urlopen = app.urlopen
+            original_base = app.OLLAMA_BASE
+            original_ttl = app.MODEL_CACHE_TTL_SECONDS
+            calls = {"tags": 0, "show": 0}
+
+            class FakeResponse:
+                def __init__(self, payload):
+                    self.payload = payload
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_args):
+                    return False
+
+                def read(self):
+                    return json.dumps(self.payload).encode("utf-8")
+
+            def fake_urlopen(req, timeout=10):
+                url = str(req.full_url)
+                if url.endswith("/api/tags"):
+                    calls["tags"] += 1
+                    return FakeResponse({
+                        "models": [{"name": "llama3.1:8b", "size": 5}]
+                    })
+                if url.endswith("/api/show"):
+                    calls["show"] += 1
+                    return FakeResponse({
+                        "details": {"parameter_size": "8.0B"},
+                    })
+                raise AssertionError(url)
+
+            app.urlopen = fake_urlopen
+            app.OLLAMA_BASE = "http://ollama-persist.test"
+            app.MODEL_CACHE_TTL_SECONDS = 60
+            app.clear_model_cache()
+            try:
+                first = app.fetch_ollama_model_items(timeout=3)
+                cache_file_exists = app.MODEL_CACHE_PATH.is_file()
+                with app.MODEL_CACHE_LOCK:
+                    app.MODEL_CACHE["models"] = []
+                    app.MODEL_CACHE["cached_at"] = 0.0
+                    app.MODEL_CACHE["base_url"] = ""
+                    app.MODEL_CACHE["loaded_from_disk"] = False
+                second = app.fetch_ollama_model_items(timeout=3)
+                cache_state = app.get_model_cache_state()
+            finally:
+                app.clear_model_cache()
+                app.urlopen = original_urlopen
+                app.OLLAMA_BASE = original_base
+                app.MODEL_CACHE_TTL_SECONDS = original_ttl
+
+        self.assertTrue(cache_file_exists)
+        self.assertEqual(first, second)
+        self.assertEqual(calls, {"tags": 1, "show": 1})
+        self.assertTrue(cache_state.get("loaded_from_disk"))
+
+    def test_build_pdf_rag_command_passes_safe_answer_options(self):
+        with running_server() as (app, _base_url):
+            original_policy = app.get_current_safety_policy
+            app.get_current_safety_policy = lambda force_detect=False: {
+                "pressure": "throttled",
+                "embed_num_thread": 1,
+                "embed_delay_ms": 1500,
+                "doc_cooldown_seconds": 45,
+                "dynamic_max_threads": 1,
+            }
+            try:
+                cmd, _env = app._build_pdf_rag_command(["status"])
+            finally:
+                app.get_current_safety_policy = original_policy
+
+        self.assertIn("--answer-num-thread", cmd)
+        self.assertEqual(cmd[cmd.index("--answer-num-thread") + 1], "1")
+        self.assertIn("--answer-keep-alive", cmd)
+        self.assertEqual(cmd[cmd.index("--answer-keep-alive") + 1], "15s")
+
+    def test_post_generate_applies_safe_options_under_pressure(self):
+        with running_server() as (app, base_url):
+            original_proxy = app.Handler._proxy
+            original_policy = app.get_current_safety_policy
+            original_validate = app.validate_model_allowed
+            captured = {}
+
+            def fake_proxy(handler, method, path, data):
+                captured["method"] = method
+                captured["path"] = path
+                captured["payload"] = json.loads(data.decode("utf-8"))
+                return handler._send(
+                    200,
+                    json.dumps({"response": "ok"}, ensure_ascii=True),
+                    "application/json; charset=utf-8",
+                )
+
+            app.get_current_safety_policy = lambda force_detect=False: {
+                "pressure": "throttled",
+                "allow_new_work": True,
+                "max_generation_slots": 1,
+                "embed_num_thread": 1,
+            }
+            app.validate_model_allowed = lambda model: {"ok": True}
+            app.Handler._proxy = fake_proxy
+            try:
+                status, payload, _ = _request_json(
+                    "POST",
+                    f"{base_url}/api/generate",
+                    {
+                        "model": "llama3.1:8b",
+                        "prompt": "hello",
+                        "stream": False,
+                        "keep_alive": "60s",
+                    },
+                )
+            finally:
+                app.Handler._proxy = original_proxy
+                app.get_current_safety_policy = original_policy
+                app.validate_model_allowed = original_validate
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload.get("response"), "ok")
+        self.assertEqual(captured.get("path"), "/api/generate")
+        self.assertEqual(captured.get("payload", {}).get("keep_alive"), "15s")
+        self.assertEqual(captured.get("payload", {}).get(
+            "options", {}).get("num_thread"), 1)
+
+    def test_get_system_health_includes_runtime_guard_state(self):
+        with running_server() as (app, base_url):
+            original_policy = app.get_current_safety_policy
+            original_profile = app.get_system_profile
+
+            def unexpected_profile_call(*_args, **_kwargs):
+                raise AssertionError(
+                    "health should not call full system profile")
+
+            app.get_current_safety_policy = lambda force_detect=False: {
+                "pressure": "ok",
+                "allow_new_work": True,
+                "max_generation_slots": 1,
+            }
+            app.get_system_profile = unexpected_profile_call
+            try:
+                status, payload, _ = _request_json(
+                    "GET", f"{base_url}/api/system/health")
+            finally:
+                app.get_current_safety_policy = original_policy
+                app.get_system_profile = original_profile
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload.get("runtime", {}).get("safe_mode"))
+        self.assertEqual(payload.get(
+            "resource_state", {}).get("pressure"), "ok")
+        self.assertTrue(payload.get("ollama", {}).get("not_checked"))
+
+    def test_forced_pressure_override_controls_policy(self):
+        with running_server() as (app, _base_url):
+            original_force = app.FORCE_PRESSURE
+            app.FORCE_PRESSURE = "throttled"
+            try:
+                policy = app.get_current_safety_policy()
+                runtime = app.get_resource_runtime_state(policy)
+            finally:
+                app.FORCE_PRESSURE = original_force
+
+        self.assertEqual(policy.get("pressure"), "throttled")
+        self.assertTrue(policy.get("forced"))
+        self.assertEqual(runtime.get("forced_pressure"), "throttled")
+
+    def test_system_profile_uses_active_forced_pressure_policy(self):
+        with running_server() as (app, base_url):
+            original_force = app.FORCE_PRESSURE
+            original_fetch = app.fetch_ollama_model_items
+            app.FORCE_PRESSURE = "throttled"
+            app.fetch_ollama_model_items = lambda timeout=10, force_refresh=False: []
+            try:
+                status, payload, _ = _request_json(
+                    "GET", f"{base_url}/api/system/profile")
+            finally:
+                app.FORCE_PRESSURE = original_force
+                app.fetch_ollama_model_items = original_fetch
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload.get("resource_state", {}
+                                     ).get("pressure"), "throttled")
+        self.assertTrue(payload.get("resource_state", {}
+                                    ).get("policy", {}).get("forced"))
+        self.assertEqual(payload.get("runtime", {}).get(
+            "forced_pressure"), "throttled")
+
+    def test_post_pdf_index_blocked_when_resource_guard_rejects_start(self):
+        with running_server() as (app, base_url):
+            original_admit = app.admit_index_start
+            app.admit_index_start = lambda: {
+                "ok": False,
+                "code": 503,
+                "error": "System pressure is critical",
+                "policy": {"pressure": "critical"},
+            }
+            try:
+                status, payload, _ = _request_json(
+                    "POST", f"{base_url}/api/pdf/index", {})
+            finally:
+                app.admit_index_start = original_admit
+
+        self.assertEqual(status, 503)
+        self.assertFalse(payload.get("ok", True))
+        self.assertFalse(payload.get("started", True))
+        self.assertIn("critical", str(payload.get("error", "")))
+
+    def test_resource_monitor_tick_pauses_running_index_after_sustained_critical_pressure(self):
+        with running_server() as (app, _base_url):
+            original_policy = app.get_current_safety_policy
+            original_pause = app.pause_pdf_index_job
+            original_required = app.RESOURCE_MONITOR_CRITICAL_SAMPLES
+            pause_calls = []
+
+            app.RESOURCE_MONITOR_CRITICAL_SAMPLES = 2
+            app.get_current_safety_policy = lambda force_detect=False: {
+                "pressure": "critical",
+                "pause_index": True,
+                "message": "System pressure is critical.",
+            }
+
+            def fake_pause():
+                pause_calls.append(True)
+                with app.PDF_LOCK:
+                    app.PDF_INDEX_STATE["pause_requested"] = True
+                return {"ok": True, "paused": True, "message": "Pause requested"}
+
+            app.pause_pdf_index_job = fake_pause
+            with app.PDF_LOCK:
+                app.PDF_INDEX_STATE["running"] = True
+                app.PDF_INDEX_STATE["pause_requested"] = False
+            with app.RESOURCE_LOCK:
+                app.RESOURCE_STATE["monitor_critical_samples"] = 0
+            try:
+                first = app.resource_monitor_tick()
+                second = app.resource_monitor_tick()
+            finally:
+                with app.PDF_LOCK:
+                    app.PDF_INDEX_STATE["running"] = False
+                    app.PDF_INDEX_STATE["pause_requested"] = False
+                with app.RESOURCE_LOCK:
+                    app.RESOURCE_STATE["monitor_critical_samples"] = 0
+                app.get_current_safety_policy = original_policy
+                app.pause_pdf_index_job = original_pause
+                app.RESOURCE_MONITOR_CRITICAL_SAMPLES = original_required
+
+        self.assertEqual(first.get("action"), "sampled")
+        self.assertEqual(second.get("action"), "paused_index")
+        self.assertEqual(len(pause_calls), 1)
+
+    def test_resource_monitor_tick_resets_critical_sample_count_when_pressure_recovers(self):
+        with running_server() as (app, _base_url):
+            original_policy = app.get_current_safety_policy
+            pressures = iter([
+                {"pressure": "critical", "pause_index": True},
+                {"pressure": "ok", "pause_index": False},
+            ])
+            app.get_current_safety_policy = lambda force_detect=False: next(pressures)
+            with app.RESOURCE_LOCK:
+                app.RESOURCE_STATE["monitor_critical_samples"] = 0
+            try:
+                app.resource_monitor_tick()
+                app.resource_monitor_tick()
+                with app.RESOURCE_LOCK:
+                    critical_samples = app.RESOURCE_STATE["monitor_critical_samples"]
+            finally:
+                with app.RESOURCE_LOCK:
+                    app.RESOURCE_STATE["monitor_critical_samples"] = 0
+                app.get_current_safety_policy = original_policy
+
+        self.assertEqual(critical_samples, 0)
+
+    def test_post_pdf_ask_blocked_when_generation_slot_busy(self):
+        with running_server() as (app, base_url):
+            original_validate = app.validate_model_allowed
+            original_policy = app.get_current_safety_policy
+            app.validate_model_allowed = lambda model: {"ok": True}
+            app.get_current_safety_policy = lambda force_detect=False: {
+                "pressure": "ok",
+                "allow_new_work": True,
+                "max_generation_slots": 1,
+                "message": "System pressure is normal.",
+            }
+            with app.RESOURCE_LOCK:
+                app.RESOURCE_STATE["active_generations"] = 1
+            try:
+                status, payload, _ = _request_json(
+                    "POST",
+                    f"{base_url}/api/pdf/ask",
+                    {
+                        "query": "slot check",
+                        "model": "llama3.1:8b",
+                    },
+                )
+            finally:
+                with app.RESOURCE_LOCK:
+                    app.RESOURCE_STATE["active_generations"] = 0
+                app.validate_model_allowed = original_validate
+                app.get_current_safety_policy = original_policy
+
+        self.assertEqual(status, 429)
+        self.assertFalse(payload.get("ok", True))
+        self.assertIn("already running", str(payload.get("error", "")))
+
+    def test_post_pdf_ask_uses_recommended_model_when_omitted(self):
+        with running_server() as (app, base_url):
+            original_ask = app.ask_pdf_library
+            original_recommended = app.get_recommended_model
+
+            def fake_ask(query, model, top_k, include_paths=None, exclude_paths=None, debug_trace=False):
+                self.assertEqual(model, "llama3.1:8b")
+                return {
+                    "ok": True,
+                    "answer": "grounded answer",
+                    "sources": [],
+                }
+
+            app.ask_pdf_library = fake_ask
+            app.get_recommended_model = lambda default="qwen2.5:14b": "llama3.1:8b"
+            try:
+                status, payload, _ = _request_json(
+                    "POST",
+                    f"{base_url}/api/pdf/ask",
+                    {
+                        "query": "Who was Herbert Hoover?",
+                        "top_k": 6,
+                    },
+                )
+            finally:
+                app.ask_pdf_library = original_ask
+                app.get_recommended_model = original_recommended
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload.get("ok"))
+
     def test_post_abstract_evaluate_uses_normalized_contract(self):
         with running_server() as (app, base_url):
             original_eval = app.evaluate_abstract_relevance
@@ -635,6 +1148,99 @@ class RouteBaselineTests(unittest.TestCase):
                          0].get("citation_id"), "existing-c1")
         self.assertEqual(payload.get("citations", [])[
             0].get("confidence_label"), "High")
+
+    def test_post_pdf_synthesize_returns_sources_and_ok(self):
+        with running_server() as (app, base_url):
+            original_synth = app.synthesize_pdf_library
+            original_validate = app.validate_model_allowed
+            app.validate_model_allowed = lambda model: {"ok": True}
+
+            def fake_synth(query, model, top_k, include_paths=None, exclude_paths=None):
+                return {
+                    "ok": True,
+                    "sources": [
+                        {
+                            "path": "/library/paper.pdf",
+                            "title": "Paper",
+                            "location": 5,
+                            "score": 1.23,
+                            "relevancy": "This source is relevant because it covers the topic.",
+                        }
+                    ],
+                }
+
+            app.synthesize_pdf_library = fake_synth
+            try:
+                status, payload, _ = _request_json(
+                    "POST",
+                    f"{base_url}/api/pdf/synthesize",
+                    {
+                        "query": "What topics does the library cover?",
+                        "model": "qwen2.5:14b",
+                        "top_k": 5,
+                    },
+                )
+            finally:
+                app.synthesize_pdf_library = original_synth
+                app.validate_model_allowed = original_validate
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload.get("ok"))
+        self.assertIsInstance(payload.get("sources"), list)
+        self.assertEqual(len(payload["sources"]), 1)
+        self.assertIn("relevancy", payload["sources"][0])
+
+    def test_post_pdf_synthesize_blocked_when_resource_pressure_critical(self):
+        with running_server() as (app, base_url):
+            original_acquire = app.acquire_generation_slot
+            original_validate = app.validate_model_allowed
+            app.validate_model_allowed = lambda model: {"ok": True}
+            app.acquire_generation_slot = lambda kind: {
+                "ok": False,
+                "code": 503,
+                "error": "System pressure is critical",
+                "policy": {"pressure": "critical"},
+            }
+            try:
+                status, payload, _ = _request_json(
+                    "POST",
+                    f"{base_url}/api/pdf/synthesize",
+                    {
+                        "query": "What does the library cover?",
+                        "model": "qwen2.5:14b",
+                    },
+                )
+            finally:
+                app.acquire_generation_slot = original_acquire
+                app.validate_model_allowed = original_validate
+
+        self.assertEqual(status, 503)
+        self.assertFalse(payload.get("ok", True))
+        self.assertIn("critical", str(payload.get("error", "")))
+
+    def test_post_pdf_synthesize_rejected_when_model_unsafe(self):
+        with running_server() as (app, base_url):
+            original_validate = app.validate_model_allowed
+            app.validate_model_allowed = lambda model: {
+                "ok": False,
+                "code": 409,
+                "error": f"Model {model!r} exceeds safe resource limits.",
+            }
+            try:
+                status, payload, _ = _request_json(
+                    "POST",
+                    f"{base_url}/api/pdf/synthesize",
+                    {
+                        "query": "What does the library cover?",
+                        "model": "llama3.1:70b",
+                    },
+                )
+            finally:
+                app.validate_model_allowed = original_validate
+
+        self.assertEqual(status, 409)
+        self.assertFalse(payload.get("ok", True))
+        self.assertIn("safe resource limits", str(payload.get("error", "")))
 
     def test_api_routes_require_key_when_configured(self):
         with running_server(api_key="secret-key") as (_, base_url):

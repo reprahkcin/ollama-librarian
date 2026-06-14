@@ -53,6 +53,8 @@ const pdfSourcePathEl = document.getElementById("pdfSourcePath");
 const browsePdfSourceEl = document.getElementById("browsePdfSource");
 const savePdfSourceEl = document.getElementById("savePdfSource");
 const usePdfLibraryEl = document.getElementById("usePdfLibrary");
+const pdfSearchModeEl = document.getElementById("pdfSearchMode");
+const pdfModeRowEl = document.getElementById("pdfModeRow");
 const syncPdfLibraryEl = document.getElementById("syncPdfLibrary");
 const uploadLibraryDocsEl = document.getElementById("uploadLibraryDocs");
 const pdfProgressEl = document.getElementById("pdfProgress");
@@ -75,6 +77,9 @@ const pdfStatusAdaptiveEl = document.getElementById("pdfStatusAdaptive");
 const pdfStatusErrorEl = document.getElementById("pdfStatusError");
 const messagesEl = document.getElementById("messages");
 const statusDotEl = document.getElementById("statusDot");
+const statusMainEl = document.getElementById("statusMain");
+const statusMetaEl = document.getElementById("statusMeta");
+// Backwards-compatible fallback: some environments still ship `statusText`.
 const statusTextEl = document.getElementById("statusText");
 const metaEl = document.getElementById("meta");
 const stashModalEl = document.getElementById("stashModal");
@@ -106,6 +111,7 @@ let promptHistory = [];
 let promptHistoryIndex = -1;
 let pinnedPrompts = [];
 let syncSnapshot = null;
+let systemProfile = null;
 
 const DOC_FILTER_STORAGE_KEY = "ollama_web_excluded_docs_v1";
 const PROMPT_HISTORY_STORAGE_KEY = "ollama_web_prompt_history_v1";
@@ -123,6 +129,34 @@ const SUPPORTED_UPLOAD_EXTENSIONS = new Set([
   ".epub",
 ]);
 let latestUpdateVersion = "";
+
+function compactNumber(value, suffix = "") {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) return "";
+  const rounded = Math.round(num * 10) / 10;
+  return `${rounded}${suffix}`;
+}
+
+function describeModelDetails(item) {
+  if (!item || typeof item !== "object") return "";
+  const parts = [];
+  const params = compactNumber(item.parameter_size_b, "B");
+  if (params) parts.push(params);
+  if (item.quantization) parts.push(String(item.quantization).toUpperCase());
+  if (item.family) parts.push(String(item.family));
+  if (item.context_length) parts.push(`${item.context_length} ctx`);
+  if (item.estimated_memory_gb) {
+    parts.push(`~${compactNumber(item.estimated_memory_gb, "GB")}`);
+  }
+  return parts.join(" | ");
+}
+
+function buildModelOptionLabel(name, item) {
+  const safety = item && item.safety ? String(item.safety) : "";
+  const details = describeModelDetails(item);
+  const suffix = [safety, details].filter(Boolean).join(" | ");
+  return suffix ? `${name} (${suffix})` : name;
+}
 
 function extensionOfName(name) {
   const raw = String(name || "")
@@ -438,7 +472,37 @@ function setStatus(state, text) {
   statusDotEl.classList.remove("ok", "err");
   if (state === "ok") statusDotEl.classList.add("ok");
   if (state === "err") statusDotEl.classList.add("err");
-  statusTextEl.textContent = text;
+  // Prefer to show a short primary status in the bubble and smaller metadata outside it.
+  try {
+    let main = String(text || "");
+    let meta = "";
+    if (main.includes("|") || main.includes(";")) {
+      const sep = main.includes("|") ? "|" : ";";
+      const parts = main.split(sep);
+      main = parts.shift().trim();
+      meta = parts.join(sep).trim();
+    } else if (main.length > 48) {
+      meta = main.slice(48).trim();
+      main = main.slice(0, 48).trim() + "...";
+    }
+
+    if (statusMainEl) {
+      statusMainEl.textContent = main;
+    } else if (statusTextEl) {
+      statusTextEl.textContent = main + (meta ? ` | ${meta}` : "");
+    }
+
+    if (statusMetaEl) {
+      statusMetaEl.textContent = meta;
+    }
+  } catch (e) {
+    // Swallow errors to avoid breaking page init; record to console for debugging.
+    try {
+      console.error("setStatus error:", e);
+    } catch (_) {
+      // ignore
+    }
+  }
 }
 
 function formatAbstractEvalResult(data) {
@@ -546,11 +610,18 @@ function isoNow() {
   return new Date().toISOString();
 }
 
-async function persistMessage(role, text, ts) {
+async function persistMessage(role, text, ts, opts = {}) {
+  const body = { role, text, ts };
+  if (Array.isArray(opts.citationEntries) && opts.citationEntries.length) {
+    body.citation_entries = opts.citationEntries;
+  }
+  if (opts.citationQuery) {
+    body.citation_query = opts.citationQuery;
+  }
   await fetch("/api/history", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ role, text, ts }),
+    body: JSON.stringify(body),
   });
 }
 
@@ -1290,7 +1361,7 @@ async function addMessageAndStore(role, text) {
   const opts = arguments.length > 2 ? arguments[2] : {};
   addMessage(role, text, opts);
   try {
-    await persistMessage(role, text, ts);
+    await persistMessage(role, text, ts, opts);
   } catch (_) {
     // Keep UI responsive if history persistence fails.
   }
@@ -1942,7 +2013,8 @@ function buildApaCitationEntries(sources) {
     const structuredConfidence = sourceConfidenceFromStructured(s);
     entries.push({
       citation,
-      confidence: structuredConfidence || sourceConfidenceInfo(s.score, maxScore),
+      confidence:
+        structuredConfidence || sourceConfidenceInfo(s.score, maxScore),
       source: {
         path,
         page: loc,
@@ -1988,6 +2060,26 @@ function citationSourceRowsFromAskPayload(payload) {
   }
   const legacyRows = Array.isArray(payload.sources) ? payload.sources : [];
   return legacyRows;
+}
+
+function formatSourceMapAnswer(query, sources) {
+  if (!sources || !sources.length) {
+    return `Source map for: "${query}"\n\nNo relevant sources found.`;
+  }
+  const lines = [`Source map for: "${query}"\n`];
+  for (const src of sources) {
+    const title = src.title || src.path.split("/").pop() || src.path;
+    const locType = src.location_type || "loc";
+    const loc = src.location != null ? ` (${locType} ${src.location})` : "";
+    const score = src.score != null ? `, score: ${src.score.toFixed(3)}` : "";
+    lines.push(`**${title}**${loc}${score}`);
+    if (src.relevancy) {
+      lines.push(`→ ${src.relevancy}`);
+    }
+    lines.push("");
+  }
+  lines.push(`${sources.length} source${sources.length !== 1 ? "s" : ""} found.`);
+  return lines.join("\n");
 }
 
 function formatApaSources(sources) {
@@ -2048,6 +2140,12 @@ function renderCitationActions(citationEntries, queryText = "") {
     });
 
     row.appendChild(text);
+    if (entry.relevancy) {
+      const relevancyEl = document.createElement("div");
+      relevancyEl.className = "citation-relevancy";
+      relevancyEl.textContent = entry.relevancy;
+      row.appendChild(relevancyEl);
+    }
     row.appendChild(stashBtn);
     wrap.appendChild(row);
   }
@@ -2153,6 +2251,34 @@ function buildAdaptiveThrottleLine(data) {
   return `${base} | last run avg ${Math.round(avgEmbedMs)}ms, final ${finalThreads} thread(s), ${finalDelayMs}ms delay, ${adjustments} adjustment(s)`;
 }
 
+function buildResourceStateLine(data) {
+  const resource = data && data.resource_state ? data.resource_state : {};
+  const policy = resource.policy || {};
+  const runtime = resource.runtime || {};
+  const monitor = runtime.monitor || {};
+  const pressure = policy.pressure || resource.pressure || "unknown";
+  const active = Number(runtime.active_generations || 0);
+  const slots = Number(runtime.max_concurrent_generations || 1);
+  const safeMode = runtime.safe_mode === false ? "off" : "on";
+  const monitorText = monitor.enabled
+    ? `monitor ${monitor.last_action || "sampling"}`
+    : "monitor off";
+  return `Resource guard: ${pressure} | safe mode ${safeMode} | active ${active}/${slots} | ${monitorText}`;
+}
+
+function buildModelCacheLine() {
+  const cache =
+    systemProfile && systemProfile.ollama && systemProfile.ollama.model_cache
+      ? systemProfile.ollama.model_cache
+      : null;
+  if (!cache || cache.cached_at === null || cache.cached_at === undefined) {
+    return "Model metadata: uncached";
+  }
+  const age = Number(cache.age_seconds || 0);
+  const ttl = Number(cache.ttl_seconds || 0);
+  return `Model metadata: cached ${Math.round(age)}s ago | ttl ${ttl}s`;
+}
+
 function confirmSyncSafety() {
   return window.confirm(
     "Large library sync can run for a long time and should be planned carefully.\n\n" +
@@ -2229,7 +2355,13 @@ async function refreshPdfStatus() {
     const idx = formatEpoch(data.last_indexed_at);
     const running = job.running ? "running" : "idle";
     const pauseRequested = Boolean(job.pause_requested);
-    const throttleLine = buildAdaptiveThrottleLine(data);
+    const throttleLine = [
+      buildAdaptiveThrottleLine(data),
+      buildResourceStateLine(data),
+      buildModelCacheLine(),
+    ]
+      .filter(Boolean)
+      .join(" | ");
 
     if (pdfSourcePathEl && document.activeElement !== pdfSourcePathEl) {
       pdfSourcePathEl.value = String(data.source_path || "");
@@ -2603,6 +2735,7 @@ function setBusy(isBusy) {
   instructionsEl.disabled = isBusy;
   saveInstructionsEl.disabled = isBusy;
   usePdfLibraryEl.disabled = isBusy;
+  pdfSearchModeEl.disabled = isBusy;
   pdfSourcePathEl.disabled = isBusy;
   browsePdfSourceEl.disabled = isBusy;
   savePdfSourceEl.disabled = isBusy;
@@ -2621,14 +2754,38 @@ function cancelPromptRequest() {
   activeRequestController.abort();
 }
 
-async function loadModels() {
+async function loadModels(forceRefresh = false) {
   modelEl.innerHTML = "";
   setStatus("", "Checking service...");
   try {
-    const res = await fetch("/api/tags");
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    const models = (data.models || []).map((m) => m.name);
+    let models = [];
+    let recommended = "";
+    let detailsByName = new Map();
+
+    try {
+      const profileUrl = forceRefresh
+        ? "/api/system/profile?refresh=1"
+        : "/api/system/profile";
+      const profileRes = await fetch(profileUrl);
+      if (!profileRes.ok) throw new Error(`HTTP ${profileRes.status}`);
+      systemProfile = await profileRes.json();
+      const recommendation = systemProfile.recommendation || {};
+      const modelDetails = Array.isArray(recommendation.models)
+        ? recommendation.models
+        : [];
+      models = modelDetails.map((item) => item.name).filter(Boolean);
+      recommended = String(recommendation.recommended_model || "");
+      detailsByName = new Map(modelDetails.map((item) => [item.name, item]));
+    } catch (_profileErr) {
+      systemProfile = null;
+    }
+
+    if (!models.length) {
+      const res = await fetch("/api/tags");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      models = (data.models || []).map((m) => m.name).filter(Boolean);
+    }
 
     if (!models.length) {
       const opt = document.createElement("option");
@@ -2642,14 +2799,21 @@ async function loadModels() {
     for (const name of models) {
       const opt = document.createElement("option");
       opt.value = name;
-      opt.textContent = name;
+      const details = detailsByName.get(name);
+      opt.textContent = buildModelOptionLabel(name, details);
+      const title = describeModelDetails(details);
+      if (title) opt.title = title;
       modelEl.appendChild(opt);
     }
-    const preferred = models.includes("qwen2.5:14b")
-      ? "qwen2.5:14b"
-      : models[0];
+    const preferred =
+      recommended && models.includes(recommended) ? recommended : models[0];
     modelEl.value = preferred;
-    setStatus("ok", `Online (${models.length} models)`);
+    setStatus(
+      "ok",
+      recommended
+        ? `Online (${models.length} models, recommended ${recommended}) | ${buildModelCacheLine()}`
+        : `Online (${models.length} models)`,
+    );
   } catch (err) {
     setStatus("err", "Service unreachable");
     addMessage("system", `Failed to load models: ${err.message}`);
@@ -2683,7 +2847,13 @@ async function loadHistory() {
         rememberPrompt(text, false);
         lastUserPrompt = text;
       }
-      addMessage(role, text);
+      const msgOpts = {};
+      if (Array.isArray(item.citation_entries) && item.citation_entries.length) {
+        msgOpts.citationEntries = item.citation_entries;
+        msgOpts.citationQuery =
+          typeof item.citation_query === "string" ? item.citation_query : "";
+      }
+      addMessage(role, text, msgOpts);
     }
     persistPromptHistory();
   } catch (err) {
@@ -2738,35 +2908,76 @@ async function sendPrompt() {
           throw new Error(selectionError);
         }
       }
-      const res = await fetch("/api/pdf/ask", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: requestController.signal,
-        body: JSON.stringify({
-          query: prompt,
-          model,
-          top_k: 8,
-          include_paths: filters.includePaths,
-          exclude_paths: filters.excludePaths,
-        }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      if (data.ok === false && data.error) {
-        throw new Error(data.error);
+      const pdfMode = pdfSearchModeEl.value;
+      if (pdfMode === "sourcemap") {
+        const res = await fetch("/api/pdf/synthesize", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: requestController.signal,
+          body: JSON.stringify({
+            query: prompt,
+            model,
+            top_k: 8,
+            include_paths: filters.includePaths,
+            exclude_paths: filters.excludePaths,
+          }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (data.ok === false && data.error) {
+          throw new Error(data.error);
+        }
+        const mapSources = data.sources || [];
+        const citationEntries = buildApaCitationEntries(mapSources);
+        const relevancyByPath = {};
+        for (const src of mapSources) {
+          if (src.path) relevancyByPath[src.path] = src.relevancy || "";
+        }
+        for (const entry of citationEntries) {
+          if (entry.source && entry.source.path) {
+            entry.relevancy = relevancyByPath[entry.source.path] || "";
+          }
+        }
+        answer = mapSources.length
+          ? `Source map for: "${prompt}"`
+          : `Source map for: "${prompt}"\n\nNo relevant sources found.`;
+        lastPdfSources = mapSources;
+        lastCitationQuery = prompt;
+        await addMessageAndStore("assistant", answer, {
+          citationEntries,
+          citationQuery: prompt,
+        });
+      } else {
+        const res = await fetch("/api/pdf/ask", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: requestController.signal,
+          body: JSON.stringify({
+            query: prompt,
+            model,
+            top_k: 8,
+            include_paths: filters.includePaths,
+            exclude_paths: filters.excludePaths,
+          }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (data.ok === false && data.error) {
+          throw new Error(data.error);
+        }
+        const citationSourceRows = citationSourceRowsFromAskPayload(data);
+        const citationEntries = buildApaCitationEntries(citationSourceRows);
+        answer =
+          typeof data.answer_text === "string" && data.answer_text.trim()
+            ? data.answer_text
+            : data.answer || "[no answer field]";
+        lastPdfSources = citationSourceRows;
+        lastCitationQuery = prompt;
+        await addMessageAndStore("assistant", answer, {
+          citationEntries,
+          citationQuery: prompt,
+        });
       }
-      const citationSourceRows = citationSourceRowsFromAskPayload(data);
-      const citationEntries = buildApaCitationEntries(citationSourceRows);
-      answer =
-        typeof data.answer_text === "string" && data.answer_text.trim()
-          ? data.answer_text
-          : data.answer || "[no answer field]";
-      lastPdfSources = citationSourceRows;
-      lastCitationQuery = prompt;
-      await addMessageAndStore("assistant", answer, {
-        citationEntries,
-        citationQuery: prompt,
-      });
     } else {
       const res = await fetch("/api/generate", {
         method: "POST",
@@ -2787,7 +2998,10 @@ async function sendPrompt() {
     }
 
     const elapsedMs = Math.round(performance.now() - start);
-    metaEl.textContent = `Model: ${model}${usePdfLibrary ? " + PDF" : ""} | ${elapsedMs} ms`;
+    const pdfLabel = usePdfLibrary
+      ? (pdfSearchModeEl.value === "sourcemap" ? " + source map" : " + PDF")
+      : "";
+    metaEl.textContent = `Model: ${model}${pdfLabel} | ${elapsedMs} ms`;
   } catch (err) {
     if (err && err.name === "AbortError") {
       // Keep the canceled query in the input so users can quickly adjust and resend.
@@ -2810,7 +3024,7 @@ async function sendPrompt() {
   }
 }
 
-refreshEl.addEventListener("click", loadModels);
+refreshEl.addEventListener("click", () => loadModels(true));
 openLibraryDocsEl.addEventListener("click", openLibraryDocsModal);
 openBibliographyEl.addEventListener("click", () =>
   openStashModal("bibliography"),
@@ -2897,17 +3111,19 @@ pdfSourcePathEl.addEventListener("keydown", (e) => {
 });
 usePdfLibraryEl.addEventListener("change", () => {
   if (usePdfLibraryEl.checked) {
-    metaEl.textContent = "PDF-grounded mode enabled";
+    pdfModeRowEl.style.display = "";
+    metaEl.textContent = "PDF library mode enabled";
     return;
   }
   const proceedUngrounded = confirm(
-    "Turn off PDF grounding?\\n\\nOllama Librarian is intended primarily for PDF-grounded research. Continue with ungrounded mode?",
+    "Turn off PDF library?\\n\\nOllama Librarian is intended primarily for PDF-grounded research. Continue with ungrounded mode?",
   );
   if (!proceedUngrounded) {
     usePdfLibraryEl.checked = true;
-    metaEl.textContent = "PDF-grounded mode kept on";
+    metaEl.textContent = "PDF library mode kept on";
     return;
   }
+  pdfModeRowEl.style.display = "none";
   metaEl.textContent = "Ungrounded mode enabled";
 });
 makeBibliographyEl.addEventListener(
