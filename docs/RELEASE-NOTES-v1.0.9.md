@@ -12,6 +12,7 @@ This release adds hardware profile detection with VRAM constraints for discrete 
 ## New Features
 
 ### Hardware Profile Detection
+
 - Added VRAM detection for discrete NVIDIA GPU systems via nvidia-smi
 - Hardware profile now includes `gpu_vram_total_gb` field (null on integrated/unified memory systems)
 - Model recommendation engine constrains budget to min(safe_ram_budget, gpu_vram_budget) on discrete GPUs
@@ -19,12 +20,14 @@ This release adds hardware profile detection with VRAM constraints for discrete 
 - API endpoint `/api/system/profile` exposes complete hardware profile with VRAM information
 
 ### Source Map Mode and Citation Persistence
+
 - Source map mode now returns relevancy explanations for each source
 - Citation blocks persist in conversation history with scores, badges, and PDF links
 - Generate Bibliography button creates properly formatted APA 7 citations
 - Bibliography stash filtering separates bibliography entries from regular stashed responses
 
 ### Index Safety Improvements
+
 - Prune guard now uses `os.path.commonpath()` for robust path traversal prevention
 - Replaced unsafe `startswith()` check with canonical path comparison
 - Added security regression test coverage for prune operations
@@ -59,10 +62,11 @@ This release adds hardware profile detection with VRAM constraints for discrete 
 ### New Fields
 
 **GET /api/system/profile**
+
 ```json
 {
-  "gpu_vram_total_gb": 12.0,  // null on integrated/unified memory
-  "safe_budget_gb": 12.0,     // min(ram_budget, vram_budget) on discrete GPU
+  "gpu_vram_total_gb": 12.0, // null on integrated/unified memory
+  "safe_budget_gb": 12.0, // min(ram_budget, vram_budget) on discrete GPU
   "recommended_model": "gemma4:12b",
   "hardware_profile": "discrete_gpu"
 }
@@ -77,6 +81,7 @@ This release adds hardware profile detection with VRAM constraints for discrete 
 ## Platform Support
 
 Tested and verified on:
+
 - macOS (Apple Silicon) - M1/M2/M3 with unified memory
 - Windows 10/11 - discrete NVIDIA GPU systems
 - Linux Mint 22 - discrete NVIDIA GPU systems
@@ -86,11 +91,13 @@ Tested and verified on:
 No breaking changes. Version 1.0.9 is backward compatible with 1.0.8.
 
 ### For Discrete GPU Users
+
 - VRAM detection is automatic via nvidia-smi
 - Model recommendations will now respect VRAM constraints
 - If nvidia-smi is not available, falls back to RAM-only budget (previous behavior)
 
 ### For Integrated/Unified Memory Users
+
 - No behavioral changes
 - `gpu_vram_total_gb` will report null (expected)
 - RAM budget applies as in previous versions
@@ -102,6 +109,7 @@ None identified during testing.
 ## Upgrade Instructions
 
 ### macOS
+
 ```bash
 ./scripts/librarian-stop-macos.sh
 ./scripts/librarian-update-macos.sh
@@ -109,6 +117,7 @@ None identified during testing.
 ```
 
 ### Windows (PowerShell)
+
 ```powershell
 .\scripts\librarian-stop-windows.ps1
 .\scripts\librarian-update-windows.ps1
@@ -116,6 +125,7 @@ None identified during testing.
 ```
 
 ### Linux
+
 ```bash
 ./scripts/librarian-stop-linux.sh
 ./scripts/librarian-update-linux.sh
@@ -137,6 +147,7 @@ None identified during testing.
 ## Commit History
 
 Key commits in this release:
+
 - `ad7289f` - feat(hardware): add VRAM detection to constrain model recommendations on discrete-GPU machines
 - `69a1dfa` - feat: source map mode, citation persistence, and index safety
 - `bae842b` - perf: cache hardware pressure policy to avoid per-request subprocess spawning
