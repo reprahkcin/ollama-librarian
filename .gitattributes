@@ -1,0 +1,16 @@
+# Normalize all text files to LF in the repo, regardless of contributor OS.
+# Prevents the whole tree from showing as "modified" after editing on Windows.
+* text=auto eol=lf
+
+# Binary assets — never touch their bytes.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.woff  binary
+*.woff2 binary
+*.ttf  binary
+*.eot  binary
+*.otf  binary
